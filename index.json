@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "problems": [
+    {
+      "id": "rate-limiter",
+      "title": "Rate Limiter",
+      "difficulty": "Medium",
+      "tags": ["design", "sliding-window", "hash-map"]
+    }
+  ]
+}
