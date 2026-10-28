@@ -2,6 +2,16 @@
   "version": 1,
   "problems": [
     {
+      "id": "idempotent-orders",
+      "title": "Idempotent Order Processing",
+      "difficulty": "Easy",
+      "tags": [
+        "design",
+        "idempotency",
+        "hash-map"
+      ]
+    },
+    {
       "id": "rate-limiter",
       "title": "Rate Limiter",
       "difficulty": "Medium",

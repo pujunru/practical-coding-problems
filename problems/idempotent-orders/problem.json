@@ -1,0 +1,913 @@
+{
+ "levels": [
+  {
+   "title": "Idempotency key",
+   "cases": [
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "order_count",
+      "place_order",
+      "order_count"
+     ],
+     "args": [
+      [],
+      [
+       "u1",
+       "k1",
+       "apple",
+       1
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       1
+      ],
+      [],
+      [
+       "u1",
+       "k2",
+       "apple",
+       2
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "order-1",
+      "order-1",
+      1,
+      "order-2",
+      2
+     ],
+     "example": true,
+     "explanation": "The second call reuses k1, so it is a retry: it returns order-1 and creates nothing. k2 is a new checkout."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "place_order",
+      "place_order",
+      "order_count"
+     ],
+     "args": [
+      [],
+      [
+       "u1",
+       "a",
+       "pen",
+       1
+      ],
+      [
+       "u1",
+       "a",
+       "pen",
+       1
+      ],
+      [
+       "u1",
+       "a",
+       "pen",
+       1
+      ],
+      [
+       "u2",
+       "b",
+       "pen",
+       1
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "order-1",
+      "order-1",
+      "order-1",
+      "order-2",
+      2
+     ],
+     "example": true,
+     "explanation": "Three attempts with key a create one order. A retry does not use up an id, so the next order is order-2."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "order_count",
+      "place_order",
+      "place_order",
+      "place_order",
+      "place_order",
+      "place_order",
+      "order_count"
+     ],
+     "args": [
+      [],
+      [],
+      [
+       "u1",
+       "k1",
+       "pen",
+       1
+      ],
+      [
+       "u1",
+       "k2",
+       "ink",
+       3
+      ],
+      [
+       "u1",
+       "k1",
+       "pen",
+       1
+      ],
+      [
+       "u1",
+       "k2",
+       "ink",
+       3
+      ],
+      [
+       "u2",
+       "k3",
+       "pen",
+       2
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      0,
+      "order-1",
+      "order-2",
+      "order-1",
+      "order-2",
+      "order-3",
+      3
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Read, check, then process",
+   "cases": [
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "get_stock",
+      "order_count"
+     ],
+     "args": [
+      [
+       {
+        "apple": 3
+       }
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       2
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       2
+      ],
+      [
+       "apple"
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "order-1",
+      "order-1",
+      1,
+      1
+     ],
+     "example": true,
+     "explanation": "The retry is answered from the stored result. Stock is taken once."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "restock",
+      "place_order",
+      "get_stock",
+      "place_order",
+      "get_stock"
+     ],
+     "args": [
+      [
+       {
+        "apple": 1
+       }
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       2
+      ],
+      [
+       "apple",
+       5
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       2
+      ],
+      [
+       "apple"
+      ],
+      [
+       "u1",
+       "k2",
+       "apple",
+       2
+      ],
+      [
+       "apple"
+      ]
+     ],
+     "expected": [
+      null,
+      "rejected",
+      null,
+      "rejected",
+      6,
+      "order-1",
+      4
+     ],
+     "example": true,
+     "explanation": "k1 was rejected, and that outcome is recorded. Its retry is rejected again even though stock has arrived. A new key places the order."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "place_order",
+      "place_order",
+      "get_stock",
+      "get_stock",
+      "order_count"
+     ],
+     "args": [
+      [
+       {
+        "pen": 1
+       }
+      ],
+      [
+       "u1",
+       "k1",
+       "pen",
+       5
+      ],
+      [
+       "u1",
+       "k2",
+       "pen",
+       1
+      ],
+      [
+       "u1",
+       "k3",
+       "pen",
+       1
+      ],
+      [
+       "u1",
+       "k2",
+       "pen",
+       1
+      ],
+      [
+       "pen"
+      ],
+      [
+       "ink"
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "rejected",
+      "order-1",
+      "rejected",
+      "order-1",
+      0,
+      0,
+      1
+     ]
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "get_stock",
+      "place_order",
+      "place_order",
+      "restock",
+      "place_order",
+      "get_stock"
+     ],
+     "args": [
+      [
+       {
+        "a": 2
+       }
+      ],
+      [
+       "u1",
+       "k1",
+       "a",
+       2
+      ],
+      [
+       "a"
+      ],
+      [
+       "u1",
+       "k1",
+       "a",
+       2
+      ],
+      [
+       "u1",
+       "k2",
+       "b",
+       1
+      ],
+      [
+       "b",
+       1
+      ],
+      [
+       "u1",
+       "k3",
+       "b",
+       1
+      ],
+      [
+       "b"
+      ]
+     ],
+     "expected": [
+      null,
+      "order-1",
+      0,
+      "order-1",
+      "rejected",
+      null,
+      "order-2",
+      0
+     ]
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "order_count"
+     ],
+     "args": [
+      [],
+      [
+       "u1",
+       "k1",
+       "pen",
+       1000
+      ],
+      [
+       "u1",
+       "k1",
+       "pen",
+       1000
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "order-1",
+      "order-1",
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Key scope and mismatched retries",
+   "cases": [
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "place_order",
+      "order_count",
+      "get_stock"
+     ],
+     "args": [
+      [
+       {
+        "apple": 5
+       }
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       1
+      ],
+      [
+       "u2",
+       "k",
+       "apple",
+       1
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       1
+      ],
+      [],
+      [
+       "apple"
+      ]
+     ],
+     "expected": [
+      null,
+      "order-1",
+      "order-2",
+      "order-1",
+      2,
+      3
+     ],
+     "example": true,
+     "explanation": "u1 and u2 both chose key k. They are different requests, so each gets an order."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "place_order",
+      "get_stock",
+      "get_stock",
+      "place_order",
+      "order_count"
+     ],
+     "args": [
+      [
+       {
+        "apple": 5,
+        "pear": 5
+       }
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       1
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       2
+      ],
+      [
+       "u1",
+       "k",
+       "pear",
+       1
+      ],
+      [
+       "apple"
+      ],
+      [
+       "pear"
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       1
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "order-1",
+      {
+       "raises": "ValueError"
+      },
+      {
+       "raises": "ValueError"
+      },
+      4,
+      5,
+      "order-1",
+      1
+     ],
+     "example": true,
+     "explanation": "Reusing k for a different request raises and changes nothing. A correct retry still gets order-1."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "get_stock",
+      "place_order",
+      "place_order"
+     ],
+     "args": [
+      [
+       {
+        "apple": 1
+       }
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       3
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       1
+      ],
+      [
+       "apple"
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       3
+      ],
+      [
+       "u1",
+       "k2",
+       "apple",
+       1
+      ]
+     ],
+     "expected": [
+      null,
+      "rejected",
+      {
+       "raises": "ValueError"
+      },
+      1,
+      "rejected",
+      "order-1"
+     ]
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "place_order",
+      "get_stock",
+      "get_stock",
+      "order_count"
+     ],
+     "args": [
+      [
+       {
+        "apple": 1,
+        "pear": 1
+       }
+      ],
+      [
+       "u1",
+       "k",
+       "apple",
+       1
+      ],
+      [
+       "u2",
+       "k",
+       "pear",
+       1
+      ],
+      [
+       "u2",
+       "k",
+       "apple",
+       1
+      ],
+      [
+       "pear"
+      ],
+      [
+       "apple"
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "order-1",
+      "order-2",
+      {
+       "raises": "ValueError"
+      },
+      0,
+      0,
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Idempotent cancel",
+   "cases": [
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "cancel",
+      "get_stock",
+      "cancel",
+      "get_stock",
+      "status"
+     ],
+     "args": [
+      [
+       {
+        "apple": 3
+       }
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       2
+      ],
+      [
+       "order-1"
+      ],
+      [
+       "apple"
+      ],
+      [
+       "order-1"
+      ],
+      [
+       "apple"
+      ],
+      [
+       "order-1"
+      ]
+     ],
+     "expected": [
+      null,
+      "order-1",
+      true,
+      3,
+      true,
+      3,
+      "cancelled"
+     ],
+     "example": true,
+     "explanation": "The second cancel finds the order already cancelled. It returns True and puts nothing back."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "cancel",
+      "place_order",
+      "order_count",
+      "status",
+      "get_stock"
+     ],
+     "args": [
+      [
+       {
+        "apple": 3
+       }
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       1
+      ],
+      [
+       "order-1"
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       1
+      ],
+      [],
+      [
+       "order-1"
+      ],
+      [
+       "apple"
+      ]
+     ],
+     "expected": [
+      null,
+      "order-1",
+      true,
+      "order-1",
+      1,
+      "cancelled",
+      3
+     ],
+     "example": true,
+     "explanation": "Cancelling does not free the key: the retry replays order-1 instead of placing a new order."
+    },
+    {
+     "ops": [
+      "OrderService",
+      "cancel",
+      "status",
+      "place_order",
+      "status",
+      "cancel",
+      "get_stock"
+     ],
+     "args": [
+      [
+       {
+        "apple": 3
+       }
+      ],
+      [
+       "order-9"
+      ],
+      [
+       "order-9"
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       1
+      ],
+      [
+       "order-1"
+      ],
+      [
+       "order-2"
+      ],
+      [
+       "apple"
+      ]
+     ],
+     "expected": [
+      null,
+      false,
+      {
+       "raises": "KeyError"
+      },
+      "order-1",
+      "placed",
+      false,
+      2
+     ]
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "place_order",
+      "cancel",
+      "place_order",
+      "place_order",
+      "get_stock",
+      "cancel",
+      "cancel",
+      "get_stock",
+      "status"
+     ],
+     "args": [
+      [
+       {
+        "apple": 1
+       }
+      ],
+      [
+       "u1",
+       "k1",
+       "apple",
+       1
+      ],
+      [
+       "u2",
+       "k2",
+       "apple",
+       1
+      ],
+      [
+       "order-1"
+      ],
+      [
+       "u2",
+       "k2",
+       "apple",
+       1
+      ],
+      [
+       "u2",
+       "k3",
+       "apple",
+       1
+      ],
+      [
+       "apple"
+      ],
+      [
+       "order-2"
+      ],
+      [
+       "order-2"
+      ],
+      [
+       "apple"
+      ],
+      [
+       "order-1"
+      ]
+     ],
+     "expected": [
+      null,
+      "order-1",
+      "rejected",
+      true,
+      "rejected",
+      "order-2",
+      0,
+      true,
+      true,
+      1,
+      "cancelled"
+     ]
+    },
+    {
+     "ops": [
+      "OrderService",
+      "place_order",
+      "cancel",
+      "cancel",
+      "status",
+      "order_count"
+     ],
+     "args": [
+      [],
+      [
+       "u1",
+       "k1",
+       "pen",
+       4
+      ],
+      [
+       "order-1"
+      ],
+      [
+       "order-1"
+      ],
+      [
+       "order-1"
+      ],
+      []
+     ],
+     "expected": [
+      null,
+      "order-1",
+      true,
+      true,
+      "cancelled",
+      1
+     ]
+    }
+   ]
+  }
+ ]
+}
