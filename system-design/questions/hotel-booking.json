@@ -1,0 +1,153 @@
+{
+ "id": "hotel-booking",
+ "title": "Design a Hotel Booking System",
+ "prompt": "Design a platform where travellers search for hotels in a destination for a range of dates, see which room types are available with prices, and book. Hotels manage their own room counts and rates, and also sell through other channels such as travel agencies and their own websites, so the platform must stay consistent with them.\n\nAssume **500,000 hotels** with about 6 room types each, **200 million searches a day**, and **1.5 million bookings a day**.",
+ "clarify": [
+  "Is the inventory a count of rooms per room type per night, or do guests pick a specific room number?",
+  "Do we hold a room during checkout, or only check availability when the guest pays?",
+  "Is overbooking allowed, and who decides the limit: the hotel or the platform?",
+  "How do other sales channels connect: a push/pull API, or a hotel channel manager?",
+  "How far ahead can a guest book, and what is the longest stay?",
+  "Can prices change between search and booking? (Assume we quote a price valid for a short time.)"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Search by destination, dates, guests and rooms; list hotels with the cheapest available offer\n- View room types and rate plans for one hotel; book, modify, cancel\n- Hotels update room counts, prices and stop-sell; inventory is kept in sync with external channels\n\n**Non-functional**\n- Search is the hot path, can be stale by seconds; **booking must not exceed the sellable limit** for any night\n- Multi-night stays are atomic: all nights or none\n- A channel outage must not stop sales, and must not cause silent double-selling",
+  "estimation": "- Searches: 200M/day ≈ **2.3k/s** avg, ~9k/s at 4× peak. Bookings: 1.5M/day ≈ **17/s** avg, ~90/s peak. Look-to-book is ~**133:1**.\n- Inventory rows: 500k hotels × 6 room types × 365 nights = **~1.1B** rows × ~32 B ≈ **35 GB** for the year ahead; small, but it is the hottest data.\n- One search spans ~100 hotels × 6 room types × 3 nights ≈ 1,800 cells. At 9k/s that is **~16M cell reads/s**, far beyond what the transactional store should serve, so search must use a precomputed or cached view.\n- Reservations: 1.5M × ~1 KB ≈ 1.5 GB/day.",
+  "api": "```\nGET  /v1/search?dest=&checkin=&checkout=&guests=&rooms=     → [{hotel_id, from_price, rooms_left}]\nGET  /v1/hotels/{id}/offers?checkin=&checkout=              → [{room_type, rate_plan, price, quote_id, quote_expires}]\nPOST /v1/reservations {quote_id, guest, idempotency_key}    → 201 | 409 sold_out | 410 quote_expired\nDELETE /v1/reservations/{id}\nPUT  /v1/hotels/{id}/inventory [{room_type, date, total, stop_sell}]   (hotel / channel manager)\n```\n- The quote fixes the price and room type for a few minutes; booking re-checks availability but honours the quoted price.",
+  "data": "- **room_inventory**: `(hotel_id, room_type_id, date) PK, total_rooms, sellable_limit, booked, held, stop_sell`. `sellable_limit = total × (1 + overbook_pct)`.\n- **reservations**: `reservation_id, hotel_id, room_type_id, checkin, checkout, status, price, guest, channel, idempotency_key`; sharded by `hotel_id`.\n- **rates**: `(hotel_id, room_type_id, rate_plan, date) → price, restrictions (min stay, closed to arrival)`.\n- **search view**: per `(hotel, room_type)` a per-night availability and price array in a cache or search index, plus a geo/text index of hotels.",
+  "design": "```\nsearch: client ─▶ search svc ─▶ geo/text index ⊕ availability+price cache\nbook:   client ─▶ booking svc ─▶ hotel shard (txn over nights) ─▶ outbox\noutbox ─▶ CDC ─▶ cache updater   and   ─▶ channel sync ─▶ external channels\nexternal channels ─▶ inbound bookings/updates ─▶ booking svc (idempotent)\n```\n- A hotel and all its inventory live on one shard, so a multi-night stay is one local transaction.\n- Every inventory change goes out through an outbox, which feeds both the search cache and the channel connectors.",
+  "deepdives": "- **Availability search across dates.** A stay of nights `d1..dn` is available for a room type only if it is available on *every* night, so keep a per-night count for each `(hotel, room_type)` and take the minimum over the range (stays are short, so a linear scan is cheap). Search finds candidate hotels with a geo index, then looks up each in the cache; there is no query to the transactional store. The cache is fed by change events and may lag by seconds, so it can show a room that has just sold; that is acceptable if the booking path rechecks.\n- **Booking and overbooking.** One transaction: `UPDATE room_inventory SET booked = booked + 1 WHERE hotel_id=? AND room_type_id=? AND date BETWEEN ? AND ? AND NOT stop_sell AND booked + 1 <= sellable_limit`, and commit only if the number of rows changed equals the number of nights. Hotels deliberately overbook a little (5–10% on high-demand nights) because of cancellations and no-shows, which is why the limit is a separate column from physical rooms; derive it from the observed cancellation rate and lower it as the arrival date nears. When a hotel is truly full, it walks the guest to a comparable property at its own cost, so the policy must be capped and measurable. Holding a room during checkout (`held` counter with a ~10 minute expiry) improves the experience for scarce rooms; for abundant rooms skip holds and rely on pay-then-confirm.\n- **External channel sync.** Selling the same room on several channels invites a race. Two approaches: a fixed allotment per channel (no races, but stranded rooms) or one shared pool with fast synchronisation. Prefer the pool: push each change to channels from the outbox (at least once, ordered per hotel and room type, idempotent by version), accept inbound channel bookings through the same conditional update, and add a safety buffer plus periodic full reconciliation to repair drift. A residual last-room race is covered by the overbooking policy. A channel that is down is queued and retried; our own sales continue.",
+  "wrapup": "- Per-hotel transactional inventory per room type per night, a derived and slightly stale search view, and an outbox feeding both the cache and channel sync.\n- Trade-offs: search freshness vs cost; overbooking revenue vs walk risk; pool vs allotment.\n- Next: dynamic pricing, cancellation policies, payments, loyalty and multi-region."
+ },
+ "rubric": [
+  {
+   "text": "Sizes search vs booking and shows search cannot hit the transactional inventory (about 16M cell reads/s)",
+   "keywords": [
+    "133",
+    "look-to-book",
+    "16m",
+    "cell",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models inventory per hotel, room type and night with total, booked and a sellable limit",
+   "keywords": [
+    "room type",
+    "per night",
+    "sellable",
+    "inventory",
+    "hotel_id"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Books multi-night stays atomically in one transaction, all nights or none",
+   "keywords": [
+    "atomic",
+    "transaction",
+    "all nights",
+    "all-or-nothing"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses a conditional update (booked + 1 <= limit) to prevent overselling under concurrency",
+   "keywords": [
+    "conditional",
+    "booked",
+    "<=",
+    "oversell",
+    "compare"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Explains availability across a date range as the minimum over nights and serves search from a derived cache",
+   "keywords": [
+    "every night",
+    "minimum",
+    "range",
+    "cache",
+    "derived"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Accepts stale search results and revalidates at quote and booking time with a time-limited quote",
+   "keywords": [
+    "stale",
+    "revalid",
+    "quote",
+    "eventual"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Defines an overbooking policy with a separate limit, based on cancellation data, and the cost of walking guests",
+   "keywords": [
+    "overbook",
+    "walk",
+    "cancellation rate",
+    "no-show",
+    "compensat"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Discusses holding inventory during checkout with expiry versus pay-then-confirm",
+   "keywords": [
+    "hold",
+    "expir",
+    "checkout",
+    "pay"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Syncs inventory to external channels from an outbox with ordered, idempotent, at-least-once delivery",
+   "keywords": [
+    "outbox",
+    "cdc",
+    "channel",
+    "idempoten",
+    "at-least-once",
+    "at least once"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles the shared-pool vs per-channel allotment trade-off and reconciliation of drift",
+   "keywords": [
+    "allotment",
+    "pool",
+    "reconcil",
+    "drift",
+    "buffer"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Shards by hotel_id so the stay transaction stays on one shard; geo index for destination search",
+   "keywords": [
+    "shard",
+    "hotel_id",
+    "geo",
+    "geohash"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Makes bookings idempotent and tolerates channel outages with queues and retries",
+   "keywords": [
+    "idempoten",
+    "retry",
+    "queue",
+    "outage"
+   ],
+   "points": 1
+  }
+ ]
+}

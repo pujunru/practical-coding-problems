@@ -1,0 +1,147 @@
+{
+ "id": "restaurant-booking",
+ "title": "Design a Restaurant Booking System",
+ "prompt": "Design a service where diners find a restaurant with a table for their party size, date and time, and reserve it. Restaurants configure their tables and opening hours and see their bookings. Reservations can be cancelled, and some diners never show up.\n\nAssume **500,000 restaurants**, **2 million bookings a day**, and **100 million searches a day**, with bookings concentrated on Friday and Saturday evenings.",
+ "clarify": [
+  "Do we model individual tables, or only a seat capacity per time slot?",
+  "How long does a party occupy a table, and does it depend on party size?",
+  "Can a diner see live availability across many restaurants at once, or only inside one restaurant's page?",
+  "Do restaurants take a deposit or card guarantee, and what is the cancellation policy?",
+  "Do we support waitlists and walk-ins, or only advance reservations?",
+  "How far ahead can people book?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Search restaurants by area, date, time and party size; see bookable times\n- Reserve a table, modify or cancel; email/SMS confirmation and reminders\n- Restaurants define tables, opening hours, turn times and blocked slots, and view the floor\n- Handle no-shows (guarantee, grace period) and a waitlist for full times\n\n**Non-functional**\n- **No double-booking of a table**, even under concurrent requests\n- Search can be slightly stale; the booking step is authoritative\n- Fast: search p99 < 300 ms; booking < 1 s",
+  "estimation": "- Bookings: 2M/day ≈ **23/s** avg; with a 10× weekend-evening peak, ~230/s.\n- Searches: 100M/day ≈ **1,160/s** avg, ~6k/s at peak. Search outnumbers bookings 50:1.\n- Booking storage: 2M × 365 = 730M/year × ~200 B = **~146 GB/year**, small and shardable.\n- Availability summary for search: 500k restaurants × 60 days × 3 party-size buckets = 90M entries × ~32 B ≈ **~3 GB**, which fits in a cache.\n- Writes touch one restaurant at a time, so contention is per restaurant (tens of bookings per evening), not global.",
+  "api": "```\nGET  /v1/restaurants?lat=&lng=&date=&time=&party=2     → [{id, name, open_times[19:00,19:30,...]}]\nPOST /v1/restaurants/{id}/holds {date, time, party}     → 201 {hold_id, expires_at} | 409\nPOST /v1/reservations {hold_id, guest, idempotency_key} → 201 {reservation_id, status}\nDELETE /v1/reservations/{id}\nPUT  /v1/restaurants/{id}/tables | /hours | /blocks    (restaurant admin)\nPOST /v1/reservations/{id}/arrive | /no-show           (host stand)\n```\n- A hold is created when the diner picks a time; confirming converts it, so two diners cannot confirm the same last table.",
+  "data": "- **tables**: `table_id, restaurant_id, seats_min, seats_max, combinable_with[]`.\n- **reservations**: `reservation_id, restaurant_id, table_id (nullable), party, start_at, end_at, status (HELD|CONFIRMED|SEATED|COMPLETED|CANCELLED|NO_SHOW), hold_expires_at, guest, deposit_ref`. Sharded by `restaurant_id`.\n- **restaurant_config**: hours, turn times by party size (e.g. 2 → 75 min, 4 → 105 min), blocked ranges, slot step (15/30 min).\n- **availability_summary** (derived cache): `(restaurant_id, date, party_bucket) → bitmap of bookable start times`.",
+  "design": "```\nsearch: client ─▶ search svc ─▶ geo index ⊕ availability summary (cache)\nbook:   client ─▶ booking svc ─▶ restaurant shard (DB txn: check overlap, insert hold)\n                       │  └─▶ payment (deposit)  └─▶ notifier (confirm, reminders)\nchange events ─▶ summary updater ─▶ availability summary\n```\n- A reservation occupies a table for `[start, start + turn_time)`. A time is bookable if some table of suitable size has no overlapping non-expired reservation.\n- **Search** reads the summary only; the **booking** path recomputes against real data, so a stale summary costs a retry, never an overbooking.",
+  "deepdives": "- **Inventory per time slot without double-booking.** The unit of inventory is a table over an interval, not a slot count, because a 4-top booked at 19:00 for 105 min blocks 19:30 and 20:00 too. Because each restaurant lives on one shard, a transaction that reads its overlapping reservations and inserts a new row is enough: either lock the restaurant's row for that date or use a database exclusion constraint on `(table_id, time range)` so overlapping inserts fail. Fixing a table at booking time is simple but wastes capacity; deferring assignment to arrival and counting only covers per slot gives flexibility, but needs a feasibility check (can the day's parties still be packed on tables?). Hosts often prefer the deferred model plus combining tables.\n- **Holds.** Selecting a time takes a hold counted as occupying the table, with `hold_expires_at` ~5 min (the deposit step). Expiry is checked at read time (an expired hold is ignored by the overlap query) and a sweeper only cleans up. Confirming re-checks that the hold is unexpired and is idempotent per hold id.\n- **No-shows and cancellations.** Reduce them with reminders and a confirm-or-release request, a card guarantee or deposit with a late-cancel fee, and a grace period (e.g. 15 min) after which the host marks a no-show and the table is released to walk-ins or the waitlist. Overbooking is risky for restaurants (a stranded diner), so make it an opt-in setting based on the venue's observed no-show rate, with a small buffer on peak slots. A cancellation emits an event that notifies the next waitlisted party with a short claim window.",
+  "wrapup": "- Per-restaurant authoritative booking on a single shard, an eventually consistent availability summary for search, and expiring holds between choosing and confirming.\n- Trade-offs: fixed vs deferred table assignment; stale search vs write amplification; guarantee strictness vs conversion.\n- Next: dynamic turn times, demand-based slot pricing, group bookings and POS integration."
+ },
+ "rubric": [
+  {
+   "text": "Estimates searches vs bookings and notes the 50:1 read bias and weekend peak",
+   "keywords": [
+    "50:1",
+    "peak",
+    "search",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models inventory as tables over time intervals (start to start plus turn time), not a flat per-slot count",
+   "keywords": [
+    "interval",
+    "turn time",
+    "overlap",
+    "duration",
+    "table"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents double-booking with a per-restaurant transaction, row lock or exclusion constraint",
+   "keywords": [
+    "exclusion",
+    "constraint",
+    "lock",
+    "transaction",
+    "overlap"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Partitions by restaurant_id so a booking touches one shard",
+   "keywords": [
+    "shard",
+    "restaurant_id",
+    "partition"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a temporary hold with an expiry while the diner completes the booking, checked at read time",
+   "keywords": [
+    "hold",
+    "expir",
+    "ttl",
+    "lease"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Serves search from a derived availability summary that may be stale and re-validates at booking",
+   "keywords": [
+    "summary",
+    "stale",
+    "derived",
+    "re-validate",
+    "revalidate",
+    "eventual"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Compares assigning a table at booking time with deferring assignment to arrival, including table combinations",
+   "keywords": [
+    "defer",
+    "combin",
+    "assign",
+    "fixed table"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Makes bookings idempotent and handles retries and concurrent confirms of one hold",
+   "keywords": [
+    "idempoten",
+    "retry",
+    "duplicate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles no-shows with reminders, deposit or card guarantee, a grace period and releasing the table",
+   "keywords": [
+    "no-show",
+    "no show",
+    "deposit",
+    "grace",
+    "guarantee"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Discusses overbooking as an opt-in, data-driven policy with its risk",
+   "keywords": [
+    "overbook",
+    "buffer",
+    "opt-in"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Supports cancellations and a waitlist that notifies the next party with a time-limited claim",
+   "keywords": [
+    "waitlist",
+    "cancel",
+    "notify"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses events to update the availability cache and send confirmations and reminders asynchronously",
+   "keywords": [
+    "event",
+    "queue",
+    "notif",
+    "reminder",
+    "async"
+   ],
+   "points": 1
+  }
+ ]
+}

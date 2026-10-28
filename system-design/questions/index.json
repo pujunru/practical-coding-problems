@@ -274,6 +274,96 @@
      "companies": [
       "Uber"
      ]
+    },
+    {
+     "id": "google-maps",
+     "title": "Design Google Maps",
+     "difficulty": "Hard",
+     "companies": [
+      "Google"
+     ]
+    },
+    {
+     "id": "ride-matching",
+     "title": "Design Rider\u2013Driver Matching",
+     "difficulty": "Hard",
+     "companies": [
+      "NVIDIA",
+      "Google"
+     ]
+    },
+    {
+     "id": "food-delivery",
+     "title": "Design a Global Food Delivery System",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Scheduling, booking & allocation",
+   "questions": [
+    {
+     "id": "restaurant-booking",
+     "title": "Design a Restaurant Booking System",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "ticketing",
+     "title": "Design a Ticketing Platform",
+     "difficulty": "Hard",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "hotel-booking",
+     "title": "Design a Hotel Booking System",
+     "difficulty": "Hard",
+     "companies": [
+      "Meta",
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Enterprise & workflow",
+   "questions": [
+    {
+     "id": "gpu-job-manager",
+     "title": "Design a GPU Job Manager",
+     "difficulty": "Easy",
+     "companies": [
+      "NVIDIA",
+      "Google",
+      "Amazon",
+      "Microsoft",
+      "Netflix"
+     ]
+    },
+    {
+     "id": "webhook-system",
+     "title": "Design a Webhook System",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "interview-platform",
+     "title": "Design a Candidate Interview Platform",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
     }
    ]
   },

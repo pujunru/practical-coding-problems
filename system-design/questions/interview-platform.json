@@ -1,0 +1,161 @@
+{
+ "id": "interview-platform",
+ "title": "Design a Candidate Interview Platform",
+ "prompt": "Design a platform used by companies to run technical interviews. Recruiters schedule interviews between candidates and interviewers; at the scheduled time both join a shared session with video, a collaborative code editor and a way to run code; the session is recorded, and interviewers submit structured feedback afterwards.\n\nAssume **50,000 interviews a day**, up to **10,000 concurrent sessions**, and interviews of about an hour.",
+ "clarify": [
+  "Who schedules: a recruiter, the candidate choosing from offered slots, or both? Are panel interviews in scope?",
+  "Do we need calendar integration (Google, Outlook) and timezone handling?",
+  "Which languages must code execution support, and is network access allowed from candidate code?",
+  "Do we build video ourselves or use a managed WebRTC provider? (Assume a managed SFU.)",
+  "Are all sessions recorded, and for how long are recordings kept? Is candidate consent required?",
+  "Should feedback be visible to other interviewers before they submit their own?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Schedule, reschedule and cancel interviews against interviewer availability and calendars\n- Join a session: video/audio, shared editor, run code with output\n- Record the session (video and the editor timeline) and play it back\n- Collect structured feedback and a hiring recommendation from each interviewer\n\n**Non-functional**\n- **No interviewer or room double-booked**; session start must work at the scheduled minute\n- Live edits appear in < 200 ms; a dropped connection recovers without losing text\n- Untrusted candidate code is fully isolated; recordings are private and access-controlled",
+  "estimation": "- Sessions: 50k/day over a working day, 10k concurrent at peak, so 20k live connections (two people each).\n- Editor traffic: ~1 batched op/s per participant ≈ **20k ops/s**, a few hundred bytes each. A session is a tiny document (tens of KB).\n- Code runs: 10k sessions × 1 run / 2 min ≈ **83 runs/s**; at ~3 s each that is only ~250 concurrent sandboxes.\n- Recordings: a composite 720p stream at 1 Mbps is 1,000,000 × 3,600 / 8 = **450 MB/hour**. 50k × 450 MB ≈ **22.5 TB/day**, ~675 TB for 30 days. Storage and egress, not compute, is the cost driver.\n- Scheduling: 50k interviews/day is only ~0.6/s; its difficulty is correctness, not volume.",
+  "api": "```\nGET  /v1/availability?role=&from=&to=&tz=        → open slots (interviewers x time)\nPOST /v1/interviews {candidate, loop, slot_id, idempotency_key} → 201 {interview_id}\nPOST /v1/interviews/{id}/reschedule | /cancel\nPOST /v1/sessions/{id}/join                       → {token, ws_url, rtc_token}\nWS   /v1/sessions/{id}/edit                       (ops in, ops out, cursor, presence)\nPOST /v1/sessions/{id}/run {language, code}       → 202 {run_id}; result over WS\nPUT  /v1/interviews/{id}/feedback {scores, decision, notes}\n```\n- Join tokens are short-lived, signed, bound to one session and role (candidate, interviewer, observer).",
+  "data": "- **interviewer_slots / bookings**: `(interviewer_id, start_at, end_at, interview_id)` in UTC, with a database constraint that prevents overlap per interviewer; timezone stored as an IANA name for display.\n- **interviews**: `interview_id, candidate_id, loop_id, status, start_at, session_id`.\n- **sessions**: `session_id, state, started_at, ended_at, doc_snapshot_uri, recording_uri`.\n- **doc ops log + snapshots**: ordered ops per session, snapshotted every N ops, for recovery and playback.\n- **feedback**: `interview_id, interviewer_id, scores JSON, decision, submitted_at`, one row per interviewer, immutable once submitted.",
+  "design": "```\nscheduling: recruiter ─▶ scheduler svc ◀─▶ calendar sync (Google/Outlook)\n                              └─▶ notifier (invites, reminders)\nlive: clients ─▶ session gateway (WS) ─▶ doc server (one owner per session)\n      clients ◀─▶ SFU (WebRTC) ─▶ recorder ─▶ segments ─▶ object store ─▶ transcoder\n      run ─▶ execution queue ─▶ sandbox pool (no network, CPU/mem/time limits)\nafter: feedback svc ─▶ ATS / hiring dashboard\n```\n- A session is pinned to one doc server by consistent hashing on `session_id`, which gives a single ordering point for edits.\n- The recorder joins the SFU as a hidden participant and writes short media segments to object storage.",
+  "deepdives": "- **Scheduling without double-booking.** Availability is a set of free intervals per interviewer, minus calendar busy times pulled from the calendar sync. Booking inserts a row guarded by a no-overlap constraint (or a transaction that locks the interviewer's day), so two recruiters picking the same slot cannot both succeed; the loser gets a 409 and fresh slots. For a panel, book all interviewers in one transaction. When candidates self-select, offered slots are held for 24 hours with an expiry. Store times in UTC with the IANA zone, so a daylight-saving change does not move the interview. Calendar writes are asynchronous and idempotent; re-read the calendar before confirming, since people edit it elsewhere.\n- **Live collaborative session.** A single doc server sequences operations, so simple operational transformation or a sequence-based CRDT such as Yjs both work for two or three editors. Central sequencing is simpler to reason about; a CRDT lets clients merge after a long offline gap but carries more metadata. Clients send ops with the last revision they saw; after a reconnect the server replays missing ops, and snapshots plus the op log let a replacement server resume if the owner dies. Running code: submit to a queue, execute in a micro-VM or gVisor sandbox with no network, a read-only image, and CPU, memory, process and wall-clock limits, then stream output back. A warm pool hides cold starts.\n- **Recordings and feedback integrity.** Record on the server side from the SFU, since client-side recording fails if the browser crashes; segments upload as they are produced, so a crash loses seconds, not the interview. Store the editor op log alongside it so playback can sync code with video. Require consent, encrypt at rest, serve through short-lived signed URLs, and transcode to a lower bitrate for cold storage once the recording is a few days old. Feedback is blind: hide others' submissions until the viewer submits, then lock the form on submit, so one interviewer does not anchor the next.",
+  "wrapup": "- Constraint-backed scheduling, a single-owner collaborative document per session, an isolated execution pool, SFU-side recording and blind feedback.\n- Trade-offs: OT/central ordering vs CRDT; build vs buy video; recording quality vs storage cost.\n- Next: AI notes and transcripts, plagiarism detection, question banks and interviewer calibration."
+ },
+ "rubric": [
+  {
+   "text": "Sizes concurrent sessions, editor operations per second and sandbox concurrency, and notes that recording storage dominates cost",
+   "keywords": [
+    "concurrent",
+    "ops/s",
+    "22.5",
+    "450 mb",
+    "storage",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Scheduling prevents interviewer double-booking (database constraint, transaction or lock) and handles panels atomically",
+   "keywords": [
+    "double-book",
+    "double book",
+    "overlap",
+    "constraint",
+    "transaction",
+    "lock",
+    "panel"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Integrates calendars (free/busy, event write) asynchronously and idempotently, re-checking before confirming",
+   "keywords": [
+    "calendar",
+    "free/busy",
+    "google",
+    "outlook",
+    "idempoten"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Stores times in UTC with an IANA timezone and explains reminders and rescheduling",
+   "keywords": [
+    "utc",
+    "timezone",
+    "iana",
+    "daylight",
+    "reminder",
+    "reschedul"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Holds offered slots for a candidate with an expiry",
+   "keywords": [
+    "hold",
+    "expir",
+    "offered"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a collaborative editing algorithm (OT or CRDT), with a single sequencer per session",
+   "keywords": [
+    "crdt",
+    "operational transform",
+    "yjs",
+    "sequenc"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Recovers from disconnects with revision numbers, op replay and snapshots; pins a session to one server by consistent hashing",
+   "keywords": [
+    "reconnect",
+    "replay",
+    "snapshot",
+    "revision",
+    "consistent hash"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Runs untrusted code in an isolated sandbox with resource limits, no network, and a warm pool",
+   "keywords": [
+    "sandbox",
+    "gvisor",
+    "firecracker",
+    "micro-vm",
+    "limits",
+    "no network",
+    "warm pool"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses WebRTC with an SFU (build vs buy) and records server-side in segments uploaded as produced",
+   "keywords": [
+    "webrtc",
+    "sfu",
+    "segment",
+    "server-side",
+    "recorder"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Stores recordings with consent, encryption, signed URLs, retention and tiering to cold storage",
+   "keywords": [
+    "consent",
+    "encrypt",
+    "signed url",
+    "retention",
+    "cold",
+    "transcod"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keeps feedback blind until submission, one immutable submission per interviewer, with reminders",
+   "keywords": [
+    "blind",
+    "immutable",
+    "lock",
+    "anchor",
+    "feedback"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Secures join with short-lived signed tokens scoped to role and session",
+   "keywords": [
+    "token",
+    "role",
+    "signed",
+    "authoriz",
+    "access control"
+   ],
+   "points": 1
+  }
+ ]
+}

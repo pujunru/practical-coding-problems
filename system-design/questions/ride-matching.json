@@ -1,0 +1,152 @@
+{
+ "id": "ride-matching",
+ "title": "Design Rider–Driver Matching",
+ "prompt": "Design the dispatch core of a ride-hailing service. A rider requests a trip from a pickup point; the system finds a nearby available driver, offers the trip, and tracks it until it is completed or cancelled. Focus on how drivers are indexed by location and how a request is matched to exactly one driver.\n\nAssume **5 million trips a day**, up to **1 million drivers online** at peak, and a location update from each online driver every **4 seconds**.",
+ "clarify": [
+  "Is matching to the single nearest driver enough, or should we optimise across many pending requests at once?",
+  "Is the goal minimum pickup time, or also fairness among drivers and driver utilisation?",
+  "How long does a driver have to accept an offer, and what happens on timeout or decline?",
+  "Do we handle ride pooling, scheduled rides and multiple vehicle products in this scope?",
+  "Are pricing, payments and navigation out of scope? (Assume yes; pricing is an input.)",
+  "What accuracy and freshness do we need for driver positions?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Driver goes online/offline and streams location\n- Rider requests a ride; the system offers it to nearby drivers and assigns exactly one\n- Both sides see live state and position until the trip ends; either side can cancel\n\n**Non-functional**\n- Match latency: a driver offer within a few seconds of the request\n- **Never assign one driver to two trips**, and never lose a trip's state on a crash\n- Location data is ephemeral: losing a few seconds of it is acceptable; availability beats precision",
+  "estimation": "- Trips: 5M/day ≈ **58/s** avg, ~300/s at a 5× peak.\n- Location updates: 1M drivers / 4 s = **250k/s**. At ~50 B each that is **12.5 MB/s**, mostly write traffic.\n- Index size: 1M drivers × ~100 B ≈ **100 MB**. It fits on one machine, so we shard for write throughput and failure isolation, not for capacity.\n- Offers: ~3 offers per trip ≈ 15M/day ≈ 175/s.\n- Trip records: 5M × ~1 KB = **5 GB/day** in the durable store. The raw GPS trail is a log with a short retention.",
+  "api": "```\nPOST /v1/rides {pickup, dropoff, product, idempotency_key}  → 201 {ride_id, state}\nGET  /v1/rides/{id}                                          → ride state, driver, ETA\nPOST /v1/rides/{id}/cancel\nPUT  /v1/drivers/me/status {ONLINE|OFFLINE}\nPOST /v1/drivers/me/locations [{lat, lng, heading, ts}]      → 204\nPOST /v1/offers/{id}/accept | /decline                        (driver)\nWS   /v1/stream                                                (offers, state, driver position)\n```\n- The ride request carries an idempotency key, so a rider's retry does not create a second ride.\n- Offers are pushed over a persistent connection; the driver app also polls as a fallback.",
+  "data": "- **Driver index** (in memory, sharded by city/cell): `driver_id → (cell, lat, lng, status, updated_at)` plus `cell → set(driver_id)`. Status is `AVAILABLE | OFFERED | ON_TRIP`.\n- **rides** (SQL, sharded by `ride_id`; city kept as a column): `ride_id, rider_id, driver_id, state, version, pickup, dropoff, requested_at, ...`.\n- **offers**: `offer_id, ride_id, driver_id, expires_at, outcome`.\n- **GPS trail**: append-only log (Kafka to object storage) for trip replay and fraud, not on the dispatch path.",
+  "design": "```\ndriver app ─▶ location gateway ─▶ geo index (cells, per-city shards)\nrider app  ─▶ ride service ─▶ dispatcher ─▶ index query ─▶ rank by ETA (routing svc)\n                  │               └─▶ offer ─▶ push ─▶ driver ─▶ accept ─▶ atomic claim\n                  └─▶ rides DB (state machine)\n```\n- **Write path:** the gateway updates the driver's cell in the index; an entry that is not refreshed for ~15 s expires and the driver stops being matchable.\n- **Match:** the dispatcher queries the pickup cell and its neighbours, drops non-available drivers, ranks about 10 candidates by road ETA, and offers to the best.",
+  "deepdives": "- **Geo index.** Use fixed cells (S2, H3 or geohash) at a resolution of roughly 1 km: finding candidates is a hash lookup of the pickup cell plus the ring of neighbours, expanded outward if too few are found. A quadtree adapts to density but needs rebalancing under constant movement, which is expensive at 250k updates/s. Move a driver between cells only when the cell changes. Shard by city or cell prefix; a query near a shard boundary asks both shards. In a dense downtown cell, rank only a bounded candidate list rather than scanning every driver.\n- **Matching strategy.** Greedy nearest-driver is simple and fast, but it can burn a good driver on a request that another driver could serve almost as well. Batched matching collects requests for 2–5 s and solves an assignment problem minimising total pickup ETA (Hungarian or min-cost flow per area). Trade-off: a small added wait for better global utilisation, valuable in dense areas. Offers go to one driver at a time with a 10–15 s timeout, since broadcasting makes many drivers race for one trip; the next candidate is tried on decline or timeout.\n- **State machine and double assignment.** Ride: `REQUESTED → OFFERED → ASSIGNED → ARRIVED → IN_PROGRESS → COMPLETED`, with `CANCELLED` reachable from the early states. Every transition is a conditional update on `version`. Assignment is a two-sided claim: flip the driver `OFFERED → ON_TRIP` and the ride `OFFERED → ASSIGNED` in one transaction, or compare-and-set the driver in the index and then the ride row, undoing the first on failure. Accept racing a rider cancel is resolved by whichever transition wins the ride row. Offers and the \"driver silent\" check use timers, via a delay queue, not in-process sleeps.",
+  "wrapup": "- A cell-based in-memory index absorbs location writes, a dispatcher turns requests into one-at-a-time offers, and a versioned state machine guarantees one driver per trip.\n- Trade-offs: greedy speed vs batched optimality; index precision vs write volume.\n- Next: pooling, surge pricing, ETA models, driver-side fairness and multi-region failover."
+ },
+ "rubric": [
+  {
+   "text": "Sizes location write rate (about 250k/s) and notes the index is small, so sharding is for throughput",
+   "keywords": [
+    "250k",
+    "location update",
+    "write",
+    "throughput"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Indexes drivers by geographic cell (geohash, S2, H3 or quadtree) rather than scanning all drivers",
+   "keywords": [
+    "geohash",
+    "s2",
+    "h3",
+    "quadtree",
+    "cell"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Queries the pickup cell plus neighbouring cells and expands the ring when too few candidates are found",
+   "keywords": [
+    "neighbo",
+    "ring",
+    "expand",
+    "adjacent"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keeps driver positions in memory and expires stale entries (heartbeat or TTL)",
+   "keywords": [
+    "in-memory",
+    "in memory",
+    "ttl",
+    "stale",
+    "expire"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Ranks candidates by road ETA instead of straight-line distance",
+   "keywords": [
+    "eta",
+    "road",
+    "routing",
+    "ranking"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Offers the trip to one driver at a time with a timeout, with fallback to the next candidate",
+   "keywords": [
+    "timeout",
+    "decline",
+    "sequential",
+    "one at a time",
+    "next candidate"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Compares greedy nearest-driver matching with batched assignment optimisation",
+   "keywords": [
+    "batch",
+    "hungarian",
+    "assignment",
+    "greedy",
+    "global"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents one driver being assigned two rides with an atomic claim (compare-and-set, transaction or lock)",
+   "keywords": [
+    "atomic",
+    "compare-and-set",
+    "cas",
+    "transaction",
+    "lock",
+    "double"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Defines a ride state machine with versioned conditional transitions and cancel races",
+   "keywords": [
+    "state machine",
+    "version",
+    "conditional",
+    "transition",
+    "cancel"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles idempotent ride requests and retried driver accept/decline calls",
+   "keywords": [
+    "idempoten",
+    "retry",
+    "duplicate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Pushes offers and positions over WebSocket or push notifications; the GPS trail goes to a log off the hot path",
+   "keywords": [
+    "websocket",
+    "push",
+    "kafka",
+    "log"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Shards by city/region and plans for a shard or dispatcher failure by rebuilding the index from live updates",
+   "keywords": [
+    "shard",
+    "city",
+    "failover",
+    "rebuild",
+    "region"
+   ],
+   "points": 1
+  }
+ ]
+}

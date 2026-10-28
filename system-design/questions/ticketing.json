@@ -1,0 +1,145 @@
+{
+ "id": "ticketing",
+ "title": "Design a Ticketing Platform",
+ "prompt": "Design a platform that sells tickets to live events. When a popular concert goes on sale, millions of people arrive within seconds for a venue with a fixed number of seats. Buyers choose seats on a map, have a short window to pay, and no seat may be sold twice.\n\nAssume a **60,000-seat** event, about **10 million fans** arriving in the first minutes, and orders averaging **two tickets**.",
+ "clarify": [
+  "Is seating reserved (specific seats) or general admission by section?",
+  "How long may a buyer hold seats while paying?",
+  "Is fairness a goal (first come vs random), and how do we deal with bots and scalpers?",
+  "Is a per-account ticket limit required?",
+  "May we run a waiting room that makes fans queue before they see the seat map?",
+  "Do we handle resale and ticket transfer in this scope?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Browse events and a seat map with live availability\n- Select seats, hold them for a few minutes, pay, receive a ticket with a barcode\n- Release seats automatically when the hold expires or payment fails\n\n**Non-functional**\n- **Never sell a seat twice** (strong consistency per seat)\n- Survive a 10M-visitor spike for one event without taking down other events\n- Fairness: admission must not reward bots or lucky network paths\n- Availability display may lag by a few seconds; the hold call is authoritative",
+  "estimation": "- Spike: 10M fans for 60k seats, about 1 seat per 170 fans. Left unthrottled, 10M clients polling every 5 s is **2M req/s**, which no stack should absorb at origin.\n- Orders: 60k seats / 2 per order = **30k orders**. To sell out in ~15 min (900 s) needs ~**33 orders/s**.\n- Concurrency: a checkout session lasts ~4 min (240 s), so ~33 × 240 = **8,000 shoppers** inside the sale at once. Admit about 10k, not 10M.\n- Seat map polling by 10k shoppers every 3 s ≈ 3.3k req/s, served from a cached snapshot.\n- Data is small: 60k seats × ~200 B ≈ **12 MB** per event. The problem is contention on a few thousand hot rows, not volume.",
+  "api": "```\nPOST /v1/events/{id}/queue            → {queue_token, position_estimate}\nGET  /v1/events/{id}/seats?section=   → {version, seats[{id, status, price}]}     (cached)\nPOST /v1/events/{id}/holds {seat_ids[], queue_token, idempotency_key}\n                                      → 201 {hold_id, expires_at} | 409 {unavailable[]}\nPOST /v1/orders {hold_id, payment_token, idempotency_key} → 201 {order_id, tickets[]}\nDELETE /v1/holds/{id}\n```\n- A hold needs a valid, unexpired queue token, so the seat service is protected from clients that skipped the waiting room.\n- Holds are all-or-nothing: either every requested seat is held or none is.",
+  "data": "- **seats**: `(event_id, seat_id) PK, section, price_tier, status (AVAILABLE|HELD|SOLD), hold_id, hold_expires_at, version`. Partitioned by `event_id`.\n- **holds**: `hold_id, user_id, event_id, seat_ids, state (ACTIVE|PAYING|CONFIRMED|EXPIRED), expires_at`.\n- **orders / tickets**: order, payment reference, and a ticket with a signed, rotating barcode payload.\n- **queue state**: a sorted set keyed by event, with the admission cursor, in Redis. Rebuildable; not the source of truth for seats.",
+  "design": "```\nfans ─▶ CDN / edge (static page, bot checks)\n     ─▶ waiting room (queue tokens, admission rate)\n     ─▶ seat service (per-event partition) ─▶ seats DB\n                │       └─▶ expiry sweeper\n                └─▶ payment ─▶ order service ─▶ ticket issuer\nseat map snapshots ─▶ cache ─▶ SSE/WebSocket to shoppers\n```\n- Only admitted fans reach the seat service. Everyone else polls a cheap queue-status endpoint served from the edge.\n- Seat availability for the map is a periodic snapshot with a version number, not a database query per view.",
+  "deepdives": "- **Contention on the hold.** A conditional write is exact: `UPDATE seats SET status='HELD', hold_id=?, hold_expires_at=? WHERE event_id=? AND seat_id IN (...) AND (status='AVAILABLE' OR (status='HELD' AND hold_expires_at < now()))`. If the number of rows updated is not the number requested, roll back. Seats are always sorted before locking, which avoids deadlocks. Popular seats form a thundering herd on a few rows, so offer **best available in a section** (the server picks seats, spreading load and improving pack-in) and let seat-by-seat choice be a slower path. For the biggest sales, route each event to one partition or a single in-memory owner with a write-ahead log, which serialises writes cheaply.\n- **Virtual waiting room and fairness.** Admit at the rate the checkout can finish (about 50 per second here), not the rate people arrive. A strict first-come order rewards bots and the fastest connections, so give everyone arriving in the pre-sale window a random position, and use signed queue tokens (expiring, bound to account and device) plus per-account limits, CAPTCHA at entry, and rate limits on tokens per IP. Trade-off: a lottery feels fairer but lowers the chance of the earliest arrivals; strict FIFO is easier to explain.\n- **Hold expiry vs payment.** A hold is typically 8 minutes. Expire lazily by treating `hold_expires_at < now` as available in the hold query, and run a sweeper only to clean up and publish releases. A payment may be in flight when the timer fires: move the hold to `PAYING` when payment starts (which extends it a bounded time), make the charge idempotent, and only the transition `PAYING → CONFIRMED` marks seats `SOLD`. Authorise first and capture on success; if the payment fails, release. Never oversell here, unlike hotels.",
+  "wrapup": "- The waiting room converts a 10M spike into a steady admission stream; the seat service makes conditional per-seat writes under a time-limited hold; payment is idempotent.\n- Trade-offs: fairness model vs conversion; seat choice vs contention; hold length vs stranded inventory.\n- Next: resale, dynamic pricing, mobile ticket anti-fraud, multi-event load isolation."
+ },
+ "rubric": [
+  {
+   "text": "Sizes the spike and shows why origin cannot take the raw load (millions polling vs thousands buying)",
+   "keywords": [
+    "2m",
+    "spike",
+    "polling",
+    "req/s",
+    "10m"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Derives how many shoppers to admit from checkout duration and target sell-out time (Little's law style)",
+   "keywords": [
+    "admit",
+    "concurrency",
+    "8,000",
+    "checkout",
+    "rate"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Designs a virtual waiting room with signed queue tokens and a controlled admission rate",
+   "keywords": [
+    "waiting room",
+    "queue token",
+    "admission",
+    "signed"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Addresses fairness: randomised vs first-come ordering, bots, per-account limits, CAPTCHA",
+   "keywords": [
+    "fair",
+    "random",
+    "bot",
+    "captcha",
+    "limit",
+    "lottery"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Holds seats with an expiry, all-or-nothing for the requested set",
+   "keywords": [
+    "hold",
+    "expir",
+    "all-or-nothing",
+    "ttl"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents double-selling with a conditional update or compare-and-set on the seat row, with sorted lock order",
+   "keywords": [
+    "conditional",
+    "compare-and-set",
+    "cas",
+    "version",
+    "for update",
+    "deadlock"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Reduces hot-row contention (best-available allocation, per-event partition or single owner)",
+   "keywords": [
+    "best available",
+    "hot",
+    "partition",
+    "single writer",
+    "single owner",
+    "contention"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles expiry lazily at read time plus a sweeper, and the race with payment in flight (PAYING state)",
+   "keywords": [
+    "lazy",
+    "sweeper",
+    "paying",
+    "in flight",
+    "in-flight"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Makes payment and order creation idempotent; authorise first and capture on success",
+   "keywords": [
+    "idempoten",
+    "authoris",
+    "authoriz",
+    "capture"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Serves seat map from cached versioned snapshots pushed over SSE/WebSocket rather than querying per view",
+   "keywords": [
+    "snapshot",
+    "cache",
+    "sse",
+    "websocket",
+    "version"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Isolates one hot event from the rest of the platform (separate partition, autoscaling, load shedding)",
+   "keywords": [
+    "isolat",
+    "shed",
+    "autoscal",
+    "separate"
+   ],
+   "points": 1
+  }
+ ]
+}

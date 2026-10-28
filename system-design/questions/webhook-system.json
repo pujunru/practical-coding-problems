@@ -1,0 +1,161 @@
+{
+ "id": "webhook-system",
+ "title": "Design a Webhook System",
+ "prompt": "Design a service that lets customers register HTTPS endpoints and receive an HTTP POST whenever an event they subscribed to happens in the platform (for example `payment.succeeded`). Customers' servers are slow, flaky or down at times, and the platform must keep delivering to everyone else regardless.\n\nAssume **1 billion events a day**, each delivered to 1.5 subscribed endpoints on average, and payloads of about 2 KB.",
+ "clarify": [
+  "What delivery guarantee is expected: at-least-once, with customers de-duplicating by event id?",
+  "Is ordering required, globally, per object, or not at all?",
+  "How long do we keep retrying, and may customers replay past events?",
+  "Do we verify endpoint ownership at registration, and what authentication do we use on delivery?",
+  "How quickly should an event be delivered under normal conditions (seconds)?",
+  "Must customers see a log of attempts and failures, and can they manually retry?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Register, update, disable and delete endpoints with a set of subscribed event types\n- On an event, POST the payload to every matching endpoint; retry failures with backoff for days\n- Sign every request; show delivery attempts; allow manual replay\n\n**Non-functional**\n- At-least-once delivery, with a stable event id so consumers can de-duplicate\n- One misbehaving endpoint must not slow or starve others\n- Typical latency of seconds; the outbound path is protected against SSRF",
+  "estimation": "- Events: 1B/day = **11.6k/s** avg, ~35k/s at 3× peak.\n- First attempts: 1B × 1.5 = 1.5B/day ≈ **17.4k/s**. If 5% of deliveries fail and need 3 extra attempts: +225M/day, so total ≈ 1.73B/day ≈ **20k attempts/s**.\n- Concurrency (Little's law): 20k/s × 0.3 s average latency = 6,000 in flight, plus 1% timeouts at 10 s: 200/s × 10 s = 2,000. Roughly **8,000 open connections**: async I/O, not thread-per-request.\n- Payloads stored once per event: 1B × 2 KB = **2 TB/day**; at a 7-day retention for replay that is ~14 TB in object storage.\n- Attempt log: 1.73B × ~200 B ≈ 350 GB/day, queryable for a short period.",
+  "api": "```\nPOST /v1/endpoints {url, event_types[], description}  → 201 {id, signing_secret}   (secret shown once)\nPATCH /v1/endpoints/{id} {url?, event_types?, enabled?}\nPOST /v1/endpoints/{id}/rotate-secret\nGET  /v1/deliveries?endpoint=&status=&cursor=         → attempts with response code and latency\nPOST /v1/deliveries/{id}/retry                         (manual replay)\nPOST /internal/events {event_id, tenant_id, type, payload}   (producers inside the platform)\n```\n- Delivery request: `POST <url>` with headers `Webhook-Id: evt_…`, `Webhook-Timestamp`, `Webhook-Signature: v1=…`. Success is any 2xx within 10 s.",
+  "data": "- **endpoints**: `endpoint_id, tenant_id, url, event_types, secret (encrypted), state (ACTIVE|PAUSED|DISABLED), consecutive_failures`; indexed by `(tenant_id, event_type)` and cached.\n- **events**: payload in object storage keyed by `event_id`; metadata row `event_id, tenant_id, type, created_at`.\n- **deliveries**: `delivery_id, event_id, endpoint_id, attempt, status, next_attempt_at, last_code, last_error`; partitioned by `endpoint_id`.\n- **attempt log**: append-only, `delivery_id, attempt, started_at, latency_ms, status_code`.",
+  "design": "```\nproducer ─▶ events log (durable) ─▶ fanout (match endpoints) ─▶ per-endpoint queues\n                                                          │\n                  delivery workers (async HTTP, egress proxy) ◀──┘\n                        │ success                 │ failure\n                        ▼                         ▼\n                  attempt log          retry scheduler (next_attempt_at) ─▶ back to queue\n                                         after N attempts ─▶ DLQ + endpoint paused\n```\n- The event is written to a durable log before anything else, so a crash after acknowledgement does not lose it.\n- **Fanout** looks up matching endpoints from a cache and creates one delivery per endpoint. Workers mark a delivery done only after the attempt is recorded.",
+  "deepdives": "- **Retries without a thundering herd.** Retryable outcomes are timeouts, connection errors, 5xx and 429 (honour `Retry-After`); most 4xx are permanent and fail at once. Backoff is exponential with jitter, for example 10 s, 1 min, 5 min, 30 min, 2 h, 6 h, 24 h. Scheduled retries do not sit in the main queue, since Kafka has no delay; keep them in a store ordered by `next_attempt_at` (a sharded table claimed with `SKIP LOCKED`, a Redis sorted set, or tiered retry topics) and move them back when due. After the last attempt the delivery goes to a dead-letter state and stays replayable by hand.\n- **Isolation per endpoint.** A slow endpoint ties up connections for the full timeout, so pull work through per-endpoint queues with fair scheduling across endpoints and a concurrency cap and rate limit on each (say 20 in flight). A circuit breaker opens after N consecutive failures: pause deliveries, keep events in the endpoint's backlog, probe with a single request periodically, notify the owner, and disable after several days. Without this, one dead customer with millions of pending events degrades everyone. Retries consume the same per-endpoint budget so a failing endpoint cannot amplify load.\n- **Ordering, signing and SSRF.** Global ordering is impractical; guarantee only at-least-once and include `event_id` plus a created-at or version number so consumers can discard stale or duplicate events. Per-object ordering is possible by keying on `(endpoint, object)` with one in flight, at the cost of head-of-line blocking. Sign `timestamp + \".\" + body` with HMAC-SHA256 using a per-endpoint secret, reject timestamps older than 5 minutes, and support two active secrets during rotation. Because the platform calls customer-supplied URLs, send traffic through an egress proxy that only allows HTTPS, resolves DNS itself, rejects private, loopback and metadata (169.254.169.254) addresses, pins the validated IP for the connection, and does not follow redirects blindly.",
+  "wrapup": "- A durable event log, fanout into per-endpoint queues, async workers with exponential-backoff retries and a circuit breaker, signed requests through a hardened egress proxy.\n- Trade-offs: ordering vs throughput; retry persistence vs storage; strict isolation vs fleet efficiency.\n- Next: event schema versioning, batching, regional delivery, a customer-facing event explorer."
+ },
+ "rubric": [
+  {
+   "text": "Estimates event, delivery and retry rates and derives outbound concurrency (Little's law)",
+   "keywords": [
+    "/s",
+    "concurren",
+    "in flight",
+    "little"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Persists the event durably before acknowledging the producer, then fans out to matching endpoints",
+   "keywords": [
+    "durable",
+    "event log",
+    "fanout",
+    "fan-out",
+    "kafka"
+   ],
+   "points": 1
+  },
+  {
+   "text": "States at-least-once delivery and gives consumers a stable event id for de-duplication",
+   "keywords": [
+    "at-least-once",
+    "at least once",
+    "event id",
+    "event_id",
+    "de-dup",
+    "dedup",
+    "idempoten"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Retries with exponential backoff and jitter, distinguishing retryable (5xx, timeout, 429) from permanent (4xx) failures",
+   "keywords": [
+    "backoff",
+    "jitter",
+    "5xx",
+    "4xx",
+    "429",
+    "retry-after"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Implements delayed retries without blocking the main queue (scheduler store, delay queue or tiered retry topics)",
+   "keywords": [
+    "next_attempt",
+    "delay queue",
+    "retry topic",
+    "sorted set",
+    "skip locked",
+    "scheduler"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Isolates endpoints with per-endpoint queues, concurrency caps and fair scheduling so a slow customer cannot starve others",
+   "keywords": [
+    "per-endpoint",
+    "per endpoint",
+    "isolat",
+    "fair",
+    "concurrency cap",
+    "head-of-line"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses a circuit breaker or automatic pause for failing endpoints, with notification and probing",
+   "keywords": [
+    "circuit",
+    "pause",
+    "disable",
+    "probe",
+    "notify"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Signs requests with HMAC including a timestamp, with replay window and secret rotation",
+   "keywords": [
+    "hmac",
+    "signature",
+    "timestamp",
+    "rotat",
+    "replay"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents SSRF (egress proxy, private IP block, DNS pinning, redirects, https only)",
+   "keywords": [
+    "ssrf",
+    "private",
+    "dns",
+    "egress",
+    "metadata",
+    "redirect"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Discusses ordering honestly: no global order, include version or timestamp, optional per-object ordering",
+   "keywords": [
+    "ordering",
+    "order",
+    "version",
+    "sequence"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Provides observability and replay: attempt log, delivery status API, manual retry, dead-letter handling",
+   "keywords": [
+    "dlq",
+    "dead-letter",
+    "dead letter",
+    "attempt log",
+    "replay",
+    "observab"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Verifies endpoint ownership on registration and stores secrets encrypted",
+   "keywords": [
+    "verify",
+    "ownership",
+    "challenge",
+    "encrypt"
+   ],
+   "points": 1
+  }
+ ]
+}

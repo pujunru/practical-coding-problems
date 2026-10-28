@@ -1,0 +1,151 @@
+{
+ "id": "food-delivery",
+ "title": "Design a Global Food Delivery System",
+ "prompt": "Design a food delivery marketplace with three kinds of users. Customers browse nearby restaurants and place orders, restaurants accept and prepare them, and couriers pick up and deliver. The system must show an honest delivery ETA, coordinate the three parties through the order's lifecycle, and run in many countries.\n\nAssume **20 million orders a day** worldwide, **2 million restaurants**, and about **1 million couriers** active at peak, with most orders placed around lunch and dinner.",
+ "clarify": [
+  "Do we own the courier fleet, or do independent couriers accept work? (Assume independent couriers who accept offers.)",
+  "Do restaurants receive orders through a tablet, a POS integration, or both?",
+  "Is a courier ever assigned several orders at once (batching)?",
+  "How accurate must the ETA be, and is it quoted before checkout?",
+  "What is the payment model: authorise at checkout and charge at delivery?",
+  "Do we need data residency per country, or can regions share data?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Discover open restaurants near an address; view menus and prices\n- Place an order and pay; restaurant accepts or rejects; track it live\n- Dispatch a courier and show pickup and delivery progress\n- Cancel, refund, and handle a rejected or missing item\n\n**Non-functional**\n- Browse is read-heavy and fast (p99 < 300 ms); order placement must be durable and idempotent\n- An order is never lost or double-charged, and a failure in one party (restaurant offline, no courier) ends in a defined state\n- Regions fail independently",
+  "estimation": "- Orders: 20M/day ≈ **230/s** avg. If 60% land in a 4-hour window: 12M / 14,400 s ≈ **830/s** peak.\n- Browse and menu views: ~30 per order → 600M/day ≈ **7k/s** avg, ~25k/s at peak, served from cache.\n- Courier locations: 1M × 1 update / 5 s = **200k/s** across all regions.\n- Orders storage: 20M × ~2 KB = **40 GB/day**; events add a similar amount. Menus: 2M × 50 KB = **100 GB**, tiny and cacheable.\n- The binding constraint is not throughput but coordination: three parties, each able to fail, must agree on one order state.",
+  "api": "```\nGET  /v1/restaurants?lat=&lng=&cuisine=&cursor=      → [{id, name, eta_min, fee, open}]\nGET  /v1/restaurants/{id}/menu\nPOST /v1/orders {restaurant_id, items[], address, payment_token, idempotency_key} → 201 {order_id}\nGET  /v1/orders/{id}                                  → state, courier, eta\nPOST /v1/orders/{id}/accept {prep_min} | /reject | /ready      (restaurant)\nPOST /v1/offers/{id}/accept                                      (courier)\nPOST /v1/couriers/me/locations [...]\n```\n- The order stores a **snapshot** of item names and prices at placement, so later menu edits do not change it.",
+  "data": "- **orders**: `order_id, customer_id, restaurant_id, courier_id, state, version, items_snapshot, totals, payment_auth_id, region, timestamps`, sharded by region then `order_id`.\n- **order_events**: append-only log of every transition, which drives tracking, support and analytics.\n- **restaurants / menus**: a read-optimised store plus a geo-aware search index; open/closed/busy status is separate and changes often.\n- **couriers**: live position in an in-memory geo index per region; durable profile and earnings elsewhere.\n- **Payments**: a separate service; the order only keeps an authorisation id.",
+  "design": "```\ncustomer ─▶ discovery (geo search + cache) ─▶ order service ─▶ payments (authorise)\n                                                │\n                         restaurant gateway ◀───┤ events (outbox)\n                         dispatch ─▶ courier geo index ─▶ offer ─▶ courier\n                         ETA service ◀─ prep-time model + routing\n```\n- The **order service** owns the state machine and is the only writer of order state. Other services react to its events (via an outbox, so no event is lost).\n- **Discovery** filters by delivery area and open status, and caches results per geo cell.\n- **Dispatch** and the **ETA** service are separate: ETA is quoted at browse time and refined after acceptance.",
+  "deepdives": "- **Order lifecycle.** `PLACED → PAID (authorised) → ACCEPTED → PREPARING → READY → PICKED_UP → DELIVERED`, with `REJECTED`, `CANCELLED` and `FAILED` as exits. It is a saga: authorise the card first, then ask the restaurant; if it rejects or times out (say 3 min), void the authorisation. Capture the final amount at delivery, since an item may be removed. Every transition is a conditional update on `version`; every external call has an idempotency key and a timeout, and a sweeper moves stuck orders to a defined exit.\n- **Courier assignment.** Dispatching at acceptance leaves the courier idling at the counter, because prep takes 15–25 min. Dispatch when `now + courier_travel ≈ predicted ready time`. Choose couriers by minimising extra wait plus travel, in short batches rather than first come. Offers go to one courier at a time with a timeout; if none accepts, widen the radius, raise the incentive, then escalate. Batching two orders from nearby restaurants raises courier productivity but delays the first customer, so cap the detour. Claiming a courier must be atomic, as in ride matching.\n- **ETA.** Total = prep time + courier-to-restaurant + wait + restaurant-to-customer. Prep time carries most of the variance; learn it per restaurant and hour, and use live kitchen backlog. Feed back: if a kitchen is overloaded, show longer ETAs or temporarily pause new orders instead of letting quality collapse.\n- **Global.** Run independent regional stacks with customers pinned to their home region; only the catalogue of countries and global accounts is shared. This limits blast radius and satisfies residency rules.",
+  "wrapup": "- One authoritative order state machine, driven by events, with discovery, dispatch and ETA as separate services.\n- Trade-offs: late dispatch cuts courier idling but risks lateness; batching raises efficiency but hurts the first order.\n- Next: promotions, substitutions, driver pay, fraud and demand forecasting."
+ },
+ "rubric": [
+  {
+   "text": "Identifies the three-sided marketplace and the needs of customer, restaurant and courier",
+   "keywords": [
+    "three-sided",
+    "three sided",
+    "courier",
+    "restaurant",
+    "customer"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Estimates orders, browse reads and courier location writes, and notes the peak concentration at meals",
+   "keywords": [
+    "peak",
+    "lunch",
+    "dinner",
+    "/s",
+    "qps"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models the order as an explicit state machine with defined failure exits (rejected, cancelled, failed)",
+   "keywords": [
+    "state machine",
+    "state",
+    "rejected",
+    "cancel",
+    "lifecycle"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses a saga with compensations: authorise payment first, void on rejection or timeout, capture at delivery",
+   "keywords": [
+    "saga",
+    "authoris",
+    "authoriz",
+    "void",
+    "capture",
+    "compensat"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Makes order placement idempotent and keeps an items/price snapshot on the order",
+   "keywords": [
+    "idempoten",
+    "snapshot",
+    "price"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Publishes order events reliably (outbox, event log) so other services react without lost events",
+   "keywords": [
+    "outbox",
+    "event",
+    "kafka",
+    "order_events"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Times courier dispatch against predicted food-ready time instead of dispatching on acceptance",
+   "keywords": [
+    "ready time",
+    "prep",
+    "idle",
+    "wait",
+    "dispatch"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Assigns couriers by cost (travel plus wait), one offer at a time with timeout and escalation, with atomic claim",
+   "keywords": [
+    "offer",
+    "timeout",
+    "atomic",
+    "radius",
+    "cost"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Discusses batching/stacking orders and its trade-off for first-customer lateness",
+   "keywords": [
+    "batch",
+    "stack",
+    "detour"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Builds ETA from prep time, courier travel and delivery leg, and treats prep time as the largest variance",
+   "keywords": [
+    "eta",
+    "prep time",
+    "variance",
+    "model"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Serves discovery from a geo-aware search index with caching, with open/busy status handled separately",
+   "keywords": [
+    "geo",
+    "search index",
+    "cache",
+    "open",
+    "busy"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Isolates regions (independent stacks, home region, data residency) to limit blast radius",
+   "keywords": [
+    "region",
+    "residency",
+    "blast radius",
+    "isolat"
+   ],
+   "points": 1
+  }
+ ]
+}

@@ -1,0 +1,151 @@
+{
+ "id": "google-maps",
+ "title": "Design Google Maps",
+ "prompt": "Design the backend of a consumer map app. Users pan and zoom a world map, search for places, ask for driving directions between two points, and follow turn-by-turn navigation with an ETA that reflects current traffic.\n\nAssume **200 million daily active users**, about **30 million route requests a day**, and **10 million phones** reporting their location at peak so that traffic can be estimated.",
+ "clarify": [
+  "Which modes are in scope: driving only, or also walking, transit and cycling? (Assume driving; the routing core is the same.)",
+  "Do we build the base map data, or consume a licensed dataset and only serve it?",
+  "Is satellite imagery in scope, or only vector street maps?",
+  "Must ETAs use live traffic and predicted traffic for a later departure time?",
+  "Is offline use required, and what is the target latency for a route and for a tile?",
+  "Is place search (text to coordinates) in scope, or only map display and routing?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Render the map at any zoom level and viewport\n- Compute a route between two points, with alternatives and turn-by-turn steps\n- ETA that reflects live traffic; reroute when the driver leaves the route or a jam appears\n- Ingest anonymous location probes to estimate traffic\n\n**Non-functional**\n- Tile fetch p99 < 100 ms (served from a CDN); route p99 < 1 s\n- Tiles are static and cacheable; routing is CPU-bound and stateful (the graph sits in memory)\n- Traffic may be seconds to minutes stale; a missing traffic feed must degrade to historical speeds, not fail",
+  "estimation": "- Tile requests: 200M DAU × 100 tiles/day = 20B/day ≈ **231k/s** avg, ~700k/s at 3× peak. At a 95%+ CDN hit rate the origin sees only ~35k/s.\n- Tile count: a pyramid down to zoom 15 has Σ4^z = (4^16−1)/3 ≈ **1.43B** tiles. About 30% cover land, so ~430M; at ~20 KB per vector tile that is **~8.6 TB** per map version.\n- Routing: 30M/day ≈ **350 routes/s** avg, ~1–2k/s at peak, each a few ms to tens of ms of CPU with the right algorithm.\n- Road graph: ~500M nodes and ~1B directed edges × ~24 B ≈ **24 GB**, which fits in RAM per region. Live speed per edge: 1B × 4 B = **4 GB**.\n- Probes: 10M phones × 1 point / 5 s = **2M points/s** × ~100 B = **200 MB/s** at peak.",
+  "api": "```\nGET  /v1/tiles/{z}/{x}/{y}.pbf?v={map_version}            → vector tile (immutable URL)\nGET  /v1/places/search?q=&lat=&lng=&limit=                → {places[]}\nPOST /v1/routes {origin, dest, mode, depart_at?, avoid?}  → {routes[{polyline, steps, distance_m, eta_s}]}\nPOST /v1/probes [{device_hash, lat, lng, speed, heading, ts}] → 202\nWS   /v1/navigation/{route_id}                            → reroute and ETA updates\n```\n- Tile URLs carry the map version, so they can be cached for a long time and never invalidated; a new version is a new URL.\n- Probes are batched on the phone and carry a rotating anonymous id.",
+  "data": "- **Tiles:** object storage keyed by `(version, z, x, y)`; x/y use a quadtree (quadkey) addressing, so a child tile's key is its parent's plus two bits.\n- **Road graph:** `edges(edge_id, from_node, to_node, length_m, road_class, free_flow_speed, turn_restrictions)` in a compact binary format, partitioned into regions with border nodes, loaded into memory by routing servers.\n- **Live traffic:** `edge_id → (speed, sample_count, updated_at)` in an in-memory store with a short TTL.\n- **Historical speeds:** `(edge_id, day_of_week, 15-min bucket) → speed` for predictions and fallback.\n- **Places:** a search index with text and a geo cell per place.",
+  "design": "```\nbuild:  map data ─▶ tile builder ─▶ object store ─▶ CDN ─▶ client\nroute:  client ─▶ routing svc (graph partition in RAM) ◀─ live speeds\ntraffic: phones ─▶ probe gateway ─▶ stream ─▶ map matcher ─▶ edge aggregator ─▶ speed store\n```\n- **Tiles** are produced offline by a batch pipeline from the base data, one vector tile per `(z, x, y)`, and pushed to the CDN. The client draws and caches them and over-zooms a coarser tile while a finer one loads.\n- **Routing:** a gateway sends the request to the shard holding the origin's region; a cross-region trip is stitched through border nodes.\n- **Traffic:** probes are snapped to road edges, grouped per edge over a sliding window (1–2 minutes), and the result is published to the speed store.",
+  "deepdives": "- **Routing at world scale.** Plain Dijkstra explores millions of nodes, which is too slow at 1B edges. A* helps only modestly. Contraction hierarchies precompute shortcut edges, so a query touches a few hundred nodes and answers in milliseconds. The catch: shortcuts are computed for fixed weights, and traffic changes the weights. Customizable contraction hierarchies keep the topology-based ordering and only re-weight shortcuts when speeds change (seconds), so live traffic is cheap.\n- **Live traffic and ETA.** Phones are noisy: map-match each probe to an edge using heading and the road network, discard parked or stationary points, and require a minimum sample count per edge. Below the threshold, fall back to historical speed for that bucket. ETA is time-dependent: the speed for an edge should be the one expected when you *reach* it, so near-term edges use live speed and far-away edges blend into the historical profile. Rerouting runs only for active navigation sessions, when the current route's ETA drifts.\n- **Tiles and updates.** Pre-render up to a mid zoom and generate deep zooms on demand, cached by the CDN. Vector tiles are smaller and let the client restyle, rotate and switch to dark mode; raster tiles are simpler but multiply storage per style. A map update builds a new version incrementally for the changed region and flips the version pointer.",
+  "wrapup": "- Static, cacheable tiles at the edge, an in-memory partitioned graph for routing, and a streaming pipeline that turns probes into edge speeds.\n- Trade-offs: preprocessing time and memory for query speed; traffic freshness vs probe noise and privacy.\n- Next: transit and walking, lane guidance, offline regions, map editing and place ranking."
+ },
+ "rubric": [
+  {
+   "text": "Estimates tile traffic and recognises tiles are static, so a CDN absorbs nearly all reads",
+   "keywords": [
+    "cdn",
+    "tile",
+    "/s",
+    "cache"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Splits the map into a zoom pyramid addressed by z/x/y (quadkey) and sizes the tile store",
+   "keywords": [
+    "z/x/y",
+    "quadkey",
+    "pyramid",
+    "zoom",
+    "quadtree"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Chooses vector tiles over raster, with versioned immutable URLs for caching",
+   "keywords": [
+    "vector tile",
+    "raster",
+    "version",
+    "immutable"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models the road network as a weighted directed graph and sizes it to fit in memory per region",
+   "keywords": [
+    "graph",
+    "edges",
+    "nodes",
+    "in memory",
+    "in-memory"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains why plain Dijkstra is too slow and uses A*, contraction hierarchies or hierarchical partitioning",
+   "keywords": [
+    "contraction",
+    "hierarch",
+    "a*",
+    "dijkstra",
+    "landmark"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles live traffic changing edge weights without rebuilding preprocessing (re-weighting, customizable hierarchies)",
+   "keywords": [
+    "re-weight",
+    "reweight",
+    "customiz",
+    "live traffic",
+    "weights"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Builds a probe pipeline: ingest, map matching to edges, windowed aggregation per edge, minimum samples",
+   "keywords": [
+    "map match",
+    "map-match",
+    "probe",
+    "aggregat",
+    "window",
+    "snap"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Falls back to historical speed profiles (by day and time bucket) when live data is sparse or missing",
+   "keywords": [
+    "historical",
+    "fallback",
+    "time bucket",
+    "profile"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Computes ETA as time-dependent (speed when the edge is reached) and discusses prediction for future departure",
+   "keywords": [
+    "time-dependent",
+    "depart",
+    "predict",
+    "eta"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Partitions the graph by region and stitches cross-region routes through border nodes",
+   "keywords": [
+    "partition",
+    "border",
+    "region",
+    "shard"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Triggers rerouting only for active navigation sessions, using push (WebSocket) updates",
+   "keywords": [
+    "reroute",
+    "websocket",
+    "active session",
+    "push"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses privacy of probes (anonymous rotating ids, aggregation) and graceful degradation",
+   "keywords": [
+    "privacy",
+    "anonymous",
+    "degrade",
+    "rotating"
+   ],
+   "points": 1
+  }
+ ]
+}

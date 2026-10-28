@@ -1,0 +1,154 @@
+{
+ "id": "gpu-job-manager",
+ "title": "Design a GPU Job Manager",
+ "prompt": "Design the control plane of a shared GPU cluster. Teams submit jobs (training runs, batch inference, evaluations) that each need some number of GPUs; the system queues them, places them on machines, restarts them when hardware fails, and keeps one team from monopolising the cluster.\n\nAssume **2,000 nodes with 8 GPUs each (16,000 GPUs)**, about **50,000 jobs a day**, and runtimes from minutes to several days.",
+ "clarify": [
+  "Do jobs need multiple nodes at once (distributed training), or at most one node?",
+  "Are there priorities, and may a high-priority job preempt a running one?",
+  "How are GPUs allocated to teams: fixed quotas, fair share, or both?",
+  "Can jobs checkpoint and resume, or must a preempted job restart from scratch?",
+  "Do GPU types differ (for example A100 vs H100), and can a job ask for a specific type?",
+  "Is a single cluster enough, or must we schedule across several?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Submit a job (image, command, GPUs, CPU/memory, priority, max runtime); cancel; query status and logs\n- Scheduler places queued jobs on nodes with free GPUs\n- Per-team quotas with the ability to borrow idle capacity\n- Retry after infrastructure failure; preempt low-priority work for high-priority work\n\n**Non-functional**\n- Keep utilisation high; bounded wait for every job (no starvation)\n- A GPU is never assigned to two jobs, even across a scheduler failover\n- Control plane survives node and scheduler crashes without losing jobs",
+  "estimation": "- Submissions: 50k/day ≈ **0.6/s**. Request rate is trivial; **the hard part is the scheduling policy, not throughput**.\n- Load: 50k jobs × 4 GPUs × 2 h = **400k GPU-hours/day** against capacity of 16,000 × 24 = **384k GPU-hours/day**, i.e. ~104%. The cluster is saturated, so a queue always exists and the policy decides who waits.\n- Heartbeats: 2,000 nodes / 10 s = **200/s**.\n- Running jobs: 16,000 GPUs / 4 per job ≈ 4,000. Logs at ~1 KB/s each ≈ 4 MB/s ≈ **345 GB/day**, kept in object storage with a short retention.\n- Metadata: 50k × ~5 KB = 250 MB/day. One relational database holds everything.",
+  "api": "```\nPOST /v1/jobs {team, image, command, gpus, gpu_type?, cpus, mem_gb, priority, max_runtime_s,\n               preemptible, checkpoint_uri?, max_retries, idempotency_key}\n                                        → 201 {job_id, state: QUEUED}\nGET  /v1/jobs/{id}                       → state, attempt, node, queue_position, reason\nPOST /v1/jobs/{id}/cancel\nGET  /v1/jobs/{id}/logs?cursor=          → log lines\nGET  /v1/teams/{id}/usage                → used, guaranteed, borrowed\n```\n- Idempotency key avoids a duplicate job when a client retries a timed-out submit.",
+  "data": "- **jobs**: `job_id, team, spec JSON, priority, state (QUEUED|SCHEDULED|RUNNING|SUCCEEDED|FAILED|CANCELLED|PREEMPTED), attempt, version, submitted_at`.\n- **attempts**: `job_id, attempt, node_ids, gpu_ids, started_at, ended_at, exit_code, reason (user_error|infra|preempted|timeout)`.\n- **nodes**: `node_id, gpu_type, gpus_total, gpu_free_mask, labels, last_heartbeat, state (READY|SUSPECT|DRAINING|DEAD)`.\n- **quotas**: `team, guaranteed_gpus, burst_limit` plus a usage ledger. Postgres is the source of truth; the scheduler keeps a cached copy in memory.",
+  "design": "```\nclient ─▶ API ─▶ jobs DB ◀─── scheduler (single leader, lease; standby)\n                              │  reads queue + node snapshot, writes placements\n                              ▼\n                   node agents (poll/watch own assignments)\n                   start container, heartbeat, report exit, ship logs ─▶ object store\n```\n- The API only writes to the DB. The **scheduler** loop runs every few seconds, orders the queue by policy, assigns jobs to specific GPUs, and records the binding (with an epoch number) in one transaction.\n- **Node agents** pull their assigned jobs, so a restarted scheduler needs no push channel; a missed heartbeat marks the node suspect.",
+  "deepdives": "- **Policy and placement.** Order the queue by priority class, then by how far a team is below its fair share, then by age (aging prevents starvation). Place with best-fit on the node, since a job needing 8 GPUs fits only on a fully free node; eight single-GPU gaps scattered across eight nodes cannot run it. Packing small jobs together and keeping whole nodes free for big ones limits fragmentation. Multi-node training needs **gang scheduling**: reserve all nodes first and start together, never partially, or two jobs each holding half the cluster deadlock. While a big job waits for a reservation, **backfill** small jobs into the gaps if they finish before it starts.\n- **Quotas and preemption.** Each team has a guaranteed share and may borrow idle GPUs beyond it as preemptible work. When the owner submits, the scheduler reclaims borrowed GPUs: pick victims by lowest priority, then the least progress lost (most recently started or last checkpointed). Send a SIGTERM and a grace period (e.g. 60 s) so the job can checkpoint, then SIGKILL, and requeue it. A preempted attempt must not count against the user's retry budget. Trade-off: borrowing raises utilisation at the cost of churn.\n- **Failure handling.** Three missed heartbeats (~30 s) mark a node dead; its jobs go back to `QUEUED` as an infrastructure retry. To prevent a zombie node from still running the job, each assignment carries an epoch/lease that the agent must renew; an agent that loses its lease kills the container. Distinguish causes: a non-zero exit code or out-of-memory is a user failure and is surfaced, not retried; hardware faults (GPU ECC error, node lost) retry with the node excluded. Failed gang members terminate the whole gang. After a scheduler crash, the standby takes the lease and rebuilds its snapshot from the DB; the epoch fences any stale writes.",
+  "wrapup": "- A DB-backed queue, a leader-elected scheduler with fair-share and gang placement, and pull-based node agents with leases.\n- Trade-offs: utilisation vs fairness; backfill complexity; preemption churn vs idle quota.\n- Next: multiple clusters, topology-aware placement (NVLink, rack), cost accounting and autoscaling."
+ },
+ "rubric": [
+  {
+   "text": "Recognises the cluster is saturated (demand about equals capacity), so the policy rather than request rate is the problem",
+   "keywords": [
+    "saturat",
+    "gpu-hours",
+    "queue",
+    "policy",
+    "utilis",
+    "utiliz"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Defines the job spec and lifecycle states, with attempts tracked separately from the job",
+   "keywords": [
+    "state",
+    "attempt",
+    "lifecycle",
+    "queued",
+    "running"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a scheduler loop over queue and node snapshots, with a durable DB as the source of truth",
+   "keywords": [
+    "scheduler",
+    "source of truth",
+    "postgres",
+    "database",
+    "snapshot"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles fragmentation by placing jobs by per-node free GPUs (best-fit), not by a cluster-wide count",
+   "keywords": [
+    "fragment",
+    "best-fit",
+    "bin pack",
+    "bin-pack",
+    "per node",
+    "per-node"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Gang-schedules multi-node jobs all-or-nothing and explains partial-allocation deadlock",
+   "keywords": [
+    "gang",
+    "all-or-nothing",
+    "deadlock",
+    "reserve"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Applies fair share with guaranteed quotas, bounded borrowing, and aging to prevent starvation",
+   "keywords": [
+    "fair share",
+    "fair-share",
+    "quota",
+    "borrow",
+    "aging",
+    "starvation"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Adds backfill so small jobs use gaps without delaying a reserved large job",
+   "keywords": [
+    "backfill"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Preempts borrowed or low-priority jobs with a grace period and checkpoint, and does not count preemption as a failure",
+   "keywords": [
+    "preempt",
+    "grace",
+    "checkpoint",
+    "sigterm"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Detects dead nodes by heartbeat and requeues their jobs",
+   "keywords": [
+    "heartbeat",
+    "requeue",
+    "suspect",
+    "dead"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Fences zombies and failovers with leases or epoch numbers; the leader election prevents two schedulers double-assigning a GPU",
+   "keywords": [
+    "lease",
+    "epoch",
+    "fenc",
+    "leader",
+    "double"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Separates user errors from infrastructure failures when retrying, with the failed node excluded",
+   "keywords": [
+    "user error",
+    "infra",
+    "retry",
+    "exclude",
+    "exit code"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Streams logs to object storage and exposes metrics such as queue wait, utilisation and preemption rate",
+   "keywords": [
+    "log",
+    "object storage",
+    "metric",
+    "wait time",
+    "utilis",
+    "utiliz"
+   ],
+   "points": 1
+  }
+ ]
+}
