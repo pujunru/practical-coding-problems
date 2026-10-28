@@ -1,0 +1,70 @@
+{
+ "id": "scalable-simplicity",
+ "title": "Scalable Simplicity",
+ "summary": "Prefer choices that are **simple today and still work as you grow**, so that you do not have to re-platform at the first success. The user's two standing examples:\n\n- **Data: start with a JSONB column** for the parts of the model that change quickly. You avoid constant schema migrations while the product is still finding its shape. Keep identity, relationships and anything you filter, join or enforce on as **real columns**; as a JSON field proves itself, add an expression index or promote it to a column (index it, backfill, then remove it from the JSON).\n- **Compute: serverless or container apps that scale to zero.** You pay nothing while idle, capacity follows load without capacity planning, and the same container can later move to a cluster.\n\nKnow the costs. JSONB gives up inside-the-document constraints (`NOT NULL`, foreign keys), rewrites the whole value on update, and makes ad-hoc analytics awkward. Scale-to-zero adds **cold starts**, so latency-critical paths may need a warm minimum instance, and long-lived connections or heavy local state fit poorly.\n\nThis is the same instinct as treating most choices as [two-way doors](#/sd/f/two-way-door): get something simple running, keep the escape hatch open, and complicate only when a measured need appears. For the JSON trade-off in depth, see [JSON vs SQL](#/sd/f/json-vs-sql).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "An early-stage product's \"project\" entity gains or changes attributes almost weekly. Which approach matches scalable simplicity?",
+   "options": [
+    "A fully normalized schema with a migration per change",
+    "Core columns (id, owner, status, created_at) plus a JSONB column for fast-changing attributes; promote fields to columns when they become query-critical",
+    "Store everything as one JSON blob, including ids and owner",
+    "A schemaless document store, since SQL cannot hold JSON"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Keep what you join, filter and enforce on as real columns, and let volatile attributes live in JSONB. An all-blob design loses ownership queries and constraints; Postgres handles JSONB natively, so a separate store is unnecessary."
+  },
+  {
+   "type": "choice",
+   "q": "Which are genuine costs of the JSONB-first approach? Select all that apply.",
+   "options": [
+    "Constraints such as NOT NULL or foreign keys do not apply to fields inside the document",
+    "Filtering on a nested field needs an expression or GIN index to be fast",
+    "Updating one field typically rewrites the whole JSONB value",
+    "JSONB fields cannot be indexed at all"
+   ],
+   "answer": [
+    0,
+    1,
+    2
+   ],
+   "explain": "JSONB is indexable (GIN or expression indexes), so the last option is false; but the other three are real trade-offs, and they are why hot, constrained fields graduate to proper columns."
+  },
+  {
+   "type": "choice",
+   "q": "Which workload is a poor fit for a scale-to-zero container platform without extra measures?",
+   "options": [
+    "An internal admin tool used a few times a day",
+    "A payment authorization endpoint with a 100 ms latency budget and sporadic traffic",
+    "A nightly batch job",
+    "A webhook receiver with relaxed timeouts"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Scale-to-zero means the first request after idle pays a cold start (image pull, runtime boot), which can blow a tight latency budget. Setting a minimum of one warm instance usually fixes it."
+  },
+  {
+   "type": "number",
+   "q": "An always-on container costs $40 per month. A scale-to-zero platform costs $2.00 per million requests, all-in, with no idle charge. Ignoring free tiers and assuming the always-on container could handle any of these volumes, at how many requests per month do the two cost the same?",
+   "answer": 20000000,
+   "unit": "requests/month",
+   "tolerance": 0,
+   "explain": "$40 ÷ ($2 per 1,000,000) = 20,000,000 requests per month. Below it the scale-to-zero option is cheaper, above it always-on wins. Early products are almost always far below break-even, which is the point of starting serverless."
+  },
+  {
+   "type": "order",
+   "q": "Order the steps to promote a hot JSONB field to a real column.",
+   "items": [
+    "Notice from query patterns that the field is filtered or joined on often",
+    "Add an expression index on the JSON path to relieve the immediate pain",
+    "Add the column and backfill it from the JSON",
+    "Switch reads and writes to the column, then remove the field from the JSON"
+   ],
+   "explain": "Index first (cheap, reversible), promote when the field has proven itself. Dropping the JSON copy happens last, after reads use the column, so you can roll back at any earlier step."
+  }
+ ]
+}

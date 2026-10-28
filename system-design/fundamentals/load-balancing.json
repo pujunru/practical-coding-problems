@@ -1,0 +1,78 @@
+{
+ "id": "load-balancing",
+ "title": "Load Balancing",
+ "summary": "A load balancer answers one question: **a request arrived, which machine gets it?** Goals: skip bad machines, add capacity freely, keep latency low.\n\nOne request is routed in **layers**, coarse and slow-changing on the outside, fine and per-request on the inside:\n\n1. **Region.** *DNS* is simple and cheap but cached, so a dead region lingers for minutes. *Anycast* ([BGP](#/sd/f/anycast)) switches fast by withdrawing a route, but \"nearest\" means network path, not latency. The big-company pattern is **anycast + edge proxy**: users hit the nearest edge, which knows each region's load and can overflow to the second-nearest. Keep spare capacity elsewhere, shift traffic in batches, and send writes for stateful data to the user's **home region**.\n2. **Proxy tier (L4).** Sees IPs and ports, chooses once per connection: fast, carries the volume.\n3. **Instance (L7).** Sees HTTP, chooses per request: routing, retries, canaries. Long-lived [multiplexed](#/sd/f/multiplexing) connections (gRPC, WebSocket) defeat L4-only balancing.\n\n**Choosing a machine:** round robin assumes equal requests; least-connections suits uneven durations but balancers herd onto the same idle node; **power of two choices** (sample two at random, take the less loaded) nearly matches it without herding. For cache affinity use [consistent hashing](#/sd/f/consistent-hashing) with a **load cap** so a hot key spills to the next node.\n\n**Health:** probe actively (several failures before ejecting), watch real errors passively, and **never let the health check call downstream dependencies**, or one blip ejects every instance. Drain on the way out, slow-start on the way in. Under overload, shed low priority and cap retries.\n\n**LLM inference** changes the signals (tokens, KV cache).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Your service runs in three regions and must fail traffic away from a dead region within about 30 seconds. Resolvers and clients often ignore DNS TTLs. Which front door fits best?",
+   "options": [
+    "Geo-DNS with a 300 s TTL",
+    "Geo-DNS with a 5 s TTL, trusting every resolver to honour it",
+    "Anycast to nearby edge proxies that route to regions and drop an unhealthy region from their table",
+    "A single global VIP in one region"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Failover by DNS depends on caches you do not control, even with a tiny TTL. An anycast edge (or withdrawing a route) acts at the network layer and the edge can stop sending to a region within seconds. The remaining regions must have spare headroom, and traffic should be shifted in batches."
+  },
+  {
+   "type": "choice",
+   "q": "Four load-balancer replicas each send a request to the backend with the fewest connections, using stats refreshed once per second. Right after a backend restarts empty, it is overwhelmed. What fixes this with the least change?",
+   "options": [
+    "Switch to plain round robin",
+    "Power of two choices: each balancer samples two random backends and picks the less loaded",
+    "Refresh the stats every 10 seconds",
+    "Always send to the backend with the lowest CPU"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Everyone sees the same single 'least loaded' node and stampedes it (herd effect). Sampling two random nodes spreads the choice across balancers while still avoiding the busier of two, which is close to least-connections in quality. Round robin ignores uneven request cost; staler stats worsen herding."
+  },
+  {
+   "type": "number",
+   "q": "A cache tier of 10 nodes uses consistent hashing with bounded load: no node may hold more than 1.25 × the average in-flight requests. There are 1,000 in-flight requests in total. A hot key sends 400 of them to one node that carries no other traffic. How many of those 400 requests must spill over to other nodes?",
+   "answer": 275,
+   "unit": "requests",
+   "tolerance": 0,
+   "explain": "Average = 1,000 ÷ 10 = 100, so the cap is 1.25 × 100 = 125. The home node keeps 125 and 400 − 125 = 275 spill to the next nodes clockwise on the ring. Without a cap, that node would take all 400 (4× average) and the cache hit rate of the hot key would be bought with an outage."
+  },
+  {
+   "type": "choice",
+   "q": "You need a 1% → 10% → 100% canary rollout and automatic retry on a different backend when one returns 503, for HTTP traffic at very high volume. What is the right shape?",
+   "options": [
+    "L4 only; weighted targets handle both",
+    "L7 only for all traffic, at any scale",
+    "An L4 tier to spread connections and absorb volume, in front of an L7 tier that makes per-request routing, canary and retry decisions",
+    "DNS weights per backend"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "L4 sees only IPs and ports and decides once per connection, so it cannot split by request or retry. L7 can, but is costlier per request, so the cheap tier goes in front for volume. DNS weights are cached and too coarse for a 1% canary."
+  },
+  {
+   "type": "choice",
+   "q": "Which practices are right for health checking? Select all that apply.",
+   "options": [
+    "Eject an instance only after several consecutive failed probes",
+    "Make /health query the database and every downstream so it reports true readiness",
+    "Also eject instances passively when real-request error rates spike",
+    "Drain in-flight requests before shutdown and slow-start new instances"
+   ],
+   "answer": [
+    0,
+    2,
+    3
+   ],
+   "explain": "A deep /health is the classic mistake: when the database blips, every instance fails its check at once, the balancer ejects them all and a partial outage becomes a total one. Keep the check local to the process, and let passive observation and circuit breaking handle dependency trouble."
+  },
+  {
+   "type": "recall",
+   "q": "An LLM inference fleet has requests whose cost differs by hundreds of times (prompt length × output length), each runs for seconds to tens of seconds, and GPU memory is a hard limit. Which load signals would you balance on instead of connection counts, and how do you reconcile prefix-cache routing with load balance?",
+   "answer": "Balance on queued/in-flight tokens and remaining KV-cache memory per replica, not on request or connection counts, because one connection can be a 100-token or a 100,000-token job. Route requests that share a prefix (system prompt, earlier turns) to the replica that already holds it, to skip prefill, but put a cap on that replica's load: if it is too busy, fall back to another replica, as with consistent hashing with bounded load. Across regions, GPU availability matters as much as distance, and delay-tolerant batch work can go to a distant region with idle GPUs."
+  }
+ ]
+}

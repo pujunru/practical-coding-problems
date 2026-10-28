@@ -1,0 +1,74 @@
+{
+ "id": "data-locality",
+ "title": "Data Locality",
+ "summary": "Moving a task to the data is usually cheaper than moving the data to the task. **Data locality** means scheduling work on the machine that already holds (or just produced) the inputs.\n\nThe user's scheduling model: a task has inputs `[D1, D2, …]` and outputs `[D3, D5, …]`. A worker that has just finished a task now *holds* D3 and D5. When it asks the dispatcher for work, it says so: **\"I have D3, D5.\"** The [dispatcher](#/sd/f/dispatcher) then scores pending tasks, and **data-locality match** is one factor: a task whose inputs are D3 and D5 goes to this worker, which can start immediately with no transfer.\n\nIf no task is a perfect match, the dispatcher may make the worker wait for a **bounded time** before handing over a non-local task. This is *delay scheduling*: a short wait often lets a local task appear, while an unbounded wait would leave the worker idle and tasks starved.\n\nLocality is one score term among others, not a rule: weigh it against **load** (a popular dataset must not funnel every task to one worker), priority and fairness.\n\nThe same idea appears at many levels: CPU caches, disk pages, a [JSONB document](#/sd/f/json-vs-sql) holding everything one read needs, pipeline stages that consume the previous stage's output, and routing LLM requests to the replica that already holds the prompt's [prefix cache](#/sd/f/load-balancing).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A worker finishes a task and asks for more work. No pending task uses its data, but a matching task is likely to become ready within a few seconds. What should the dispatcher do?",
+   "options": [
+    "Give it any task immediately; idle workers are always worse",
+    "Make it wait a bounded time for a local match, then give it any task if none appears",
+    "Make it wait until a local task appears, however long that takes",
+    "Reject the worker"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "A bounded wait gains locality when it is likely and costs at most the bound when it is not. Waiting forever risks idle workers and starved tasks; never waiting pays the data transfer every time."
+  },
+  {
+   "type": "number",
+   "q": "A task needs 6 GB of input and 20 s of compute. Fetching the input over the network happens at an effective 125 MB/s (1 GB = 1000 MB). A worker holding the data would free up after some wait. What is the longest wait, in seconds, that is still no worse than running the task right now on a worker without the data?",
+   "answer": 48,
+   "unit": "seconds",
+   "tolerance": 0,
+   "explain": "Remote execution now: 6,000 MB ÷ 125 MB/s = 48 s transfer + 20 s compute = 68 s. Waiting W seconds for a local worker costs W + 20 s. These are equal at W = 48 s, so any bounded wait below 48 s beats going remote, and the bound should sit well under that to account for uncertainty."
+  },
+  {
+   "type": "choice",
+   "q": "The dispatcher scores tasks purely by locality. A popular dataset D9 sits on one worker, and 5,000 tasks use D9. What happens?",
+   "options": [
+    "Perfect efficiency: every task is local",
+    "That worker becomes a hotspot while others idle, so locality must be traded off against load in the score",
+    "The dispatcher crashes",
+    "Nothing; workers share data automatically"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Locality is a preference, not a constraint. Score should combine locality bonus, queue depth or load, and priority; replicating hot data to more workers is the other lever."
+  },
+  {
+   "type": "choice",
+   "q": "Why is it useful for the worker to announce \"I have D3, D5\" when it asks for work?",
+   "options": [
+    "It proves the worker is healthy",
+    "The dispatcher gets a fresh, worker-reported view of data placement without maintaining a global catalog that can drift out of date",
+    "It lets the worker pick its own task",
+    "It reduces network usage by itself"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "A worker's own report is the authoritative and current source on what it holds (including after evictions). A central location map must be kept in sync, and any lag sends tasks to workers that no longer have the data."
+  },
+  {
+   "type": "order",
+   "q": "Order the dispatch flow for data-aware scheduling.",
+   "items": [
+    "A worker finishes a task and now holds outputs D3 and D5",
+    "The worker asks for work and reports \"I have D3, D5\"",
+    "The dispatcher scores pending tasks, including a locality-match term",
+    "The best-scoring task is assigned; if none matches, the dispatcher waits a bounded time",
+    "If the wait ends with no local task, the worker gets the best non-local task"
+   ],
+   "explain": "Report first, then score; the bounded wait is only used when there is no good match, and it always ends in an assignment."
+  },
+  {
+   "type": "recall",
+   "q": "What is data locality in a task scheduler, and why must the wait for it be bounded?",
+   "answer": "Prefer to run a task where its inputs already are (for example on the worker that just produced them), avoiding data transfer. The wait for a local match must be bounded because unbounded waiting leaves workers idle and starves tasks; the bound trades a small delay for a likely saving."
+  }
+ ]
+}

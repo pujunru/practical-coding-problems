@@ -1,6 +1,127 @@
 {
  "categories": [
   {
+   "id": "design-principles",
+   "title": "Design Principles",
+   "concepts": [
+    {
+     "id": "high-level-thinking",
+     "title": "High-Level Thinking",
+     "drills": 6
+    },
+    {
+     "id": "low-level-decision-order",
+     "title": "Low-Level Decision Order",
+     "drills": 6
+    },
+    {
+     "id": "one-way-door",
+     "title": "One-Way Doors",
+     "drills": 5
+    },
+    {
+     "id": "two-way-door",
+     "title": "Two-Way Doors",
+     "drills": 5
+    },
+    {
+     "id": "scalable-simplicity",
+     "title": "Scalable Simplicity",
+     "drills": 5
+    },
+    {
+     "id": "transaction-boundary",
+     "title": "Transaction Boundary",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "service-metrics",
+   "title": "Service Metrics",
+   "concepts": [
+    {
+     "id": "sli-slo-sla",
+     "title": "SLI, SLO and SLA",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "networking",
+   "title": "Networking",
+   "concepts": [
+    {
+     "id": "tcp-connection",
+     "title": "TCP Connections",
+     "drills": 5
+    },
+    {
+     "id": "multiplexing",
+     "title": "Multiplexing",
+     "drills": 5
+    },
+    {
+     "id": "proxy-tcp-termination",
+     "title": "Proxies, TCP Termination and NAT",
+     "drills": 6
+    },
+    {
+     "id": "anycast",
+     "title": "Anycast",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "load-balancing",
+   "title": "Load Balancing",
+   "concepts": [
+    {
+     "id": "load-balancing",
+     "title": "Load Balancing",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "caching",
+   "title": "Caching",
+   "concepts": [
+    {
+     "id": "cache-invalidation",
+     "title": "Cache Invalidation",
+     "drills": 6
+    },
+    {
+     "id": "client-side-cache",
+     "title": "Client-Side Cache",
+     "drills": 5
+    },
+    {
+     "id": "etag",
+     "title": "ETag",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "data-locality",
+   "title": "Data Locality",
+   "concepts": [
+    {
+     "id": "data-locality",
+     "title": "Data Locality",
+     "drills": 6
+    },
+    {
+     "id": "json-vs-sql",
+     "title": "JSON vs SQL",
+     "drills": 5
+    }
+   ]
+  },
+  {
    "id": "sharding",
    "title": "Sharding & Partitioning",
    "concepts": [

@@ -1,0 +1,75 @@
+{
+ "id": "high-level-thinking",
+ "title": "High-Level Thinking",
+ "summary": "Before choosing a single component, **characterise the problem**. Four questions do most of the work:\n\n1. **Input and output.** What goes in, what comes out, and what is the transformation between them? This defines the API and the data flow.\n2. **Read-heavy or write-heavy?** The ratio decides where the effort goes. Read-heavy systems reward caches, replicas and precomputation at write time; write-heavy systems push you toward partitioning, batching and queues.\n3. **Latency or throughput?** A user waiting on a page needs low latency per request; a nightly pipeline needs maximum work per hour. They pull in opposite directions (batching raises throughput and adds latency).\n4. **How strong must consistency be?** Can a reader see data a few seconds old, or must every read reflect the latest write? Strong guarantees cost latency and availability.\n\nAnswer these out loud and the architecture often falls out of them. Skipping them is how candidates draw Kafka, Redis and Cassandra on the board for a system that needed one Postgres.\n\nThese questions are the top of the funnel; once the shape is known, apply the [low-level decision order](#/sd/f/low-level-decision-order) to pick mechanisms, and keep the [one-way doors](#/sd/f/one-way-door) (API, data flow, data model) for the most careful thought.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "An interviewer says: \"Design a leaderboard for a mobile game.\" What is the best first move?",
+   "options": [
+    "Draw a sharded Redis cluster, since leaderboards are sorted sets",
+    "Ask about the read/write ratio, how fresh ranks must be, and what a read returns (top N, or my rank)",
+    "Compute storage for ten years of scores",
+    "Choose between SQL and NoSQL"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "The answers (say 50 reads per score update, a few seconds of staleness is fine, top-100 only) decide whether you need one sorted set, periodic snapshots or a sharded design. Jumping to a component commits to a solution before you know the problem."
+  },
+  {
+   "type": "choice",
+   "q": "A product page is read about 500 times for every update. Which design consequences follow? Select all that apply.",
+   "options": [
+    "Caches and read replicas will be very effective",
+    "It is worth doing extra work at write time (precomputing, denormalizing) to make reads cheap",
+    "The write path must be sharded from day one",
+    "Consistency requirements no longer matter"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "A high read ratio makes caching and write-time precomputation pay off. It says nothing about write volume being large (sharding is not implied), and consistency still has to be decided: a cache or replica is exactly where staleness enters."
+  },
+  {
+   "type": "choice",
+   "q": "A nightly job re-scores 10 TB of documents and must finish before 06:00. Individual documents may wait hours. What should the design optimise?",
+   "options": [
+    "Per-document latency, with a worker per document",
+    "Throughput: large batches, sequential I/O, high utilisation of every machine",
+    "Strong consistency between every pair of workers",
+    "Low tail latency at p99"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "When nobody waits on a single item, the metric is total work per hour. Batching trades latency for throughput, which is the right trade here and the wrong one for an interactive request."
+  },
+  {
+   "type": "number",
+   "q": "A feed service has 50 million daily active users. Each user performs on average 20 reads and 1 write per day, spread evenly over 24 hours (86,400 s). What is the average read rate in requests per second?",
+   "answer": 11574,
+   "unit": "reads/s",
+   "tolerance": 0.05,
+   "explain": "50,000,000 × 20 = 1,000,000,000 reads per day; ÷ 86,400 ≈ 11,574/s. The writes are only 50 M/day ≈ 579/s, a 20:1 ratio, which is why the first move is read scaling, not write scaling. Real traffic peaks well above the average, so multiply by a peak factor before sizing."
+  },
+  {
+   "type": "order",
+   "q": "Put the high-level framing steps in the order a strong candidate takes them.",
+   "items": [
+    "Pin down the input and the output",
+    "Estimate the read/write ratio and volumes",
+    "Decide whether latency or throughput matters more",
+    "Decide how strong consistency has to be",
+    "Only then choose components"
+   ],
+   "explain": "Input/output defines the problem, the ratio and volumes size it, the latency/throughput choice and the consistency level constrain the mechanisms, and components come last because each one is an answer to a constraint already named."
+  },
+  {
+   "type": "recall",
+   "q": "List the four questions you ask before choosing any component, and say what each one steers.",
+   "answer": "Input → output (API and data flow); read-heavy vs write-heavy (caching/replication vs partitioning/queues); latency vs throughput (per-request speed vs batching); how far consistency must go (replication and coordination cost)."
+  }
+ ]
+}

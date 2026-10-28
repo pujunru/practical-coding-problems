@@ -1,0 +1,82 @@
+{
+ "id": "anycast",
+ "title": "Anycast",
+ "summary": "**Unicast** points an IP address at exactly one server in one place. **Anycast** announces the *same* IP prefix from many locations over **BGP**, the internet's routing protocol. Each router on the way picks the best BGP route it knows (broadly, the shortest AS path, subject to operator policy), so a client's packets reach whichever announcing site the network considers closest.\n\nWhy it is used:\n- **One address everywhere.** Clients need no geo-DNS logic; DNS root servers, public resolvers and CDNs work this way.\n- **Fast failover.** To drain or fail a site, **withdraw its announcement**; routing converges in seconds to minutes, instead of waiting for DNS caches to expire.\n- **Attack absorption.** Traffic, including DDoS, spreads across many sites.\n\nCaveats:\n- \"Closest\" means **fewest network hops by policy, not lowest latency**; the chosen site is not always the best.\n- Routing can change mid-flow, so packets of one **TCP connection may land at a different site** that has no state and answers with a reset. Anycast suits UDP/short exchanges and edges that terminate connections nearby; long-lived stateful sessions need care (or connection IDs as in QUIC).\n\nThe common big-company design is **anycast to the nearest edge, then the edge proxies over a private backbone to a chosen region**, see [load balancing](#/sd/f/load-balancing).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "What determines which anycast site a client reaches?",
+   "options": [
+    "The application's geo-aware load balancer",
+    "BGP route selection along the path (shortest AS path, subject to policy), not measured latency",
+    "The client's choice of DNS resolver",
+    "A round-robin among sites"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Each router picks its best BGP route to the shared prefix. That usually correlates with proximity but can send a client to a farther site, which is why measured latency and edge-level steering still matter."
+  },
+  {
+   "type": "choice",
+   "q": "A region goes down. How does an anycast setup shift traffic away, compared with geo-DNS using 300-second TTLs?",
+   "options": [
+    "Anycast waits for DNS TTL expiry, same as geo-DNS",
+    "The failed site withdraws (or stops) its BGP announcement and routing reconverges in seconds to minutes; DNS answers may be cached by resolvers well beyond the TTL",
+    "Anycast cannot fail over at all",
+    "Clients must be updated with a new IP"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Failover by routing does not depend on client or resolver caches. DNS failover is bounded by cached answers (and some resolvers ignore low TTLs)."
+  },
+  {
+   "type": "choice",
+   "q": "A WebSocket connection to an anycast IP is occasionally reset with no server-side error, right after a network routing change. What is the likely cause?",
+   "options": [
+    "The server closed it due to idle timeout",
+    "Routing shifted, so later packets reached a different anycast site that had no state for that TCP connection and responded with RST",
+    "BGP encrypts connections and the keys expired",
+    "Anycast limits connections to 60 seconds"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Anycast guarantees reaching *a* site, not the *same* site over time. Mitigations: terminate TCP at a nearby edge that rarely flips, reconnect logic, or protocols with connection IDs such as QUIC."
+  },
+  {
+   "type": "choice",
+   "q": "Which are real benefits of anycast? Select all that apply.",
+   "options": [
+    "Fast failover by withdrawing an announcement",
+    "DDoS traffic is spread over many sites",
+    "A single public IP serves users worldwide",
+    "It guarantees each user the lowest possible latency"
+   ],
+   "answer": [
+    0,
+    1,
+    2
+   ],
+   "explain": "The last claim is false: BGP picks by path policy and length, not by measured latency."
+  },
+  {
+   "type": "recall",
+   "q": "Explain anycast in two sentences and name its biggest caveat.",
+   "answer": "Anycast announces the same IP from many sites via BGP, so each client's packets follow the best route to one of them, and a failing site is drained by withdrawing its route. The main caveat is that BGP picks by path policy rather than latency and may change mid-flow, so long-lived TCP connections can land on a site with no state."
+  },
+  {
+   "type": "order",
+   "q": "Order how anycast delivers a request to a healthy site.",
+   "items": [
+    "The operator announces the same IP prefix from several sites via BGP",
+    "BGP propagates the announcements and each router selects its best route",
+    "A client sends packets to the anycast IP, and they follow the best route to one site",
+    "The edge at that site terminates the connection and forwards inward",
+    "If the site fails, its announcement is withdrawn and traffic reconverges on the next-best site"
+   ],
+   "explain": "Announcement and propagation come first; selection is automatic per router. Failover is simply the withdrawal of a route."
+  }
+ ]
+}

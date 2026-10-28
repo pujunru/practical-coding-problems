@@ -1,0 +1,69 @@
+{
+ "id": "client-side-cache",
+ "title": "Client-Side Cache",
+ "summary": "The cheapest request is the one never sent. HTTP lets the server steer browser and CDN caching through the `Cache-Control` response header:\n\n- **`no-store`**: do not keep it anywhere (browser, CDN, proxy). For secrets and sensitive pages.\n- **`no-cache`**: despite the name, it *may* be stored, but must be **revalidated before every reuse** (typically with an [ETag](#/sd/f/etag) conditional request, which returns `304` if unchanged).\n- **`max-age=3600`**: the response is *fresh* for 3,600 seconds; the browser reuses it with **no request at all**. If a CDN held it for 600 s, the `Age` header says so and counts against this lifetime.\n- **`private`**: only the user's own browser may cache it. Shared caches (CDN, proxy) must not. Use for per-user responses.\n- **`public`** / **`s-maxage`**: shared caches may store it, with their own lifetime.\n- **`immutable`**: do not revalidate even on reload; pair with a long `max-age` for content-hashed files like `app.3f9a1c.js`.\n\nMental model: freshness (`max-age`) decides **whether to ask**; validators (ETag, `Last-Modified`) decide **whether the answer changed**; scope (`private`/`public`) decides **who may keep it**.\n\nPractical recipe: fingerprinted static assets get a year and `immutable`; HTML that references them gets `no-cache`; personalised API responses get `private` with a short `max-age`, or `no-store` if sensitive. Remember the downside: a long `max-age` cannot be recalled, which is why the URL must change when content changes. See [cache invalidation](#/sd/f/cache-invalidation) for the server-side counterpart.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A banking dashboard HTML page must never be shown stale, but you still want cheap 304 responses when it has not changed. Which header fits?",
+   "options": [
+    "Cache-Control: no-store",
+    "Cache-Control: no-cache",
+    "Cache-Control: max-age=0, public",
+    "Cache-Control: immutable"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "no-cache means 'store it, but revalidate before reuse', so every load costs a small conditional request that returns 304 when nothing changed. no-store would forbid storing at all and always cost a full download. Its name misleads many people."
+  },
+  {
+   "type": "choice",
+   "q": "Your API returns personalised account data behind a CDN. You want the user's browser to reuse it for 60 seconds, but the CDN must never serve one user's data to another. Which header?",
+   "options": [
+    "Cache-Control: public, max-age=60",
+    "Cache-Control: private, max-age=60",
+    "Cache-Control: no-cache",
+    "Cache-Control: s-maxage=60"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "private restricts storage to the single user's browser cache. public and s-maxage invite shared caches to store it, which would leak data between users unless the cache key includes the user."
+  },
+  {
+   "type": "choice",
+   "q": "You ship a build with files named app.3f9a1c.js, where the hash changes whenever the content changes. What caching policy is best for those files?",
+   "options": [
+    "no-cache, to always be safe",
+    "public, max-age=31536000, immutable",
+    "max-age=60",
+    "no-store"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "The URL itself changes with the content, so a stale copy can never be served for new content; caching forever costs nothing. The HTML that references the hashed names is the part that needs no-cache."
+  },
+  {
+   "type": "number",
+   "q": "A CDN received a response with `Cache-Control: max-age=3600` and has held it for 600 seconds. The browser fetches it from the CDN, which adds `Age: 600`. Ignoring transit time, for how many more seconds can the browser reuse it without contacting anyone?",
+   "answer": 3000,
+   "unit": "seconds",
+   "tolerance": 0,
+   "explain": "Freshness lifetime 3,600 s minus current age 600 s = 3,000 s. The Age header is how downstream caches know part of the lifetime is already spent, so stacked caches do not extend the total freshness."
+  },
+  {
+   "type": "order",
+   "q": "Order the browser's decision when a cached resource is requested.",
+   "items": [
+    "Look up the resource in the local cache",
+    "If it is fresh (within max-age), use it with no request",
+    "If stale and it has a validator, send a conditional request (If-None-Match)",
+    "If the server answers 304, reuse the cached body and refresh its lifetime",
+    "If the server answers 200, replace the cached copy with the new response"
+   ],
+   "explain": "Freshness is checked first, because a fresh entry needs no network at all. Only a stale entry triggers revalidation, and the server's answer (304 vs 200) decides whether the body is reused."
+  }
+ ]
+}

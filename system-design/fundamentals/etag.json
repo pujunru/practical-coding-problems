@@ -1,0 +1,74 @@
+{
+ "id": "etag",
+ "title": "ETag",
+ "summary": "An **ETag** is a **version tag** for a resource representation: a string the server returns in the `ETag` header that changes whenever the content changes. It can literally be a version number or, more commonly, a **signature** such as a content hash, so that \"same tag\" means \"same content\".\n\nIts main use is **cache revalidation**:\n1. The first response carries `ETag: \"v7\"`.\n2. When the cached copy is stale, the client sends `If-None-Match: \"v7\"`.\n3. If unchanged, the server returns **`304 Not Modified` with no body**, and the client reuses its copy. If changed, a normal `200` with a new body and tag.\n\nThis saves **bandwidth and transfer time**, not the round trip. It saves server work too, *if* the tag is cheap to compute: derive it from a stored row version or `updated_at` rather than rendering and hashing the whole body. When several servers answer, they must generate the **same tag for the same content** (a content hash, not a file inode or timestamp).\n\nThe same mechanism gives **optimistic concurrency** for writes: send `If-Match: \"v3\"` with a `PUT`, and the server rejects it with **`412 Precondition Failed`** if the current version is no longer v3, preventing silent lost updates.\n\n*Strong* tags mean byte-identical; *weak* tags (`W/\"...\"`) mean semantically equivalent. See [client-side caching](#/sd/f/client-side-cache) for the surrounding headers.",
+ "drills": [
+  {
+   "type": "order",
+   "q": "Order a conditional GET that finds the resource unchanged.",
+   "items": [
+    "Server's first response includes ETag: \"v7\"",
+    "Client's cached copy becomes stale",
+    "Client sends the request with If-None-Match: \"v7\"",
+    "Server sees the current tag is still \"v7\" and replies 304 with no body",
+    "Client reuses its cached body"
+   ],
+   "explain": "The client echoes the tag back as a question: 'is this still current?'. A 304 carries no body, which is where the saving comes from."
+  },
+  {
+   "type": "choice",
+   "q": "What does a 304 response save compared with a fresh 200?",
+   "options": [
+    "The network round trip",
+    "The transfer of the response body",
+    "The TLS handshake",
+    "The client's cache lookup"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "The request and response still travel, so the round trip is paid. Only the body is omitted. To save the round trip itself, the response must still be fresh (max-age) so the client does not ask."
+  },
+  {
+   "type": "choice",
+   "q": "Computing an ETag by hashing the full response body is expensive for a large report endpoint that takes 400 ms to render. What is the better design?",
+   "options": [
+    "Skip ETags altogether",
+    "Derive the ETag from a cheap version (row version, updated_at or a version counter) and check it before rendering",
+    "Hash only the first 100 bytes of the body",
+    "Use a random ETag each time"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "If the tag comes from stored metadata, the server can answer 304 without doing the 400 ms render. Hashing a partial body risks equal tags for different content; a random tag defeats caching."
+  },
+  {
+   "type": "choice",
+   "q": "Two editors load a document with ETag \"v3\". Editor A saves with `If-Match: \"v3\"` and succeeds, moving the document to \"v4\". Editor B then saves with `If-Match: \"v3\"`. What should the server return?",
+   "options": [
+    "200 OK, applying B's change on top",
+    "412 Precondition Failed, so B must refetch and merge",
+    "304 Not Modified",
+    "404 Not Found"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "If-Match says 'only apply if the current version is still v3'. That is false after A's save, so rejecting B prevents a silent lost update. Accepting would overwrite A's change without B ever seeing it."
+  },
+  {
+   "type": "number",
+   "q": "10,000 clients poll a 2 MB JSON resource every 30 seconds. Assume 99% of polls find it unchanged, and that with ETags an unchanged poll costs a 304 whose size you can ignore. How much body data per second does the server send with ETags, in MB/s?",
+   "answer": 6.67,
+   "unit": "MB/s",
+   "tolerance": 0.1,
+   "explain": "Polls per second = 10,000 ÷ 30 ≈ 333.3. Only 1% change: 3.33 full responses/s × 2 MB ≈ 6.67 MB/s. Without ETags every poll returns the body: 333.3 × 2 MB ≈ 667 MB/s, a 100× difference."
+  },
+  {
+   "type": "recall",
+   "q": "What does an ETag represent, and what are two uses beyond plain caching?",
+   "answer": "It is a version tag for a resource representation (a version number or a content signature). Beyond cache revalidation with If-None-Match → 304, it enables optimistic concurrency (If-Match on writes, 412 on conflict) and it can serve as a cheap change detector for sync or polling."
+  }
+ ]
+}

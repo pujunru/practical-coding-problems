@@ -1,0 +1,74 @@
+{
+ "id": "proxy-tcp-termination",
+ "title": "Proxies, TCP Termination and NAT",
+ "summary": "A **proxy** (L4 or L7, forward or reverse) is not a router. A router forwards packets and keeps no connection state. A proxy **terminates the client's TCP connection** (the proxy itself is the endpoint of that connection and holds its state in kernel memory) and then **opens a separate TCP connection to the backend**. It is a bridge between two independent TCP connections: \"frontend TCP\" and \"backend TCP\".\n\n```\nclients ──(frontend TCP, many, TLS)──► [ proxy / LB ] ──(backend TCP, few, pooled)──► servers\n```\n\nConsequences:\n- The proxy can **buffer** slow clients and speak TLS, while backends see fast, local, pooled connections: backend connection counts drop from \"one per client\" to \"a pool per backend\".\n- The proxy also performs **NAT**: the packet addressed to the proxy's virtual IP is turned into a connection from the proxy's own address to a backend's private address. Backends see the **proxy as the client**, so the original client IP must be passed along (`X-Forwarded-For` at L7, PROXY protocol at L4).\n- A proxy is a **stateful endpoint**: if it restarts, the connections it terminated are lost.\n\n(Some L4 balancers avoid termination and rewrite or tunnel packets, for example direct server return; they are cheap but cannot inspect requests, retry or buffer.) This is the foundation for [L4 vs L7 load balancing](#/sd/f/load-balancing).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Backends behind a reverse proxy log the proxy's IP as the client for every request. How do they recover the real client address?",
+   "options": [
+    "They cannot; the information is gone",
+    "The proxy passes it in X-Forwarded-For (L7) or the PROXY protocol header (L4), and backends trust it only from known proxies",
+    "They read the source port",
+    "They reverse-lookup the proxy's DNS name"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Because the backend's TCP peer is the proxy, the original address must travel inside the application stream. It must be trusted only from your own proxies, since any client can send a forged X-Forwarded-For."
+  },
+  {
+   "type": "choice",
+   "q": "A reverse proxy process restarts. What happens to client connections it was holding?",
+   "options": [
+    "They continue as if nothing happened, because a router elsewhere has state",
+    "They are dropped, because the proxy was the TCP endpoint and the connection state lived in it",
+    "They automatically move to a backend",
+    "Only the backend connections are affected"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Termination makes the proxy an endpoint, not a transparent forwarder. Clients see resets or timeouts and must reconnect; this is why connection draining and graceful restarts matter."
+  },
+  {
+   "type": "choice",
+   "q": "Mobile clients on slow links upload 5 MB bodies over 30 s, and backend threads are tied up the whole time. How does a terminating proxy help?",
+   "options": [
+    "It makes the clients upload faster",
+    "It receives and buffers the slow upload itself, then sends the complete request to the backend quickly over a fast local connection",
+    "It compresses the request twice",
+    "It removes the need for timeouts"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Terminating the frontend connection decouples client speed from backend resource usage. Without it, each slow client holds a backend connection or thread for the entire upload."
+  },
+  {
+   "type": "number",
+   "q": "A proxy terminates 50,000 client connections. It keeps a pool of 64 persistent connections to each of 20 backends. How many backend-side connections does the proxy hold in total?",
+   "answer": 1280,
+   "unit": "connections",
+   "tolerance": 0,
+   "explain": "20 × 64 = 1,280, regardless of client count. Without pooling and with the 50,000 clients spread evenly, the backends would see 50,000 ÷ 20 = 2,500 connections each, versus 64 each with pooling."
+  },
+  {
+   "type": "order",
+   "q": "Order what a reverse proxy does for one request.",
+   "items": [
+    "Client completes the TCP (and TLS) handshake with the proxy's virtual IP",
+    "Proxy reads the request from the frontend connection",
+    "Proxy chooses a backend and takes or opens a backend connection from itself to the backend's private address",
+    "Proxy forwards the request and reads the backend's response",
+    "Proxy writes the response to the client on the frontend connection"
+   ],
+   "explain": "There are two separate TCP connections, so the proxy fully reads the request before relaying, and the backend connection originates from the proxy's address (the NAT step)."
+  },
+  {
+   "type": "recall",
+   "q": "Why can't a proxy simply forward packets the way a router does, and why does it also need NAT?",
+   "answer": "A proxy terminates the client's TCP connection and creates a second one to the backend, so it must hold state and relay bytes between two connections. Packets for the proxy's virtual IP must be re-originated with the proxy's own address towards backends' private addresses, which is NAT; hence backends see the proxy as the peer."
+  }
+ ]
+}

@@ -1,0 +1,70 @@
+{
+ "id": "tcp-connection",
+ "title": "TCP Connections",
+ "summary": "A TCP connection is **not a pipe**. Nothing in the network is dedicated to it. Routers forward independent packets, which may take different paths, arrive out of order or get lost. The \"connection\" is **shared state kept by the two endpoints' kernels**: sequence numbers, a record of what has been acknowledged, retransmission timers, and a flow-control window. That state is what lets two applications see a reliable, ordered byte stream on top of an unreliable network.\n\nIn Linux terms: **TCP socket = 4-tuple + send/receive queues + state machine**. The 4-tuple (source IP, source port, destination IP, destination port) identifies the connection; the file descriptor is only the process's local handle.\n\n**Inbound:** a server binds a *LISTEN* socket (the parent) to `:443`. Each completed handshake produces a *child* socket with its own 4-tuple and queues; clients share the server's IP:port but not a connection. Limits: the **accept queue** (finished handshakes waiting for `accept()`), the process's **file-descriptor limit**, and **memory** per socket.\n\n**Outbound:** each connection needs a unique 4-tuple, so one source IP talking to one destination IP:port is limited by its roughly **60,000 ephemeral ports**, and closed connections linger in TIME_WAIT. Many short connections to the same upstream therefore exhaust ports. Fixes: [connection pooling](#/sd/f/connection-pooling) and [multiplexing](#/sd/f/multiplexing) (HTTP/2, gRPC) to reuse a few long-lived connections.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A core router between client A and server B reboots and drops traffic for two seconds. A and B had an established TCP connection. What most likely happens?",
+   "options": [
+    "The connection is reset immediately because the pipe broke",
+    "The connection survives: lost packets are retransmitted by the endpoints, which hold the connection state",
+    "The router restores the connection state from its table",
+    "The connection moves to a different path automatically with no loss"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Intermediate routers keep no per-connection state. Only the endpoints do, so after the outage unacknowledged segments are retransmitted. (A stateful middlebox such as a NAT or firewall that loses its table would be a different story.)"
+  },
+  {
+   "type": "order",
+   "q": "Order the server-side steps of accepting a new client on port 443.",
+   "items": [
+    "Client sends SYN to the LISTEN socket on :443",
+    "The kernel completes the three-way handshake and creates a child socket",
+    "The established connection waits in the accept queue",
+    "The application calls accept() and receives a new file descriptor",
+    "The application reads bytes from the child socket's receive queue"
+   ],
+   "explain": "The kernel, not the application, completes the handshake. The application only sees the connection when it calls accept(), which is why a slow accept loop fills the queue even though clients have already finished handshaking."
+  },
+  {
+   "type": "choice",
+   "q": "A server on :443 has 200,000 clients connected. Someone worries that it \"only has 65,535 ports\". What is the correct view?",
+   "options": [
+    "They are right; the server cannot exceed about 64k connections",
+    "Server-side connections are distinguished by the full 4-tuple, so the real limits are file descriptors, memory and the accept queue",
+    "Connections share one socket, so no limit applies",
+    "The limit applies only to TLS connections"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "All of those connections share the server's single port, but each has a different client IP:port, hence a different 4-tuple. The 65k limit bites clients making many connections to a single destination, not servers."
+  },
+  {
+   "type": "number",
+   "q": "A gateway on a single source IP opens a new TCP connection to one upstream IP:port for every request and closes it right after, with no reuse. Assume 60,000 usable ephemeral ports, a TIME_WAIT of 60 s on the closing side (the gateway), and no tcp_tw_reuse. What is the maximum sustained rate of new connections per second to that upstream?",
+   "answer": 1000,
+   "unit": "connections/s",
+   "tolerance": 0,
+   "explain": "Every closed connection holds its port for 60 s, so each port can serve one connection per minute: 60,000 ports ÷ 60 s = 1,000 connections/s. Beyond that you get 'cannot assign requested address'. Pooling keeps a few connections open and removes the churn entirely."
+  },
+  {
+   "type": "choice",
+   "q": "Which fixes reduce ephemeral-port exhaustion on a service that calls the same upstream at high rate? Select all that apply.",
+   "options": [
+    "Keep a pool of persistent connections and reuse them",
+    "Use HTTP/2 or gRPC so many requests share one connection",
+    "Increase the server-side accept queue on the upstream",
+    "Close each connection immediately after its response"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "Both options reduce the number of distinct 4-tuples consumed. A larger accept queue helps a different limit; closing immediately is exactly what drives TIME_WAIT buildup."
+  }
+ ]
+}
