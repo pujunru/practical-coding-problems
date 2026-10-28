@@ -118,14 +118,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "fanout",
-  "sharding",
-  "eventual-consistency",
-  "cache-invalidation",
-  "cursor",
-  "queue-first-vs-db-first",
-  "load-shedding"
  ]
 }

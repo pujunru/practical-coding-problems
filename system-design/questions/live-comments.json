@@ -128,15 +128,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "fanout",
-  "websocket-patterns",
-  "batching",
-  "rate-limiter",
-  "load-shedding",
-  "backoff-jitter",
-  "partitioning",
-  "polling"
  ]
 }

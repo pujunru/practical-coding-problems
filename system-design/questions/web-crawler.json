@@ -149,15 +149,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "bloom-filter",
-  "consistent-hashing",
-  "rate-limiter",
-  "backoff-jitter",
-  "circuit-breaker",
-  "etag",
-  "retry",
-  "timeout"
  ]
 }

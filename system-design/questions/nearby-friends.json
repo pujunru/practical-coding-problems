@@ -137,15 +137,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "geo-cell",
-  "websocket-patterns",
-  "consistent-hashing",
-  "fanout",
-  "heartbeat-lease",
-  "rate-limiter",
-  "sharding",
-  "partition-expansion"
  ]
 }

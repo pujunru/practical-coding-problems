@@ -154,15 +154,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "queue-first-vs-db-first",
-  "idempotency",
-  "retry",
-  "dispatcher",
-  "prioritized-scheduling",
-  "batching",
-  "backoff-jitter",
-  "sharding"
  ]
 }

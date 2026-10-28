@@ -16,7 +16,7 @@
   "api": "```\nGET  /v1/products/{id}\nGET  /v1/search?q=&filters=&sort=&cursor=\nPOST /v1/cart/items               (see the cart design)\nPOST /v1/checkout                 {cart_id, address, payment_token}  + Idempotency-Key\n     → 202 {order_id, status: PENDING}\nGET  /v1/orders/{id}              → status timeline\n```\n- Checkout returns quickly with an order id; payment and confirmation complete asynchronously and the client polls or is pushed the result.",
   "data": "- **Catalogue** (document store or sharded SQL, keyed by `product_id`): title, attributes, seller, price, images; written rarely.\n- **Search index** (Elasticsearch/OpenSearch): a denormalised copy for text, facets and ranking, fed from the catalogue by a change feed.\n- **Inventory** `(sku, warehouse) → available` with reservations, owned by the inventory service.\n- **Orders** `orders(id, user_id, status, total, idempotency_key)` and `order_lines`, sharded by `user_id`; **payments** and **ledger** separate.",
   "design": "```\nCDN ─▶ web/API ─▶ catalogue svc ─▶ cache ─▶ catalogue DB ──CDC──▶ search index\n                │ └▶ search svc ─▶ search index\n                └─▶ cart svc ─▶ checkout/order svc ─▶ inventory svc (reserve)\n                                        ├─▶ payment svc ─▶ PSP\n                                        └─▶ order events ─▶ fulfilment, email\n```\n- **Browse:** CDN for images and static pages, cache-aside for product JSON.\n- **Checkout (saga):** create order `PENDING` → reserve stock → authorize payment → mark `CONFIRMED` and publish an event; any failure releases the reservation and voids the authorization.",
-  "deepdives": "- **Checkout as a saga.** One distributed transaction across inventory, payment and orders is not realistic, so run steps with compensations. Persist the order and an outbox row in one transaction; the client's idempotency key makes retries return the same order. Reserve stock first because it is cheap to undo; charge last. Handle the unknown payment outcome by reconciling with the provider rather than guessing.\n- **Search freshness vs correctness.** The search index updates from a change feed within seconds, which is fine for titles and facets. Price and \"in stock\" shown in results are advisory; the product page re-reads them and checkout always re-validates against the source of truth. That keeps search scalable without making it authoritative.\n- **Catalogue read scaling and spikes.** Cache product pages and put popular ones on the CDN with a short TTL; precompute category listings. For a flash sale, put a queue or waiting room in front of checkout, enforce per-user limits, and shed load on browse before checkout. See [rate limiter](#/sd/f/rate-limiter) and [load shedding](#/sd/f/load-shedding).\n- **Data ownership.** Each service owns its store; others read through events or APIs, not shared tables.",
+  "deepdives": "- **Checkout as a saga.** One distributed transaction across inventory, payment and orders is not realistic, so run steps with compensations. Persist the order and an outbox row in one transaction; the client's idempotency key makes retries return the same order. Reserve stock first because it is cheap to undo; charge last. Handle the unknown payment outcome by reconciling with the provider rather than guessing.\n- **Search freshness vs correctness.** The search index updates from a change feed within seconds, which is fine for titles and facets. Price and \"in stock\" shown in results are advisory; the product page re-reads them and checkout always re-validates against the source of truth. That keeps search scalable without making it authoritative.\n- **Catalogue read scaling and spikes.** Cache product pages and put popular ones on the CDN with a short TTL; precompute category listings. For a flash sale, put a queue or waiting room in front of checkout, enforce per-user limits, and shed load on browse before checkout. See rate limiter and load shedding.\n- **Data ownership.** Each service owns its store; others read through events or APIs, not shared tables.",
   "wrapup": "- Browse and search scale by caching and derived indexes; checkout stays small, transactional and idempotent.\n- Trade-offs: eventual consistency in search vs authoritative checks at purchase; saga compensation vs two-phase commit; reserve before or after payment.\n- Next: recommendations, reviews, multi-region, returns and refunds."
  },
  "rubric": [
@@ -140,15 +140,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "idempotency",
-  "reservation",
-  "change-feed",
-  "cache-invalidation",
-  "queue-first-vs-db-first",
-  "load-shedding",
-  "rate-limiter",
-  "eventual-consistency"
  ]
 }

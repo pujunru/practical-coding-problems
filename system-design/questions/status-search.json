@@ -149,15 +149,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "sharding",
-  "partitioning",
-  "change-feed",
-  "fanout",
-  "eventual-consistency",
-  "cursor",
-  "top-k-ranking",
-  "cache-invalidation"
  ]
 }

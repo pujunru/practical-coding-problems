@@ -153,15 +153,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "sharding",
-  "change-feed",
-  "cursor",
-  "websocket-patterns",
-  "idempotency",
-  "eventual-consistency",
-  "fanout",
-  "backfill"
  ]
 }

@@ -123,15 +123,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "fanout",
-  "top-k-ranking",
-  "weighted-event-scoring",
-  "user-context",
-  "bloom-filter",
-  "cursor",
-  "load-shedding",
-  "timeout"
  ]
 }

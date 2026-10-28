@@ -134,15 +134,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "websocket-patterns",
-  "idempotency",
-  "cursor",
-  "server-log",
-  "fanout",
-  "heartbeat-lease",
-  "backoff-jitter",
-  "sharding"
  ]
 }

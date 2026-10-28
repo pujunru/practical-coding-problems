@@ -137,15 +137,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "time-bucket-counter",
-  "cache-invalidation",
-  "idempotency",
-  "change-feed",
-  "sharding",
-  "cursor",
-  "eventual-consistency",
-  "backfill"
  ]
 }

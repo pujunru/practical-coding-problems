@@ -6,15 +6,10 @@ you run in the browser at https://pujunru.github.io/practical-coding/.
 
 ## System design
 
-`system-design/` holds the two system design modules:
-
-- `fundamentals/` — one JSON file per concept: a short mental model and 4–6
-  drills (multiple choice, ordering, estimates, recall).
-  `categories.json` is the full concept map; `index.json` is generated.
-- `questions/` — one JSON file per design question: prompt, clarifying
-  questions, a reference outline for each interview step, and a self-check
-  rubric. `categories.json` is the full question list; `index.json` is
-  generated.
+`system-design/questions/` holds the design questions: one JSON file per
+question with a prompt, clarifying questions, a reference outline for each
+interview step, and a self-check rubric. `categories.json` is the full
+question list; `index.json` is generated.
 
 See [system-design/AUTHORING.md](system-design/AUTHORING.md) for the format,
 and run `python3 tools/sd.py check` before committing.

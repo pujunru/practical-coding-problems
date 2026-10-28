@@ -143,15 +143,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "cache-invalidation",
-  "client-side-cache",
-  "multi-region",
-  "change-feed",
-  "idempotency",
-  "eventual-consistency",
-  "batching",
-  "partitioning"
  ]
 }

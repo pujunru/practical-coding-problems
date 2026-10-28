@@ -139,15 +139,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "polling",
-  "adaptive-polling",
-  "fanout",
-  "cache-invalidation",
-  "cursor",
-  "top-k-ranking",
-  "batching",
-  "similarity"
  ]
 }

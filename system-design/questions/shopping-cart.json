@@ -133,13 +133,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "idempotency",
-  "race-condition",
-  "eventual-consistency",
-  "reservation",
-  "cache-invalidation",
-  "partitioning"
  ]
 }

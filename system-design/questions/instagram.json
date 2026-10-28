@@ -126,14 +126,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "data-locality",
-  "multi-region",
-  "sharding",
-  "cache-invalidation",
-  "queue-first-vs-db-first",
-  "batching",
-  "anycast"
  ]
 }

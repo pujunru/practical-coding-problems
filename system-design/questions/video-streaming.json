@@ -144,15 +144,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "anycast",
-  "load-balancing",
-  "data-locality",
-  "multi-region",
-  "client-side-cache",
-  "cache-invalidation",
-  "tcp-connection",
-  "sli-slo-sla"
  ]
 }

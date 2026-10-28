@@ -130,15 +130,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "item-embedding",
-  "user-context",
-  "top-k-ranking",
-  "timeout",
-  "load-shedding",
-  "client-side-cache",
-  "data-locality",
-  "multi-region"
  ]
 }

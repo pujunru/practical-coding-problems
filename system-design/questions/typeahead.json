@@ -142,15 +142,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "top-k-ranking",
-  "sliding-window-aggregation",
-  "time-bucket-counter",
-  "weighted-event-scoring",
-  "client-side-cache",
-  "cache-invalidation",
-  "sharding",
-  "batching"
  ]
 }

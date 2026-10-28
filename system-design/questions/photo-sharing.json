@@ -137,14 +137,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "batching",
-  "cache-invalidation",
-  "client-side-cache",
-  "idempotency",
-  "sharding",
-  "queue-first-vs-db-first",
-  "retry"
  ]
 }

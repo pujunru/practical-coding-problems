@@ -136,15 +136,5 @@
    ],
    "points": 1
   }
- ],
- "concepts": [
-  "tenant-isolation",
-  "websocket-patterns",
-  "fanout",
-  "sharding",
-  "cursor",
-  "cell",
-  "rate-limiter",
-  "eventual-consistency"
  ]
 }
