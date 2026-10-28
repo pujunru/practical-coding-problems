@@ -260,32 +260,32 @@
     {
      "id": "raft",
      "title": "Raft",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leader-election",
      "title": "Leader Election",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "race-condition",
      "title": "Race Conditions",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "reservation",
      "title": "Reservation (Race + Long Fulfillment)",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "multi-state-machine-sync",
      "title": "Syncing Multiple State Machines",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "idempotency",
      "title": "Idempotency",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -306,22 +306,22 @@
     {
      "id": "acquire-release",
      "title": "Lock Acquire / Release",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "lock-contention",
      "title": "Lock Contention",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "read-write-lock",
      "title": "Read-Write Lock",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "reentrant-lock",
      "title": "Reentrant Lock",
-     "prompts": 0
+     "prompts": 2
     }
    ]
   },
@@ -332,52 +332,52 @@
     {
      "id": "timeout",
      "title": "Timeout",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "retry",
      "title": "Retry",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "backoff-jitter",
      "title": "Exponential Backoff + Jitter",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "circuit-breaker",
      "title": "Circuit Breaker",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "rate-limiter",
      "title": "Rate Limiter",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "concurrency-limiter",
      "title": "Concurrency Limiter",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "load-shedding",
      "title": "Load Shedding",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "time-box-patterns",
      "title": "Time-Box Patterns",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "heartbeat-lease",
      "title": "Heartbeat + Lease",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "failover",
      "title": "Failover",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "active-monitoring",

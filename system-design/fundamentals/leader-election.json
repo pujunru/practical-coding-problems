@@ -1,75 +1,61 @@
 {
  "id": "leader-election",
  "title": "Leader Election",
- "summary": "Leader election **picks exactly one node** to do a job that must not run twice at once: accept writes for a shard, run the scheduler, own a partition. The goal is simple; the danger is **two leaders at once (split brain)**.\n\nWays to elect:\n\n- **Built into [consensus](#/sd/f/consensus):** [Raft](#/sd/f/raft) elects via majority votes and numbered terms. Strongest, and what you get from etcd or ZooKeeper.\n- **Lock or lease on a coordinator:** every candidate tries a conditional write (create key if absent, compare-and-set a row) with a TTL; the winner is leader and must renew. It is a [lease](#/sd/f/lease), so ownership moves when the leader stops renewing.\n- **ID-based schemes** (\"lowest reachable id wins\"): easy, but they break under partitions because two groups each elect their own.\n\nWhatever the mechanism, **a deposed leader may not know it yet** (GC pause, slow network). Safety comes from a [fencing token](#/sd/f/fencing-token) (the term or lease epoch) checked by the resource on every write, not from the leader's belief.\n\nElection time is not free: failure detection plus the lease or timeout, during which there is **no leader**. Randomize timeouts so candidates don't split votes, and keep the lease long enough to ride out blips but short enough to bound downtime.\n\nDon't elect if you can **partition the work** instead: assigning each shard to a fixed owner via [consistent hashing](#/sd/f/consistent-hashing) avoids a single hot leader. See [leader-based failover](#/sd/f/leader-based-failover).",
- "drills": [
+ "explain": "Leader election picks exactly one node to do a job that must not run twice at once, such as accepting writes for a shard or running the scheduler. The goal is easy; the danger is split brain, two leaders at the same time, so the real question is how you make sure the old one is out. I also say that if the work can be partitioned, you may not need a leader at all.",
+ "model": "Three ways to elect, from strongest to weakest:\n\n1. **Built into [consensus](#/sd/f/consensus)**: [Raft](#/sd/f/raft)-style majority votes with numbered terms. Safe under partitions; this is what etcd and ZooKeeper give you.\n2. **Lease on a coordinator**: every candidate tries one conditional write (create-if-absent, compare-and-set) with a TTL. The winner is leader and must keep renewing. It is a [lease](#/sd/f/lease), so leadership moves when renewals stop.\n3. **ID- or clock-based self-declaration** (\"lowest reachable id wins\"): simple, but each side of a partition elects its own leader.\n\n```\nleader renews --X-- (pause / partition) ... lease expires ... standby wins, token+1\nold leader wakes up, still believes it leads --> resource rejects its stale token\n```\n\nA deposed leader may not know it yet, so safety comes from a [fencing token](#/sd/f/fencing-token) (term or lease epoch) checked by the resource, not from the leader's belief. Election time is downtime: detection plus lease, with no leader in between.",
+ "details": [
   {
-   "type": "choice",
-   "q": "A scheduler leader holds a 15 s lease in a coordination service and renews every 5 s. A 20 s garbage-collection pause freezes it. What can go wrong when it wakes up?",
-   "options": [
-    "Another node acquired leadership during the pause, and the old leader may still act as leader until it learns its lease expired",
-    "Nothing: a paused process cannot lose a lease",
-    "The coordination service pauses with it, so the lease is extended",
-    "The cluster has no leader forever"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The lease expired at 15 s and a standby took over, but the paused process still believes it leads. Without a fencing token checked by the resources it writes to, both can act. Lease expiry gives liveness, not safety."
+   "q": "Why can't the leader just check 'am I still the leader?' before each write?",
+   "a": "Because the check and the write are not atomic and the leader may be paused between them (GC, a stalled network). By the time it writes, someone else may hold leadership. Only the resource can refuse stale writes, using a fencing token."
   },
   {
-   "type": "choice",
-   "q": "Why do Raft-style systems randomize the election timeout?",
-   "options": [
-    "So that followers rarely become candidates at the same moment and split the vote",
-    "To make elections slower and reduce load",
-    "So the oldest node always wins",
-    "To prevent heartbeats from being sent"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "If every follower had the same timeout, they would all start elections together and split the votes, forever. Randomness lets one candidate get ahead and win before the others time out."
+   "q": "What is the worst-case time without a leader in a lease-based scheme?",
+   "a": "Roughly the lease TTL after the last renewal plus how often standbys poll. Example: 15 s TTL and standbys polling every 2 s gives up to about 17 s with no leader. Shorter TTL means faster failover but more false failovers."
   },
   {
-   "type": "number",
-   "q": "Leader lease TTL is 15 s, renewed every 5 s. The leader crashes right after a renewal. Standbys try to acquire the lease once every 2 s, at arbitrary phase. Taking acquisition time as negligible, what is the worst-case time until a new leader is in place, in seconds?",
-   "answer": 17,
-   "unit": "s",
-   "tolerance": 0,
-   "explain": "The lease cannot be taken until the full 15 s after the last renewal, and in the worst case a standby has just polled, so the next attempt comes 2 s later: 15 + 2 = 17 s. A shorter TTL or poll interval trades faster failover for more false failovers."
+   "q": "Why do Raft-style systems randomize election timeouts?",
+   "a": "Identical timeouts make every follower campaign at once and split the votes forever. Random timers let one candidate collect a majority before the others start."
   },
   {
-   "type": "choice",
-   "q": "Which designs elect a leader safely under network partitions? Select all that apply.",
-   "options": [
-    "Nodes vote and a candidate needs a majority",
-    "Candidates race for a compare-and-set on a key in a consensus-backed store, with a TTL",
-    "Each node declares itself leader if it cannot reach any node with a lower id",
-    "Each node picks itself leader when its local clock shows the earliest start time"
-   ],
-   "answer": [
-    0,
-    1
-   ],
-   "explain": "Majority voting and CAS in a consensus store both guarantee at most one winner at a time. Id- or clock-based self-declaration lets each side of a partition elect its own leader."
+   "q": "Why is 'lowest id wins' unsafe?",
+   "a": "It relies on each node seeing the others. In a partition each side sees a different lowest id and elects its own leader, so both accept writes. A majority or a CAS in a consensus-backed store cannot be won by both sides."
   },
   {
-   "type": "order",
-   "q": "Put a lease-based leader election and failover in order.",
-   "items": [
-    "Candidates attempt a conditional write on the leader key; exactly one succeeds and receives a token",
-    "The winner acts as leader and renews its lease periodically",
-    "The leader crashes or is partitioned and stops renewing",
-    "The lease expires and the key becomes free",
-    "Another candidate wins the next race with a higher token"
-   ],
-   "explain": "The higher token on the new leader is what lets resources reject any late writes from the old one."
+   "q": "A leader holds a 15 s lease, renews every 5 s, and a 20 s GC pause freezes it. What happens on wake-up?",
+   "a": "A standby took over after the lease expired, but the paused process still believes it leads. Without fencing both could write. Lease expiry gives liveness, not safety."
   },
   {
-   "type": "recall",
-   "q": "When should you not elect a single leader, and what do you do instead?",
-   "answer": "When the work can be split into independent pieces. A single leader is a throughput and availability bottleneck and an election is downtime. Partition the work (shards, hash buckets, consistent hashing) so each piece has its own owner, and elect only where something genuinely must be done by exactly one node, such as metadata or a global scheduler."
+   "q": "When should you avoid electing a leader?",
+   "a": "When the work splits into independent pieces. One leader is a throughput and availability bottleneck and every election is downtime. Give each shard or hash bucket its own owner via [consistent hashing](#/sd/f/consistent-hashing) and elect only for things that must be done by exactly one node, like metadata or a global scheduler."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Compare three ways to elect a leader and say when you would pick each.",
+   "points": [
+    "Consensus (Raft, etcd, ZooKeeper): strongest, majority and terms",
+    "Lease with CAS on a coordinator: simple, depends on the coordinator's consistency",
+    "ID or clock schemes break under partitions",
+    "Names the cost: election time is downtime"
+   ]
+  },
+  {
+   "q": "Explain split brain and how you prevent a deposed leader from doing damage.",
+   "points": [
+    "Two nodes both believe they lead and accept writes",
+    "Deposed leader may not know (pause, partition)",
+    "Fencing token (term or epoch) checked by the resource",
+    "Majority decisions so two sides cannot both win"
+   ]
+  },
+  {
+   "q": "Does this system really need a leader? Argue for partitioning the work instead.",
+   "points": [
+    "A leader is a bottleneck and a failure window",
+    "Partition by key with consistent hashing, one owner per piece",
+    "Keep a leader only for truly singleton jobs",
+    "Mention the failover link: [leader-based failover](#/sd/f/leader-based-failover)"
+   ]
   }
  ]
 }

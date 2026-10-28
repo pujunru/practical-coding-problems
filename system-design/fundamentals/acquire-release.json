@@ -1,66 +1,63 @@
 {
  "id": "acquire-release",
  "title": "Lock Acquire / Release",
- "summary": "A lock has a three-step protocol: **acquire, work in the critical section, release**. Most lock bugs are bugs in the pairing.\n\n- **Acquire must be atomic.** \"Read the lock, see it free, then write it\" lets two clients both win. Use one conditional operation: `SET key owner NX PX ttl` in Redis, compare-and-set on a row, create-if-absent in a coordination service.\n- **Acquire has a policy:** try-lock (return immediately), wait with a timeout, or give up. Never wait forever, and retry with [backoff and jitter](#/sd/f/backoff-jitter).\n- **Release must always run:** in a `finally` / `defer`, so an exception or early `return` doesn't leak the lock.\n- **Release must check ownership.** Store a unique owner value when acquiring and release with an atomic compare-and-delete. Otherwise a holder whose lock already expired deletes the *next* holder's lock.\n- **Distributed locks need a TTL** (so they're really [leases](#/sd/f/lease)): a crashed holder can't release, so expiry does it. Pick a TTL longer than the normal critical section but short enough for fast recovery.\n- **A TTL means a holder can lose the lock while still working.** Send a [fencing token](#/sd/f/fencing-token) with writes so the resource rejects the stale holder.\n\nKeep the critical section as short as possible; the longer a lock is held, the more [contention](#/sd/f/lock-contention) it creates. Locks that the same thread needs to take twice need [reentrancy](#/sd/f/reentrant-lock); read-heavy data may want a [read-write lock](#/sd/f/read-write-lock).",
- "drills": [
+ "explain": "A lock is a three-step protocol: acquire, do the work in the critical section, release. Almost every lock bug is a bug in the pairing, so I say how acquire stays atomic, how release always runs and checks ownership, and why a distributed lock needs a TTL and a fencing token.",
+ "model": "```\nacquire (atomic) -> critical section (short) -> release (always, only if still mine)\n```\n\n- **Acquire is one atomic conditional op**: Redis `SET key owner NX PX ttl`, a compare-and-set on a row, create-if-absent in a coordination service. \"Read, see free, then write\" lets two clients both win.\n- **Acquire has a policy**: try-lock (return now), wait with a timeout, or give up. Never wait forever; retry with [backoff and jitter](#/sd/f/backoff-jitter).\n- **Release always runs**: `finally` / `defer`, so an exception or early return cannot leak the lock.\n- **Release checks ownership**: store a unique owner value and do an atomic compare-and-delete, otherwise a holder whose lock expired deletes the *next* holder's lock.\n- **Distributed locks carry a TTL** so a crashed holder cannot block forever. That makes them [leases](#/sd/f/lease).\n- **A TTL means a holder can lose the lock while still working**, so protected writes carry a [fencing token](#/sd/f/fencing-token).\n\nKeep the critical section short; long holds create [contention](#/sd/f/lock-contention).",
+ "details": [
   {
-   "type": "choice",
-   "q": "Worker A takes a Redis lock with a 30 s TTL, but its work takes 40 s. Worker B acquires the lock at 31 s. At 40 s A finishes and runs `DEL lock`. What is the result and the fix?",
-   "options": [
-    "A deletes B's lock; fix by storing a unique owner value and releasing with an atomic compare-and-delete (and fence writes with a token)",
-    "Nothing; DEL on an expired key is harmless",
-    "B's work is automatically protected because B holds a newer TTL",
-    "Fix by increasing the TTL to 24 hours"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A blindly releases a lock it no longer owns, letting a third client in while B is still working. A giant TTL only delays recovery after crashes. Ownership-checked release plus fencing is the correct combination."
+   "q": "Why must acquisition be a single atomic operation?",
+   "a": "The gap between check and set is itself a race: two clients read 'free' and both write themselves as owner. A conditional set makes the server serialize the decision in one step."
   },
   {
-   "type": "choice",
-   "q": "Why must lock acquisition be a single atomic operation?",
-   "options": [
-    "With separate read then write, two clients can both read 'free' and both write themselves as owner",
-    "Atomic operations are faster",
-    "Locks must be acquired in a transaction log",
-    "Because the TTL cannot be set otherwise"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The gap between check and set is itself a race. A conditional set (set only if absent) turns the decision into one step the server serializes."
+   "q": "Worker A has a 30 s TTL but works for 40 s. B takes the lock at 31 s. At 40 s A runs `DEL lock`. What happens?",
+   "a": "A deletes B's lock, letting a third client in while B is still working. Fix it by releasing with an atomic compare-and-delete on the owner value, and by fencing writes with a token. Raising the TTL only delays recovery after crashes."
   },
   {
-   "type": "order",
-   "q": "Put correct lock usage in order.",
-   "items": [
-    "Acquire atomically with a unique owner value and a TTL",
-    "If acquisition fails, back off with jitter and retry or give up after a timeout",
-    "Run the critical section, sending the fencing token with writes",
-    "Release in a finally block with a compare-and-delete on the owner value"
-   ],
-   "explain": "Release goes last and must run on all paths; the owner check protects against releasing a lock that expired and was reassigned."
+   "q": "How do you choose the TTL?",
+   "a": "Longer than the normal critical section including a pause or two, short enough that recovery after a crash is acceptable. If the work can run long, renew while healthy instead of using a giant TTL."
   },
   {
-   "type": "choice",
-   "q": "Which situations can leave a lock held (blocked) long after its holder stopped caring? Select all that apply.",
-   "options": [
-    "A distributed lock without a TTL and the holder process crashes",
-    "A function returns early before the line that calls unlock, with no finally block",
-    "A lock with a TTL where the holder crashes",
-    "A lock released in a finally block when the work throws"
-   ],
-   "answer": [
-    0,
-    1
-   ],
-   "explain": "Without a TTL nobody can recover a dead holder's lock, and an unreleased exit path leaks it. With a TTL it frees itself eventually, and finally runs on exceptions."
+   "q": "Which situations leave a lock held long after the holder stopped caring?",
+   "a": "No TTL and the holder crashes; or an early return that skips the unlock because there is no `finally`. With a TTL the lock frees itself, and `finally` runs on exceptions."
   },
   {
-   "type": "recall",
-   "q": "List the four rules that make acquire and release safe for a distributed lock.",
-   "answer": "Acquire atomically (set-if-absent) with a unique owner value; give it a TTL so crashes don't deadlock it; release in a finally path using an ownership-checked atomic delete; and have the protected resource check a fencing token, because a TTL means a slow holder may keep working after losing the lock."
+   "q": "What should acquire do when the lock is busy?",
+   "a": "Choose deliberately: fail fast, or wait with a deadline and jittered retries. Unbounded waiting and tight retry loops from thousands of waiters create a thundering herd."
+  },
+  {
+   "q": "Is a TTL lock safe on its own?",
+   "a": "No. It gives liveness, not safety. A paused holder can wake up after expiry and write. The resource has to reject stale holders with a [fencing token](#/sd/f/fencing-token)."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Show the correct lifecycle of a Redis-style distributed lock and justify each step.",
+   "points": [
+    "Atomic set-if-absent with a unique owner value and TTL",
+    "Work inside a short critical section",
+    "Release in finally",
+    "Compare-and-delete so only the owner releases",
+    "Fencing token for the protected writes"
+   ]
+  },
+  {
+   "q": "A lock was released by the wrong client. Explain how that happens and how to prevent it.",
+   "points": [
+    "Holder's TTL expired while it was still working",
+    "Another client acquired the lock",
+    "Old holder released blindly",
+    "Owner check on release",
+    "Fencing token on writes"
+   ]
+  },
+  {
+   "q": "How do you avoid both deadlock and a thundering herd around a lock?",
+   "points": [
+    "TTL so crashes do not block forever",
+    "Wait with a timeout",
+    "Backoff with jitter on retries",
+    "Short critical section"
+   ]
   }
  ]
 }

@@ -1,63 +1,66 @@
 {
-  "id": "heartbeat-lease",
-  "title": "Heartbeat + Lease",
-  "summary": "A **monitor** decides whether a **worker** is alive. The worker periodically sends a **heartbeat**; each one renews a **lease with a TTL**. If the lease expires the node is considered unreliable, and the monitor records the new state (for example in etcd) and starts recovery: requeue the node's work, remove it from routing.\n\n**Why a lease and not \"one missed heartbeat = dead\"?** Heartbeats arrive late (network delay, GC, a busy NIC). The TTL is the slack. A common rule: TTL is about 3 heartbeat intervals, and renew at about TTL/3, so one or two lost or delayed beats do not cause a false death.\n\n**Clock shift.** The monitor judges expiry on its own clock ([clock skew](#/sd/f/clock-shift)); to be safe it waits `TTL + MAX_ALLOW_CLOCK_SHIFT` before acting.\n\n**Where heartbeats live.** Heartbeats are high-volume, low-value soft state: keep them in memory or Redis, no WAL or consensus write each time. Only *state transitions* (alive to dead) are persisted to the durable store. After a monitor restart, workers simply beat again.\n\n**Detecting expiry efficiently.** Use a [timer wheel](#/sd/f/timer-wheel): each heartbeat cancels the worker's old timer and inserts a new one `TTL` ahead (with a *rounds* counter if the TTL spans more than one wheel revolution). When the hand reaches a bucket, scan it; timers whose rounds are 0 have expired.\n\n**Zombie workers.** A worker may be alive but cut off (for example a congested top-of-rack switch), and still running when its work is reassigned. Defend in layers: a **grace period** before declaring death, **cancel-on-requeue** (best-effort stop of the old run), and a [fencing token](#/sd/f/fencing-token) at the resource as the guarantee. See [lease](#/sd/f/lease) and [failover](#/sd/f/failover).",
-  "drills": [
-    {
-      "type": "number",
-      "q": "Workers heartbeat every 5 s. The lease TTL is 15 s and the monitor adds MAX_ALLOW_CLOCK_SHIFT = 2 s before declaring a node dead. A worker's last heartbeat is received at t = 100 s and the worker then crashes. At what time, in seconds, does the monitor declare it dead?",
-      "answer": 117,
-      "unit": "s",
-      "tolerance": 0,
-      "explain": "The lease runs to 100 + 15 = 115 s and the monitor waits the extra 2 s of clock-shift allowance, so it acts at 117 s. That is the price of avoiding false deaths: 17 s of detection delay for the 5 s interval."
-    },
-    {
-      "type": "choice",
-      "q": "Heartbeats are sent every 5 s and the network occasionally delays one by up to 4 s. Which TTL is the best fit?",
-      "options": [
-        "5 s, equal to the interval, for the fastest detection",
-        "7 s; the delay would still have to be under 2 s",
-        "15 s, about three intervals, so one or two late or lost beats do not trigger a false failover",
-        "10 minutes, so the system never evicts healthy nodes"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "A delayed beat arrives up to 9 s after the previous one (5 + 4), which would expire a 5 s or 7 s lease even though the worker is healthy. 10 minutes makes real failures take far too long to notice."
-    },
-    {
-      "type": "choice",
-      "q": "A worker is partitioned from the monitor, not dead. The monitor expires its lease and requeues the job to worker B; worker A, still running, tries to write the result. Which mechanism actually guarantees that A's stale write is rejected?",
-      "options": [
-        "A longer grace period before declaring A dead",
-        "A shorter TTL, so A is evicted sooner",
-        "Cancel-on-requeue: telling A to stop",
-        "A fencing token checked by the result store, which refuses writes from the older lease generation"
-      ],
-      "answer": [
-        3
-      ],
-      "explain": "Grace periods reduce false positives, and cancel messages are best effort (A may be unreachable), but neither can stop a write that is already in flight. Only the resource itself can enforce ordering of owners."
-    },
-    {
-      "type": "number",
-      "q": "A fleet has 10,000 workers, each heartbeating every 5 s. How many heartbeat updates per second must the monitor absorb?",
-      "answer": 2000,
-      "unit": "updates/s",
-      "tolerance": 0,
-      "explain": "10,000 / 5 s = 2,000/s, which is 7.2 million per hour. Persisting each through a replicated log would make the heartbeat path the bottleneck, so heartbeats stay in memory or Redis and only alive/dead transitions are written durably."
-    },
-    {
-      "type": "order",
-      "q": "Put the timer-wheel handling of one worker's lease in order.",
-      "items": [
-        "A heartbeat arrives from the worker",
-        "The monitor cancels the worker's existing timer",
-        "It inserts a new timer TTL ahead into the right bucket, with a rounds counter if needed",
-        "The wheel hand reaches that bucket and scans it",
-        "A timer with rounds = 0 fires: the node is marked dead in the durable store and recovery starts"
-      ],
-      "explain": "Cancel-and-reinsert makes each heartbeat O(1). Rounds let one wheel represent timers longer than its span: each pass decrements the counter and only a timer at 0 expires."
-    }
-  ]
+ "id": "heartbeat-lease",
+ "title": "Heartbeat + Lease",
+ "explain": "A monitor decides whether a worker is alive. The worker sends periodic heartbeats, each of which renews a lease with a TTL, and when the lease expires the monitor treats the node as unreliable and starts recovery. The lease, not a single missed beat, is what keeps late heartbeats from causing false deaths.",
+ "model": "**Worker -> Monitor:** send heartbeats periodically; each one renews a **lease with a TTL**; if the lease expires the node is unreliable, the monitor records the new state (e.g. in etcd) and starts recovery (requeue its work, drop it from routing).\n\n- **Why a lease:** heartbeats arrive late (network delay, GC). The TTL is the slack. TTL about **3 intervals**, renew at **TTL/3**.\n- **Clock shift:** the monitor judges expiry on its own clock ([clock shift](#/sd/f/clock-shift)), and waits `TTL + MAX_ALLOW_CLOCK_SHIFT` before acting.\n- **Where heartbeats live:** in memory or Redis. They are high-volume, low-value soft state; no WAL or consensus write each time. Only the alive-to-dead **transition** is persisted.\n- **Efficient expiry:** a [timer wheel](#/sd/f/timer-wheel). Each heartbeat cancels the old timer and inserts one `TTL` ahead (with a rounds counter); scanning a bucket expires timers at `round == 0`.\n\n**Zombie workers** (alive but cut off, e.g. a congested top-of-rack switch), defended in layers: **grace period**, **cancel-on-requeue**, and a [fencing token](#/sd/f/fencing-token) as the guarantee.",
+ "details": [
+  {
+   "q": "Why not declare a worker dead after one missed heartbeat?",
+   "a": "Heartbeats can be delayed by the network or a pause. A TTL of about three intervals lets one or two late or lost beats pass without a false failover."
+  },
+  {
+   "q": "Heartbeat every 5 s, TTL 15 s, clock-shift allowance 2 s. The last heartbeat arrives at t=100 s and the worker crashes. When is it declared dead?",
+   "a": "100 + 15 + 2 = 117 s. That 17 s detection delay is the price of avoiding false deaths."
+  },
+  {
+   "q": "Beats every 5 s, occasional 4 s delay. Which TTL?",
+   "a": "About 15 s. A delayed beat arrives up to 9 s after the previous one, which would expire a 5 s or 7 s lease on a healthy worker, while a 10-minute TTL makes real failures take far too long to notice."
+  },
+  {
+   "q": "10,000 workers heartbeat every 5 s. What load, and where do you store it?",
+   "a": "2,000 updates per second, 7.2 million an hour. Keep it in memory or Redis and persist only alive/dead transitions; writing each through a replicated log would make the heartbeat path the bottleneck."
+  },
+  {
+   "q": "A worker is partitioned from the monitor but still running; its job is requeued. What guarantees its stale write is rejected?",
+   "a": "A fencing token checked by the result store. Grace periods cut false positives and cancel messages are best effort, but only the resource can stop a write already in flight."
+  },
+  {
+   "q": "How does the timer wheel make each heartbeat cheap?",
+   "a": "Cancel the worker's old timer and insert a new one TTL ahead, O(1). A rounds counter lets one wheel hold timers longer than its span; each revolution decrements it and a timer at 0 expires."
+  },
+  {
+   "q": "How does this differ from a bare lease?",
+   "a": "A [lease](#/sd/f/lease) is the ownership primitive. Heartbeat + lease is the liveness protocol around it: how the monitor learns of death and what it does next. Reassignment then follows [failover](#/sd/f/failover)."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain a heartbeat plus lease failure detector end to end.",
+   "points": [
+    "Heartbeat renews a lease with a TTL",
+    "TTL about 3 intervals, renew at TTL/3",
+    "Monitor waits TTL plus clock-shift allowance",
+    "Persist only state transitions, not heartbeats",
+    "Recovery: requeue and remove from routing"
+   ]
+  },
+  {
+   "q": "A worker looks dead but is merely partitioned. What goes wrong and what do you do?",
+   "points": [
+    "Its job is reassigned while it still runs",
+    "Grace period reduces false positives",
+    "Cancel-on-requeue is best effort",
+    "Fencing token at the resource is the guarantee"
+   ]
+  },
+  {
+   "q": "How would you build the monitor to handle 100,000 workers?",
+   "points": [
+    "Heartbeats in memory or Redis",
+    "Timer wheel with rounds, O(1) per beat",
+    "Persist transitions only",
+    "Shard monitors by worker"
+   ]
+  }
+ ]
 }

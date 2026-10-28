@@ -1,74 +1,69 @@
 {
-  "id": "time-box-patterns",
-  "title": "Time-Box Patterns",
-  "summary": "A time box answers one design-review question: **\"If this step never returns, what state does the system end in, who pushes it there, and when?\"**\n\nThree principles:\n1. **Timeout is Unknown, not Failure.** Giving up says nothing about what the other side did, so retries need an [idempotency key](#/sd/f/idempotency).\n2. **The authority decides expiry.** The party that owns the state (DB, coordinator) judges \"expired\" with its own clock; a client's local timer is only advisory.\n3. **Every non-terminal state has a timeout edge** to a terminal state or a compensation. Otherwise you collect zombies stuck in `PENDING`.\n\nFive patterns:\n- **P1 Deadline propagation:** turn the relative timeout into an absolute deadline at the entry and pass it down; each hop uses remaining time minus a margin; drop expired work at dequeue ([timeout](#/sd/f/timeout)).\n- **P2 Retry inside a budget:** total deadline, per-attempt cap, [jittered backoff](#/sd/f/backoff-jitter), a retry budget of about 10% ([retry](#/sd/f/retry)).\n- **P3 Lease + fencing token:** ownership expires on its own, renew at about TTL/3, and the protected resource rejects stale tokens ([lease](#/sd/f/lease), [fencing token](#/sd/f/fencing-token)).\n- **P4 Durable timer + reaper:** long business timeouts (unpaid order after 30 min) are stored as data (`expires_at`) and enforced by a batch job using conditional updates and `SKIP LOCKED`; reads also treat expired rows as expired (lazy + active).\n- **P5 Heartbeat + liveness timeout:** declare death after missed heartbeats, but wait out the lease before reassigning ([heartbeat + lease](#/sd/f/heartbeat-lease)).\n\nAt scale, do not keep one sleeping thread per timeout: use a hierarchical [timer wheel](#/sd/f/timer-wheel) or a heap.",
-  "drills": [
-    {
-      "type": "choice",
-      "q": "An order service uses an in-process timer to cancel unpaid orders after 30 minutes. A deploy restarts the pods at minute 12. What is the best fix?",
-      "options": [
-        "Increase the timer to 45 minutes so restarts do not matter",
-        "Persist `expires_at` on the order and run a reaper that cancels due rows; treat past-due rows as expired on read",
-        "Keep the timers, but replicate them across pods in memory",
-        "Ask clients to cancel unpaid orders themselves"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "A timeout that lives only in process memory dies with the process and leaves orders stuck in PENDING forever. Durable timers make the timeout part of the data, so any reaper instance can enforce it, and lazy checks keep reads correct even before the reaper arrives."
-    },
-    {
-      "type": "choice",
-      "q": "At minute 30:00 the reaper cancels an order at the same moment the user's payment succeeds. Which implementation is correct?",
-      "options": [
-        "Check `expires_at < now()` in application code, then update the order",
-        "Take an in-memory lock in the payment service so the reaper has to wait",
-        "Make both transitions conditional updates (`WHERE status = 'PENDING_PAYMENT'`); whichever commits first wins, and the loser handles it (for example refunding)",
-        "Let both write; the later write overwrites the earlier one"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "A check-then-update leaves a gap where the other transition slips in. A compare-and-set at the database makes the race safe by construction; the losing side needs a defined compensation, such as an automatic refund."
-    },
-    {
-      "type": "order",
-      "q": "Put the steps of one reaper batch in order.",
-      "items": [
-        "Select due rows (`status = 'PENDING'`, `expires_at < now()`) ordered by expires_at with `FOR UPDATE SKIP LOCKED`, up to a batch limit",
-        "Update those rows to CANCELLED, with the condition that the status is still PENDING",
-        "Commit the transaction and obtain the ids that were actually cancelled",
-        "Run the compensation for each returned id (release stock, notify), idempotently",
-        "Sleep until the next poll or until the next expiry, then repeat"
-      ],
-      "explain": "SKIP LOCKED lets several reapers run without blocking each other; compensating only the rows the conditional update actually changed prevents releasing stock for an order that was paid in the meantime."
-    },
-    {
-      "type": "number",
-      "q": "At 12:00 a promotion creates 100,000 orders, all with a 30-minute expiry. A single reaper processes batches of 500 rows every 10 seconds. How many seconds after 12:30 until the last of these orders is cancelled?",
-      "answer": 2000,
-      "unit": "s",
-      "tolerance": 0,
-      "explain": "Throughput is 500 / 10 s = 50 orders/s, so 100,000 / 50 = 2,000 s (about 33 minutes). Mitigations: more reapers in parallel (SKIP LOCKED), bigger batches, and lazy expiry on read so users never see the stale state while the backlog drains."
-    },
-    {
-      "type": "choice",
-      "q": "A mobile app shows 'Reservation expired' when its local clock passes the expiry time, but the server still accepted the user's confirmation 20 seconds later. Which principle was violated, and what is the fix?",
-      "options": [
-        "Timeout = Failure; use shorter timeouts",
-        "The authority (server/DB) decides expiry with its own clock; the client display is advisory, and confirmation must be validated server-side",
-        "Every non-terminal state needs a timeout edge; add a PENDING state",
-        "Clients must retry confirmations with jitter"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Clocks on devices drift and can be changed by users. Only the state owner can give a binding answer, and the client should surface the server's verdict."
-    },
-    {
-      "type": "recall",
-      "q": "Take a flow 'user submits a document, a worker converts it, the user downloads it'. Name three non-terminal states, the timeout edge for each, and who enforces it.",
-      "answer": "For example: SUBMITTED (waiting for a worker) -> times out to FAILED/QUEUE-BACK after N minutes, enforced by a reaper checking `expires_at`; CONVERTING (worker holds a lease) -> lease expires, the job goes back to SUBMITTED with fencing on the old worker, enforced by the job store/orchestrator; READY (waiting for download) -> expires to DELETED after retention, enforced by a lifecycle job. Each timeout is stored as data, judged by the authority that owns the state, and its transition is a conditional update so it races safely with normal completion."
-    }
-  ]
+ "id": "time-box-patterns",
+ "title": "Time-Box Patterns",
+ "explain": "Time boxing answers one design-review question: if this step never returns, what state does the system end in, who pushes it there, and when? I use three principles and five patterns to answer it, so there are no zombie states stuck in pending.",
+ "model": "**Review question:** \"If this step **never returns**, what state does the system end in? Who pushes it there? When?\"\n\n**Three principles**\n1. **Timeout is Unknown, not Failure.** Giving up says nothing about what the other side did, so retries need an [idempotency key](#/sd/f/idempotency).\n2. **The authority decides expiry.** The owner of the state (DB, coordinator) judges 'expired' on its own clock; a client's timer is advisory.\n3. **Every non-terminal state has a timeout edge** to a terminal state or a compensation.\n\n**Five patterns**\n\n| Pattern | Use | Must-haves |\n| --- | --- | --- |\n| **P1 Deadline propagation** | sync call chains | absolute deadline, remaining minus margin, drop expired at dequeue |\n| **P2 Retry in a budget** | any retry | total deadline, per-attempt cap, jitter, ~10% budget |\n| **P3 Lease + fencing** | locks, leaders, task claims | renew at TTL/3, fencing token |\n| **P4 Durable timer + reaper** | long business timeouts | `expires_at` as data, conditional updates, `SKIP LOCKED` |\n| **P5 Heartbeat + liveness** | node or worker health | wait out the lease before reassigning |",
+ "details": [
+  {
+   "q": "An order service cancels unpaid orders with an in-process 30-minute timer; a deploy restarts pods at minute 12. Fix?",
+   "a": "Persist `expires_at` on the order and run a reaper that cancels due rows; also treat past-due rows as expired on read (lazy plus active). A timer that lives only in process memory dies with the process and leaves orders stuck."
+  },
+  {
+   "q": "At minute 30:00 the reaper cancels an order just as the user's payment succeeds. What is correct?",
+   "a": "Make both transitions conditional updates (`WHERE status='PENDING_PAYMENT'`). Whichever commits first wins; the loser handles it, for example the payment path refunds. Check-then-update in application code leaves a gap."
+  },
+  {
+   "q": "A phone shows 'Reservation expired' by its local clock but the server accepted confirmation 20 s later. What was violated?",
+   "a": "The authority decides expiry. Device clocks drift and users can change them. The client displays the server's verdict, and confirm is validated server-side."
+  },
+  {
+   "q": "At 12:00, 100,000 orders expire at 12:30 and one reaper handles 500 rows per 10 s. When is the last cancelled?",
+   "a": "500 / 10 s is 50 orders/s, so 100,000 / 50 = 2,000 s, about 33 minutes later. Add reapers in parallel with `SKIP LOCKED`, bigger batches, and lazy expiry on read so users never see stale state."
+  },
+  {
+   "q": "Why store timeouts as data and not in memory?",
+   "a": "Any reaper instance can enforce them, they survive restarts, and they can be queried and indexed. For small scale poll the DB; for more use a delayed queue or a workflow engine's durable timer."
+  },
+  {
+   "q": "Pick three non-terminal states in 'submit document, worker converts, user downloads' and their timeout edges.",
+   "a": "SUBMITTED to FAILED or re-queued after N minutes (reaper checks `expires_at`); CONVERTING, a worker lease expires and the job returns to SUBMITTED with the old worker fenced (job store enforces); READY to DELETED after retention (lifecycle job). Each is data, judged by the state's owner, applied as a conditional update."
+  },
+  {
+   "q": "How do you run millions of timeouts on one machine?",
+   "a": "Not one sleeping thread each. Use a hierarchical [timer wheel](#/sd/f/timer-wheel) (O(1) insert and cancel, some precision loss), a min-heap when precision matters, or coarse buckets that round expiry to 1 s."
+  },
+  {
+   "q": "How does this concept relate to the individual Health topics?",
+   "a": "It is the umbrella: [timeout](#/sd/f/timeout) is P1, [retry](#/sd/f/retry) is P2, [lease](#/sd/f/lease) is P3, [heartbeat + lease](#/sd/f/heartbeat-lease) is P5. Those each go deep; this one asks whether every state has an exit."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Walk through the time-box review question on an order flow with payment.",
+   "points": [
+    "List each non-terminal state",
+    "Name its timeout edge and the actor that pushes it",
+    "Reaper with expires_at, conditional updates",
+    "Compensation such as refund or stock release",
+    "Authority judges expiry"
+   ]
+  },
+  {
+   "q": "Explain the three principles and the failure each prevents.",
+   "points": [
+    "Timeout is unknown: duplicate charges without idempotency",
+    "Authority decides expiry: clock disagreement",
+    "Timeout edge on every state: zombies in PENDING"
+   ]
+  },
+  {
+   "q": "Pick two of the five patterns and explain when you use each.",
+   "points": [
+    "Names the pattern and its use case",
+    "Core mechanism and must-have companions",
+    "A concrete example",
+    "Failure mode if the companion is missing"
+   ]
+  }
+ ]
 }

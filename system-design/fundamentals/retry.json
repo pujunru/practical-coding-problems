@@ -1,59 +1,64 @@
 {
-  "id": "retry",
-  "title": "Retry",
-  "summary": "A retry re-sends a request that failed or timed out, on the bet that the fault was transient. It is the cheapest reliability tool and the easiest way to cause an outage. Retry only when **all** of these hold:\n\n1. **The error is retryable:** timeouts, connection resets before a request was sent, `503`, `429` (honour `Retry-After`). Never `400`, `404`, `422`: repeating them cannot succeed.\n2. **The operation is idempotent**, or carries an [idempotency key](#/sd/f/idempotency). A timeout on a payment is *unknown*, so a bare retry can double-charge.\n3. **The retry is bounded**: a maximum number of attempts, a total deadline ([timeout](#/sd/f/timeout)), spaced by [backoff and jitter](#/sd/f/backoff-jitter).\n4. **A retry budget caps the total**: allow retries only up to about 10% of normal request volume (a token bucket refilled by successful requests). When the dependency is truly down the budget runs out and you stop adding load.\n\n**Convention:** \"3 attempts\" means 1 original + 2 retries.\n\n**Amplification.** If each of `k` layers makes `n` attempts, the bottom layer can see up to `n^k` calls per user request. Retrying at the gateway, the service and the database client turns one failed click into dozens of calls to the thing that is already struggling. Pick **one layer** to retry and let the others fail fast, or pass a \"do not retry\" signal downwards.\n\nRetries repair *transient* faults. For persistent ones, add a [circuit breaker](#/sd/f/circuit-breaker) so callers stop trying, and [load shedding](#/sd/f/load-shedding) so servers can say no cheaply.",
-  "drills": [
-    {
-      "type": "number",
-      "q": "A user request passes gateway -> service A -> service B -> database. Each of the three callers (gateway, A, B) makes up to 3 attempts per call (1 original + 2 retries) and retries on any failure, and the database fails every call immediately. How many calls does the database receive for one user request?",
-      "answer": 27,
-      "unit": "calls",
-      "tolerance": 0,
-      "explain": "Each layer multiplies: gateway tries A 3 times, each A attempt tries B 3 times, each B attempt tries the database 3 times, so 3 x 3 x 3 = 27. Retries at only one layer would produce 3."
-    },
-    {
-      "type": "choice",
-      "q": "Which of these failures should an automatic retry policy retry? Select all that apply.",
-      "options": [
-        "`GET /items/42` timed out after 800 ms",
-        "`429 Too Many Requests` with `Retry-After: 2`",
-        "`400 Bad Request` because a required field is missing",
-        "`POST /charges` timed out and the request carries no idempotency key",
-        "Connection refused while connecting to one of three replicas"
-      ],
-      "answer": [
-        0,
-        1,
-        4
-      ],
-      "explain": "A read, a rate-limit response and a failed connect (request never delivered) are safe and plausibly transient. A 400 will fail identically every time. A non-idempotent POST that timed out may already have executed, so a blind retry risks a duplicate side effect."
-    },
-    {
-      "type": "number",
-      "q": "A service sends 1,000 requests per second to a downstream that has fully failed. Without limits each failed request is retried twice. With a retry budget of 10% of request volume, how many calls per second does the downstream now receive, at most?",
-      "answer": 1100,
-      "unit": "calls/s",
-      "tolerance": 0,
-      "explain": "Originals: 1,000/s. Retries are capped at 10% of that, 100/s, so the total is 1,100/s instead of the unbudgeted 3,000/s. The budget turns retries from a multiplier into a small surcharge."
-    },
-    {
-      "type": "choice",
-      "q": "The gateway, the service SDK and the database client all retry failed calls three times, and an incident shows the database at 20x its normal traffic. What is the best structural fix?",
-      "options": [
-        "Raise each layer's attempt count so one of them eventually succeeds",
-        "Choose one layer that owns retries (with a budget); the others fail fast and surface a non-retryable signal",
-        "Remove all retries in the system so that failures are exposed",
-        "Shorten each layer's timeout to 100 ms so retries happen sooner"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "The multiplication across layers is the problem, not the individual retry. Removing retries entirely loses recovery from brief faults; shorter timeouts make more calls fail and more retries fire."
-    },
-    {
-      "type": "recall",
-      "q": "List the conditions a retry must satisfy to be safe in a distributed system, and name the failure mode if the last one is missing.",
-      "answer": "Retryable error class; idempotent (or idempotency-keyed) operation; bounded attempts within an overall deadline; backoff with jitter; a retry budget; retries owned by a single layer. Without the budget/single-layer discipline, retries amplify load (n^k across layers) on an already-failing dependency and turn a partial outage into a retry storm."
-    }
-  ]
+ "id": "retry",
+ "title": "Retry",
+ "explain": "A retry resends a request that failed or timed out, betting that the fault was transient. It is the cheapest reliability tool and the easiest way to cause an outage. So I retry only the right errors, only safe operations, only a bounded number of times, and under a budget, and I pick one layer to own the retries.",
+ "model": "Retry only when **all** of these hold:\n\n1. **Retryable error:** timeout, connection reset before the request was sent, `503`, `429` (honour `Retry-After`). Never `400`, `404`, `422`.\n2. **Safe to repeat:** the operation is idempotent or carries an [idempotency key](#/sd/f/idempotency). A timed-out payment is *unknown*.\n3. **Bounded:** max attempts, total deadline ([timeout](#/sd/f/timeout)), spaced by [backoff and jitter](#/sd/f/backoff-jitter). \"3 attempts\" means 1 original + 2 retries.\n4. **Budgeted:** retries capped at about 10% of normal request volume (a token bucket refilled by successes), so a dead dependency does not get tripled load.\n\n**Amplification.** With `k` layers each making `n` attempts, the bottom sees up to `n^k` calls per user request.\n\n```\ngateway x3 -> service A x3 -> service B x3 -> DB   = 27 calls for 1 click\n```\n\nPick **one layer** to retry; the rest fail fast or pass a do-not-retry signal. For persistent faults add a [circuit breaker](#/sd/f/circuit-breaker).",
+ "details": [
+  {
+   "q": "Which of these would you retry: GET timeout, 429 with Retry-After, 400, POST /charges timeout without a key, connection refused on one replica?",
+   "a": "The GET, the 429 (after the stated wait) and the refused connection. The 400 fails identically every time, and the keyless POST may already have executed, so a blind retry risks a duplicate."
+  },
+  {
+   "q": "Three layers each try 3 times and the database fails every call. How many database calls per user request?",
+   "a": "3 x 3 x 3 = 27, versus 3 if only one layer retried. That is why one layer owns retries."
+  },
+  {
+   "q": "What does a retry budget of 10% do at 1,000 requests/s to a fully dead downstream?",
+   "a": "Retries are capped at 100/s, so the downstream sees at most 1,100/s instead of 3,000/s with two unbudgeted retries each. It turns retries from a multiplier into a small surcharge."
+  },
+  {
+   "q": "Why not simply remove retries to avoid storms?",
+   "a": "You lose recovery from brief faults. The fix is discipline, not absence: bounded, backed off, budgeted and owned by one layer."
+  },
+  {
+   "q": "An incident shows the DB at 20x traffic with retries at gateway, SDK and DB client. Fix?",
+   "a": "Choose one retrying layer with a budget; the others fail fast and surface a non-retryable signal. Raising attempt counts or shortening timeouts makes it worse."
+  },
+  {
+   "q": "What is hedging and when is it allowed?",
+   "a": "Sending a second copy of the request when the first has not answered by about the p95 time, taking whichever returns first. It needs an idempotent request and adds load, so it also counts against the budget."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "State the conditions under which a retry is safe and what each prevents.",
+   "points": [
+    "Retryable error class avoids pointless repeats",
+    "Idempotency avoids duplicate side effects",
+    "Bounded attempts and deadline avoid unbounded latency",
+    "Backoff with jitter avoids synchronized spikes",
+    "Budget and single layer avoid amplification"
+   ]
+  },
+  {
+   "q": "Explain a retry storm and how you would prevent one.",
+   "points": [
+    "Retries multiply across layers (n^k)",
+    "Failing dependency gets more load",
+    "Retry budget about 10%",
+    "One owning layer",
+    "Circuit breaker and load shedding as backstops"
+   ]
+  },
+  {
+   "q": "A payment POST times out. Describe what the client does.",
+   "points": [
+    "Outcome unknown",
+    "Retry with the same idempotency key",
+    "Within the total deadline",
+    "Backoff with jitter",
+    "Or reconcile by querying the result"
+   ]
+  }
+ ]
 }

@@ -1,87 +1,72 @@
 {
  "id": "raft",
  "title": "Raft",
- "summary": "Raft is [consensus](#/sd/f/consensus) with a **strong leader**. Time is cut into **terms**, numbered epochs (like \"the 5th president\"), and each term has at most one leader. A log entry is `(operation, term)` at an index.\n\n**Election.** Followers expect heartbeats; when they stop, the first *randomized* timer to fire wins the race: it becomes a candidate, increments its term, votes for itself and asks for votes. A node grants a vote only if (1) the candidate's term is not behind its own, (2) it has not already voted in that term (**one vote per term**), and (3) the candidate's log is at least as up to date as its own (higher last log term, or same term and longer log). A majority wins. The **term is a [fencing token](#/sd/f/fencing-token)**: any node that sees a higher term updates it, and an old leader steps down.\n\n**Replication.** The leader sends AppendEntries: a *prefix check* (\"my previous entry is `(term, index)`\") plus new entries. A follower whose log doesn't match rejects; the leader steps back and retries until the prefixes line up, then the follower takes the leader's suffix. An entry is **committed** once stored on a majority; the leader advances a **commit index** (sent along in later AppendEntries) and followers apply entries up to it. A leader counts replicas only for entries of its own term; committing one commits everything before it.\n\n**Edge case:** if the leader dies mid-write, an uncommitted entry may later survive or vanish. The client saw no ack, so it must retry with an [idempotency key](#/sd/f/idempotency).",
- "drills": [
+ "explain": "Raft is a consensus algorithm built around one strong leader. Time is cut into numbered terms, each with at most one leader, and every write goes through that leader's log and counts as committed once a majority has stored it. If the leader dies, a follower whose randomized timer fires first runs for office in a higher term, and the term number doubles as a fencing token that retires the old leader.",
+ "model": "Three pieces: **log**, **term**, **majority**.\n\n- **Log entry** = `(operation, term)` at an index. The log is the single ordered history.\n- **Term** = the epoch of a leader, like \"the 5th president\". A node's `log.max_term <= term`: it can know about a new term before it has caught up on entries.\n\n**Election** (fencing by term):\n1. Heartbeats from the leader stop.\n2. The first follower whose *jittered* alarm fires becomes a candidate and asks everyone for votes with `(candidate_id, term+1)`.\n3. A node says no if it has a higher term, has already voted in this term, or has a more up-to-date log. Anyone with a lower term just adopts the new one; an old leader steps down.\n4. A majority wins.\n\n**Write** = prefix plus suffix: the leader sends `(my previous entry is (term) @ index-1) | new entries`. A follower whose log doesn't match denies; the leader steps its prefix back for that follower and retries until the logs line up, which backfills and writes in one go. A majority ack commits.",
+ "details": [
   {
-   "type": "choice",
-   "q": "A 5-node cluster has leader L in term 5. A partition isolates L with one follower; the other three elect a new leader in term 6 and commit entries. The partition heals and L sends a heartbeat with term 5. What happens?",
-   "options": [
-    "L's message is rejected with term 6; L steps down to follower and its uncommitted entries are overwritten with the new leader's log",
-    "The followers accept L's heartbeat because it was leader first",
-    "Both leaders keep serving writes until an admin picks one",
-    "The new leader steps down because L has been leader longer"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Terms act as fencing tokens: a message from a lower term is rejected, and the reply carries the higher term so the stale leader reverts. L could never have committed anything in the minority partition, so no committed data is lost."
+   "q": "Why does the election need a majority, and why is one vote per term enough?",
+   "a": "Any two majorities overlap in at least one node, and that node votes only once per term, so two candidates cannot both win the same term. Split votes just mean nobody wins and a later timer retries in a higher term."
   },
   {
-   "type": "choice",
-   "q": "A follower in term 7 receives RequestVote(term 7, candidate C). Which conditions must hold for it to grant the vote? Select all that apply.",
-   "options": [
-    "It has not already voted for another candidate in term 7",
-    "C's log is at least as up to date as the follower's log",
-    "C's term is not lower than the follower's current term",
-    "C has the lowest node id"
-   ],
-   "answer": [
-    0,
-    1,
-    2
-   ],
-   "explain": "One vote per term guarantees at most one winner per term; the log up-to-date check ensures the winner holds every committed entry; the term check rejects stale candidates. Node id plays no role in Raft (randomized timers break ties)."
+   "q": "Why does the winner always hold every committed entry?",
+   "a": "A committed entry sits on a majority, and a candidate needs a majority of votes. The overlapping node would refuse a candidate whose log is behind its own (compared by last log term, then length), so a stale candidate cannot win."
   },
   {
-   "type": "number",
-   "q": "A Raft cluster has 7 nodes. Including the leader, how many nodes must have stored an entry (of the leader's current term) before the leader can mark it committed?",
-   "answer": 4,
-   "unit": "nodes",
-   "tolerance": 0,
-   "explain": "A majority of 7 is floor(7/2) + 1 = 4, counting the leader's own copy. Three followers' acknowledgements are enough."
+   "q": "What stops the old leader from coming back and writing?",
+   "a": "The term. A message with a lower term is rejected, and the reply carries the higher term so the old leader reverts to follower. It could never have committed anything while cut off in a minority, so no committed data is lost."
   },
   {
-   "type": "order",
-   "q": "Put a Raft leader election in order.",
-   "items": [
-    "Heartbeats from the leader stop arriving",
-    "A follower's randomized election timer fires first",
-    "It increments its term, becomes a candidate and votes for itself",
-    "It sends RequestVote to the other nodes and a majority grants it",
-    "It becomes leader and sends AppendEntries to establish authority"
-   ],
-   "explain": "Randomized timers make it unlikely that two followers start at once; if they do, votes split, nobody wins, and a later timer retries in a higher term."
+   "q": "Why randomize the election timeout?",
+   "a": "With identical timeouts every follower would become a candidate at once and split the vote repeatedly. Random timers let one follower get ahead and win before the others wake up."
   },
   {
-   "type": "choice",
-   "q": "The leader's next entry is index 10 (previous entry: index 9, term 4). A follower's log ends at index 7. The leader sends AppendEntries with prefix (index 9, term 4) and entry 10. What happens?",
-   "options": [
-    "The follower rejects it; the leader backs up for this follower (prefix at index 8, then 7, ...) until the prefixes match, then sends the whole missing suffix",
-    "The follower stores entry 10 and leaves a gap at 8 and 9",
-    "The follower starts a new election because it is behind",
-    "The leader declares the follower failed and removes it from the cluster"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The prefix check is what keeps logs identical: an entry is only appended if the entry before it matches. The leader's retry backfills the missing entries while carrying the new write."
+   "q": "What does the prefix check buy you?",
+   "a": "It keeps logs identical: an entry is only appended if the entry right before it matches. A lagging follower rejects, the leader backs up for that follower until the prefixes agree, then sends the whole missing suffix together with the new write."
   },
   {
-   "type": "choice",
-   "q": "A 5-node leader appends an entry to itself and one follower (2 of 5), then crashes. The client received no response. Which statements are true? Select all that apply.",
-   "options": [
-    "The entry may be lost if a node without it wins the election",
-    "The entry may survive and be committed if a node that has it wins",
-    "The client cannot know which happened, so its retry must be safe to repeat",
-    "The entry is guaranteed to appear in the new leader's log"
-   ],
-   "answer": [
-    0,
-    1,
-    2
-   ],
-   "explain": "Only 2 nodes hold it, so a candidate lacking it can win the votes of the three that don't. Raft guarantees committed entries survive; an uncommitted entry has no such promise. Hence the idempotency key on retry."
+   "q": "The leader dies after writing an entry to only a minority and the client got no answer. What can happen?",
+   "a": "Either a node without the entry wins and the entry vanishes, or a node with it wins and the entry is committed implicitly with later writes. Committed means certainly durable, but uncommitted means maybe. The client saw no ack, so it must retry with an idempotency key or a client fencing version."
+  },
+  {
+   "q": "The leader dies after a majority stored the entry but before anyone marked it committed. What happens?",
+   "a": "The next leader must come from that majority, because only they can win votes against the log check, so the entry survives and is committed with the next write. Again the client never saw an ack, so its retry must be safe to repeat."
+  },
+  {
+   "q": "How does the client's retry become safe after such a failure?",
+   "a": "The cluster keeps a map from client to the latest request version it has applied. A retry carrying an already applied version is acknowledged without being applied again, which is the same idea as an [idempotency key](#/sd/f/idempotency)."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain Raft to an interviewer in two minutes: leader, terms, election, replication.",
+   "points": [
+    "Strong leader orders all writes through its log",
+    "Terms as numbered epochs with at most one leader",
+    "Randomized timer, candidate asks for votes in term+1",
+    "Majority vote with one vote per term and a log up-to-date check",
+    "Commit when a majority stores the entry"
+   ]
+  },
+  {
+   "q": "A partitioned old leader reconnects and sends a heartbeat. Walk through what happens and why no committed data is lost.",
+   "points": [
+    "Heartbeat carries the old, lower term",
+    "Receivers reject it and reply with the higher term",
+    "The old leader steps down to follower",
+    "It could not commit in its minority partition",
+    "Its uncommitted entries get overwritten by the new leader's log"
+   ]
+  },
+  {
+   "q": "The leader crashes mid-write and the client gets no response. What are the possible outcomes and what must the client do?",
+   "points": [
+    "Entry on a minority: may be lost or may be committed by a later leader",
+    "Entry on a majority: survives and is committed with the next write",
+    "Committed is certain, uncommitted is only maybe",
+    "Client retry must be idempotent or carry a version",
+    "Cluster dedupes by the client's latest applied version"
+   ]
   }
  ]
 }

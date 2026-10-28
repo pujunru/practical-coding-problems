@@ -1,73 +1,66 @@
 {
  "id": "reservation",
  "title": "Reservation (Race + Long Fulfillment)",
- "summary": "A reservation combines two problems: a **race** (many people want the same thing) and a **long fulfillment** (finishing takes seconds to minutes: entering card details, waiting for a vendor). Holding a database lock for that long is a bad idea, so you **turn the lock into data**: a [lease](#/sd/f/lease) on a claim.\n\n- **Race, solved by reserving:** everyone competes to flip the resource from `AVAILABLE` to `HELD(by=X, expires_at=T)` with one atomic conditional write. Exactly one wins; the rest are told \"taken\".\n- **Long fulfillment, solved by the lease:** the winner has until T to finish. The hold keeps the resource off the market without holding any DB lock, and survives restarts.\n- **Commit with checks:** confirming flips `HELD` to `SOLD` only if the hold is still **yours and unexpired**, and if the **reserved payload has not changed** (for example the price, or quantity).\n- **Expiry returns the resource** to `AVAILABLE`. Treat an expired hold as available in the reserve query itself; don't wait for a sweeper.\n\nUse cases: inventory and ticket sales, payments (**authorize** = reserve funds, **capture** = commit; this is also what dedupes double charges), GPU or shared-host allocation, ride matching, job-queue claims, reserving a file's UID before upload.\n\nConfirm must be [idempotent](#/sd/f/idempotency), because users and networks retry. The hold can be fenced like any lease ([fencing token](#/sd/f/fencing-token)), and the state change usually triggers other machines ([syncing state machines](#/sd/f/multi-state-machine-sync)). The generic race is in [race conditions](#/sd/f/race-condition).",
- "drills": [
+ "explain": "A reservation is for the case where many people race for a scarce thing and finishing takes a while, like paying for a seat. You cannot hold a database lock for minutes, so you turn the lock into data: a time-limited hold on a claim. Exactly one caller wins the race, and the winner has until the hold expires to finish.",
+ "model": "Two problems, two halves of the mechanism:\n\n- **Race → reserve.** Everyone competes for one atomic conditional write, `AVAILABLE -> HELD(by=X, expires_at=T)`. One wins; the rest are told \"taken\".\n- **Long fulfillment → lease.** The winner has until T to finish (enter a card, wait on a vendor). The hold is just a row, so it survives restarts and holds no lock or connection.\n\n```\nAVAILABLE --reserve--> HELD(X, T) --confirm (still mine, not expired, payload unchanged)--> SOLD\n                          |  T passes, no confirm\n                          v\n                      AVAILABLE   (reserve query treats expired HELD as available)\n```\n\n**Commit with checks:** the owner must still be me, the hold unexpired, and the **reserved payload unchanged** (for example the price). Expiry is judged in the reserve and confirm queries themselves, not by a sweeper.\n\nUses: inventory and tickets, **payments (authorize = reserve, capture = commit)**, GPU or shared-host allocation, ride matching, job-queue claims, reserving a file UID before upload.",
+ "details": [
   {
-   "type": "order",
-   "q": "Put a ticket purchase with a 10-minute seat hold in order.",
-   "items": [
-    "Atomically flip the seat from AVAILABLE to HELD by this user, expiring in 10 minutes",
-    "The user enters payment details",
-    "Confirm: flip HELD to SOLD only if the hold is still this user's and has not expired",
-    "If the user never confirms, the hold expires and the seat becomes available again"
-   ],
-   "explain": "Reserve first so the race is decided immediately; fulfill during the lease; commit with a check. The last step is the failure path that makes abandoned carts harmless."
+   "q": "Why a hold row instead of a transaction with a row lock open while the user pays?",
+   "a": "A long transaction pins a connection, blocks other writers and dies with the app, with no expiry semantics. A hold row is durable, observable, holds no lock, and frees itself when the time is up."
   },
   {
-   "type": "choice",
-   "q": "Why hold a reservation row instead of keeping a database transaction (with a row lock) open while the user pays?",
-   "options": [
-    "A reservation is just data: it survives restarts and connection loss, doesn't tie up a connection or lock for minutes, and expires on its own",
-    "Row locks cannot be held for more than a few seconds",
-    "Reservations make the payment faster",
-    "Transactions cannot see other users' rows"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Long transactions pin connections, block writers and bloat storage; if the app dies the lock just vanishes with no expiry semantics. A time-limited hold is durable and observable."
+   "q": "The hold expired at 10:10:00 but the cleanup job runs once a minute. A new user reserves at 10:10:20. What happens?",
+   "a": "They win immediately, because the reserve condition treats a hold whose `expires_at` is in the past as available. Correctness must never depend on a sweeper; the sweeper is housekeeping and metrics."
   },
   {
-   "type": "choice",
-   "q": "A shopper reserved a flight seat quoted at $100. During the 10-minute hold the fare changed to $120. They click Confirm. What should the confirm step do?",
-   "options": [
-    "Compare the confirmed payload (price) to what was reserved and fail or ask the user to re-approve if it differs",
-    "Charge $120 silently",
-    "Ignore the hold and re-run the whole race",
-    "Extend the hold indefinitely"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A reservation protects the resource, not an unchecked quote. Commit must verify that what the user agreed to is still what will be charged, otherwise the long gap between reserve and commit leaks stale terms."
+   "q": "The shopper reserved at $100 and the fare is now $120. What should confirm do?",
+   "a": "Compare the reserved payload with what will be charged and fail or ask for re-approval if it differs. The reservation protects the resource, not an unchecked quote."
   },
   {
-   "type": "number",
-   "q": "A shop has 40 units. In the first minute 100 users each try to reserve 1 unit with a 15-minute hold, and nobody else touches the stock. 30 of the holders pay within the hold; the other holders abandon. How many units are available again right after the 15 minutes have passed?",
-   "answer": 10,
-   "unit": "units",
-   "tolerance": 0,
-   "explain": "Exactly 40 reservations succeed (the other 60 are told the item is taken). 30 become sales, 10 holds expire and return their units: 10 available. The cost of reservations is that stock looks unavailable while held."
+   "q": "What are the costs of reservations?",
+   "a": "Stock looks unavailable while held. Example: 40 units, 100 users each hold one for 15 minutes; 40 succeed, and if 30 pay, 10 units return only when their holds expire. Shorter holds and extending on progress reduce the cost."
   },
   {
-   "type": "choice",
-   "q": "A hold expired at 10:10:00 but your cleanup job runs every minute. At 10:10:20 another user tries to reserve the same item. What should happen?",
-   "options": [
-    "The reserve condition treats a hold with expires_at in the past as available, so the second user wins immediately",
-    "The second user must wait until the cleanup job runs",
-    "The original holder keeps the item until they confirm",
-    "The system errors because the row is inconsistent"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Correctness must not depend on a sweeper's schedule. Put the expiry test into the atomic conditional write (and into confirm); the sweeper is just housekeeping and metrics."
+   "q": "Why does confirm need to be idempotent?",
+   "a": "Users double-click and networks retry. A second confirm for the same hold must return the first result, not charge again; see [idempotency](#/sd/f/idempotency)."
   },
   {
-   "type": "recall",
-   "q": "Which two problems does a reservation solve, and how does each part of the mechanism map to them?",
-   "answer": "The race over a scarce resource (solved by an atomic reserve: exactly one caller flips AVAILABLE to HELD) and the long fulfillment (solved by giving the hold a lease so the holder has time to finish without holding a lock, with commit re-checking ownership, expiry and that the reserved payload such as price is unchanged)."
+   "q": "How does a reservation relate to a lease and a fencing token?",
+   "a": "The hold is a [lease](#/sd/f/lease) on a claim. A holder that stalls past expiry could still try to commit, so commit checks ownership and expiry, or carries a [fencing token](#/sd/f/fencing-token), against the current state."
+  },
+  {
+   "q": "Why is a payment authorize/capture a reservation?",
+   "a": "Authorize reserves the funds with a time limit; capture commits them. The reservation key is also what dedupes double charges, which is the deduplication kind of [race](#/sd/f/race-condition)."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Design the seat-hold flow for a ticket sale with a 10-minute hold.",
+   "points": [
+    "Atomic conditional write AVAILABLE to HELD with owner and expires_at",
+    "Losers told 'taken' immediately",
+    "Confirm checks owner, expiry and unchanged price",
+    "Expired holds count as available in the query itself",
+    "Abandoned carts are harmless"
+   ]
+  },
+  {
+   "q": "Explain why a reservation solves both a race and a long-fulfillment problem.",
+   "points": [
+    "Race: one atomic claim, exactly one winner",
+    "Long work: lease gives time without a lock",
+    "Hold is data so it survives restarts",
+    "Commit re-validates the payload"
+   ]
+  },
+  {
+   "q": "Map payment authorize and capture onto the reservation pattern.",
+   "points": [
+    "Authorize equals reserve funds with a time limit",
+    "Capture equals commit with a check",
+    "Idempotent capture",
+    "Expiry releases funds"
+   ]
   }
  ]
 }

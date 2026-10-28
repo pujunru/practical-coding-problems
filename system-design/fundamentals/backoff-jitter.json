@@ -1,63 +1,65 @@
 {
-  "id": "backoff-jitter",
-  "title": "Exponential Backoff + Jitter",
-  "summary": "**Backoff** spaces retries out; **jitter** makes the spacing random. You need both.\n\n**Exponential backoff.** The wait before retry `n` (n = 1, 2, ...) is `min(cap, base * 2^(n-1))`. With `base = 200 ms`: 200, 400, 800, 1600 ms ... until it hits the cap. Early retries are fast (most faults are blips) while persistent faults see rapidly shrinking pressure.\n\n**Why backoff alone is not enough.** If 10,000 clients fail at the same instant, they all wait 200 ms, all retry together, fail together, wait 400 ms, and so on: the herd stays in lockstep and hits the server in synchronized spikes. Randomizing the wait spreads that load flat. Jitter must cover a wide range; a \"plus or minus 10%\" wobble barely spreads anything.\n\nCommon variants (`ceiling = min(cap, base * 2^(n-1))`):\n- **Full jitter:** `sleep = uniform(0, ceiling)`. Best spreading, lowest total server load in the usual analyses; some retries are almost immediate.\n- **Equal jitter:** `sleep = ceiling/2 + uniform(0, ceiling/2)`. Guarantees a minimum wait.\n- **Decorrelated:** `sleep = min(cap, uniform(base, prev_sleep * 3))`. Each wait depends on the last, not on the attempt number.\n\nRules: always have a **cap** and a **maximum attempt count or deadline** (never sleep past the [deadline](#/sd/f/timeout)); if the server sends `Retry-After`, wait at least that long and still add jitter; apply jitter to *scheduled* work too (cron-like polls), not only to errors. Backoff is the spacing policy inside a [retry](#/sd/f/retry) budget.",
-  "drills": [
-    {
-      "type": "number",
-      "q": "A client uses exponential backoff with no jitter, base 200 ms, factor 2, cap 5,000 ms. How many milliseconds does it spend sleeping in total across its first 6 retries (ignore the duration of the attempts themselves)?",
-      "answer": 11200,
-      "unit": "ms",
-      "tolerance": 0,
-      "explain": "Delays are 200, 400, 800, 1600, 3200, then 6400 capped to 5000. The sum is 200 + 400 + 800 + 1600 + 3200 + 5000 = 11,200 ms."
-    },
-    {
-      "type": "choice",
-      "q": "An outage ends at t = 0 and 10,000 clients, all using exponential backoff with base 1 s and no jitter, fail their first retry together. What does the server see?",
-      "options": [
-        "A smooth ramp, because exponentially growing waits spread the clients over time",
-        "Spikes of about 10,000 requests at roughly t = 1 s, 3 s, 7 s, 15 s ... because identical clients stay synchronized",
-        "A single spike at t = 1 s and then nothing, since backoff stops retries",
-        "Random traffic, because network latency alone desynchronizes clients"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Backoff changes how far apart the waves are, not whether they are waves. All clients compute the same delays, so each wave is as tall as the first. Randomness is what flattens it."
-    },
-    {
-      "type": "number",
-      "q": "A client uses full jitter: before retry k it sleeps uniform(0, min(cap, base * 2^(k-1))), with base 1 s and cap 30 s. What is the expected sleep, in seconds, before retry 6?",
-      "answer": 15,
-      "unit": "s",
-      "tolerance": 0,
-      "explain": "The ceiling for retry 6 is min(30, 1 x 2^5 = 32) = 30 s. A uniform(0, 30) draw has mean 15 s."
-    },
-    {
-      "type": "choice",
-      "q": "A teammate proposes keeping the doubling schedule but adding +/-10% jitter. 1 s base delay, 10,000 clients. What is wrong with that?",
-      "options": [
-        "Nothing; any randomness desynchronizes clients",
-        "The retries are spread over only a 0.2 s window, so the server still sees a spike of roughly 10,000 requests per 0.2 s; the jitter range must span most of the delay (e.g. full jitter)",
-        "Jitter must be applied by the server, not the clients",
-        "+/-10% jitter makes the delays shorter than the base, causing a retry storm"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Spread is proportional to the jitter range. A 10% wobble keeps the herd almost intact; uniform(0, delay) spreads it across the whole interval, dropping the peak by roughly a factor of five or more."
-    },
-    {
-      "type": "order",
-      "q": "Put the steps of one backoff-with-jitter retry loop in order.",
-      "items": [
-        "The attempt fails with a retryable error",
-        "Compute the ceiling: min(cap, base * 2^(n-1))",
-        "Draw the sleep from the jitter distribution, e.g. uniform(0, ceiling), and at least the server's Retry-After if given",
-        "If sleeping would pass the overall deadline or the attempt limit is reached, give up",
-        "Otherwise sleep, then make attempt n + 1"
-      ],
-      "explain": "The deadline check comes after the sleep is known, so the client never wakes up only to discover there is no time left to use the retry."
-    }
-  ]
+ "id": "backoff-jitter",
+ "title": "Exponential Backoff + Jitter",
+ "explain": "Backoff spaces retries out and jitter makes the spacing random, and you need both. Backoff alone leaves a thousand clients retrying in synchronized waves; jitter flattens those waves into a steady trickle. It is the spacing policy inside a retry budget.",
+ "model": "**Exponential backoff:** wait before retry `n` is `min(cap, base * 2^(n-1))`. With `base = 200 ms`: 200, 400, 800, 1600 ms, then the cap.\n\n**Why backoff alone fails:** 10,000 clients fail together, all wait 200 ms, retry together, fail together, wait 400 ms... the herd stays in lockstep and the server sees spikes at 0.2 s, 0.6 s, 1.4 s. Jitter must span a **wide range**; plus or minus 10% barely spreads anything.\n\nWith `ceiling = min(cap, base * 2^(n-1))`:\n\n| Variant | Sleep | Notes |\n| --- | --- | --- |\n| **Full jitter** | `uniform(0, ceiling)` | best spreading, lowest server load; some retries nearly immediate |\n| **Equal jitter** | `ceiling/2 + uniform(0, ceiling/2)` | guarantees a minimum wait |\n| **Decorrelated** | `min(cap, uniform(base, prev*3))` | depends on the previous sleep, not the attempt number |\n\nRules: always a **cap** and a **max attempts or deadline**; honour `Retry-After` and still add jitter; jitter *scheduled* work (polls, cron) too. See [retry](#/sd/f/retry).",
+ "details": [
+  {
+   "q": "Why isn't exponential backoff enough?",
+   "a": "Identical clients compute identical delays, so each wave is as tall as the first; backoff only changes how far apart the waves are. Randomness is what flattens them."
+  },
+  {
+   "q": "Why is a plus or minus 10% jitter on a 1 s delay not a fix?",
+   "a": "It spreads 10,000 clients over only a 0.2 s window, leaving a spike of roughly 10,000 requests per 0.2 s. The jitter range has to cover most of the delay, as full jitter does."
+  },
+  {
+   "q": "With base 200 ms, factor 2 and cap 5 s, what does a client sleep over its first six retries without jitter?",
+   "a": "200, 400, 800, 1600, 3200, then 6400 capped to 5000: 11,200 ms in total."
+  },
+  {
+   "q": "What is the expected sleep before retry 6 with full jitter, base 1 s, cap 30 s?",
+   "a": "The ceiling is min(30, 32) = 30 s and uniform(0, 30) has mean 15 s."
+  },
+  {
+   "q": "Full jitter or equal jitter?",
+   "a": "Full jitter spreads load best and lowers total server work, but a retry can come almost immediately. Equal jitter guarantees a minimum wait at the cost of a less even spread. State which guarantee matters."
+  },
+  {
+   "q": "How does the deadline interact with the sleep?",
+   "a": "Compute the sleep first, then check it against the remaining deadline, so the client never wakes up only to find there is no time left to use the retry."
+  },
+  {
+   "q": "Where else do you add jitter besides error retries?",
+   "a": "Anywhere many clients act on the same schedule: periodic polls, cron-like jobs, cache expiry, token refresh. Otherwise they all hit at the top of the minute."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain exponential backoff with jitter and why you need both parts.",
+   "points": [
+    "Backoff shrinks pressure as faults persist",
+    "Backoff alone keeps clients synchronized",
+    "Jitter randomizes the wait across a wide range",
+    "Cap and max attempts or deadline"
+   ]
+  },
+  {
+   "q": "Compare full, equal and decorrelated jitter.",
+   "points": [
+    "Full: uniform(0, ceiling), best spread",
+    "Equal: guaranteed minimum wait",
+    "Decorrelated: depends on previous sleep",
+    "When you choose each"
+   ]
+  },
+  {
+   "q": "10,000 clients recover from an outage at the same instant. Describe what the server sees with and without jitter.",
+   "points": [
+    "Without: tall spikes at doubling intervals",
+    "Small jitter barely changes it",
+    "Full jitter spreads over the whole interval",
+    "Peak drops several-fold"
+   ]
+  }
+ ]
 }

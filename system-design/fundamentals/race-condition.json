@@ -1,81 +1,62 @@
 {
  "id": "race-condition",
  "title": "Race Conditions",
- "summary": "A race condition is **two actors that both want to do something that must not happen twice or at the same time**, where the outcome depends on who gets there first. The classic shape is check-then-act: both read \"free\", both proceed.\n\nThere are two kinds, and the loser must behave differently in each:\n\n- **Deduplication, \"me or you\":** only one of the actors may do it at all. The winner acts; the loser must **do nothing** (skip, or return the winner's result). Example: two workers both sending the welcome email for signup 123.\n- **Mutual-exclusive execution, \"the bathroom\":** both need to do it, but **one at a time**. The loser **waits** its turn and then acts. Example: two requests updating the same account balance.\n\nRemedies, cheapest first:\n\n1. **Make the step atomic in the store:** a unique constraint, `INSERT ... ON CONFLICT DO NOTHING`, a conditional update (`WHERE balance >= 30`) or a version compare-and-set. No lock needed.\n2. **Serialize through one owner:** route all work for a key to one partition or queue consumer.\n3. **A distributed lock or [lease](#/sd/f/lease):** everyone races for one lock, the winner proceeds, the loser is rejected or waits. Add a [fencing token](#/sd/f/fencing-token) because holders can pause past expiry.\n\nAn in-process mutex cannot help when the racing actors are separate instances. Long-running claims are the subject of [reservation](#/sd/f/reservation); safe retries of [idempotent](#/sd/f/idempotency) requests need the same atomic claim.",
- "drills": [
+ "explain": "A race condition is two actors that both want to do something that must not happen twice or at the same time, where the outcome depends on who gets there first. The classic shape is check-then-act: both read 'free', both proceed. I first ask what the loser should do, because that decides the fix.",
+ "model": "Two actors want the same thing; the question is what the loser does. There are two kinds:\n\n1. **Deduplication, \"me or you\" (有我没你):** only one may do it at all. The winner acts; the loser does **nothing** or returns the winner's result. Example: two workers both sending the welcome email.\n2. **Mutual-exclusive execution, \"the bathroom\" (抢厕所):** both need to do it, but one at a time. The loser **waits** its turn, then acts. Example: two requests changing one balance.\n\nThe cure is a shared place that decides, atomically, who wins:\n\n```\ninstance 1 --\\\n              >-- same lock / same row / same owner --> winner proceeds, loser rejected or waits\ninstance 2 --/\n```\n\nCheapest first: an **atomic store operation** (unique constraint, `INSERT ... ON CONFLICT DO NOTHING`, conditional `UPDATE`, version CAS); then **one owner per key** (partition or queue consumer); then a **distributed lock or [lease](#/sd/f/lease)**, where the winner proceeds and the loser is rejected.",
+ "details": [
   {
-   "type": "choice",
-   "q": "Two API instances handle `withdraw $30` and `withdraw $50` on a $100 account at the same moment. Each reads 100, computes its result, and writes back. The final balance is 70 or 50 instead of 20. What is the best fix?",
-   "options": [
-    "Do the check and decrement atomically in the database: `UPDATE ... SET balance = balance - 30 WHERE id = ? AND balance >= 30`",
-    "Add a mutex inside each API instance",
-    "Read the balance twice before writing",
-    "Retry the whole request if the response is slow"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The bug is read-modify-write across two processes. A conditional update makes the database apply them one after the other. A per-instance mutex doesn't see the other instance, and re-reading only narrows the window."
+   "q": "Why does an in-process mutex not fix a race between two API instances?",
+   "a": "A mutex only excludes threads inside one process; the instances share data in the database, not memory. You need a coordination point all instances share: the store itself, a distributed lock, or a single owner."
   },
   {
-   "type": "choice",
-   "q": "Which pairing of case and loser behavior is right?",
-   "options": [
-    "Two workers racing to send the same email: the loser skips. Two jobs updating the same file: the loser waits, then runs",
-    "Two workers racing to send the same email: the loser waits, then also sends. Two jobs updating the same file: the loser skips",
-    "In both cases the loser retries immediately in a loop",
-    "In both cases the loser fails the whole request"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The email is a deduplication race: a second send is a bug. The file update is mutual exclusion: both updates are legitimate and must both happen, serially. Mixing these up either loses legitimate work or repeats an action."
+   "q": "Two requests withdraw $30 and $50 from a $100 account. How do you fix it without a lock?",
+   "a": "Make check and decrement one statement: `UPDATE ... SET balance = balance - 30 WHERE id = ? AND balance >= 30`. The database serializes the two updates, and the one that no longer fits matches zero rows and is rejected."
   },
   {
-   "type": "choice",
-   "q": "Order creation inserts a row only after a `SELECT ... WHERE order_id = ?` returns nothing. Under retries, duplicates appear. Which changes truly prevent duplicates? Select all that apply.",
-   "options": [
-    "A unique constraint on order_id with insert-or-ignore semantics",
-    "A version compare-and-set on a single row that claims the id",
-    "Doing the select twice with a short sleep between",
-    "An in-memory set of seen ids in each instance"
-   ],
-   "answer": [
-    0,
-    1
-   ],
-   "explain": "Both options make the claim atomic at one shared place. Doing the check twice, or checking per-instance memory, still leaves a gap between check and insert or between instances."
+   "q": "How is a deduplication race different from a mutual-exclusion race in what you build?",
+   "a": "Dedup needs a claim that can succeed only once (unique key, insert-if-absent) and a loser that returns early. Mutual exclusion needs ordering: a lock or queue where the loser waits, because its work still has to happen."
   },
   {
-   "type": "order",
-   "q": "Put a lock-protected update across instances in order.",
-   "items": [
-    "Instance asks the lock service for the lock on the resource and receives a fencing token",
-    "Exactly one instance wins; the others are rejected or queued",
-    "The winner reads the resource, modifies it and writes it back with its token",
-    "The winner releases the lock (or it expires if the winner dies)",
-    "A waiting instance now acquires the lock with a higher token"
-   ],
-   "explain": "Each step narrows the race. The token on the write protects against a winner whose lease expired while it was paused."
+   "q": "Why isn't 'check twice with a short sleep' a fix?",
+   "a": "It only narrows the window between check and act. As long as the check and the act are separate steps, someone can slip between them. Only an atomic operation closes the gap."
   },
   {
-   "type": "choice",
-   "q": "You have three instances of a service and add a `synchronized` block (in-process mutex) around check-and-update. Why does the race remain?",
-   "options": [
-    "The mutex only excludes threads in the same process; the three instances still race with each other",
-    "Mutexes are not atomic",
-    "Three instances means three times more locks acquired",
-    "The mutex works but is too slow"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A process-level lock protects shared memory, not shared data in a database. Cross-instance races need a coordination point all instances share: the database, a distributed lock, or a single owner."
+   "q": "When do you need a distributed lock rather than an atomic statement?",
+   "a": "When the protected work spans several steps or systems that no single atomic statement can cover. Even then add a [fencing token](#/sd/f/fencing-token) because a holder can pause past its lease and act late."
   },
   {
-   "type": "recall",
-   "q": "Name the two kinds of race condition and what the loser does in each. What is your first tool to fix them?",
-   "answer": "Deduplication (only one actor may do it, the loser skips or returns the winner's result) and mutual-exclusive execution (all must do it, one at a time, the loser waits). First choice is an atomic operation in the store (unique constraint, conditional update, CAS); a distributed lock or single-owner partition when the work spans several steps."
+   "q": "What if the claim must last minutes, not milliseconds?",
+   "a": "Do not hold a lock that long. Turn it into data with a time limit, which is a [reservation](#/sd/f/reservation). Safe retries of an [idempotent](#/sd/f/idempotency) request need the same atomic claim."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain a race condition with an example and name the two kinds.",
+   "points": [
+    "Check-then-act with both actors seeing 'free'",
+    "Deduplication: loser does nothing",
+    "Mutual exclusion: loser waits and then acts",
+    "One concrete example for each"
+   ]
+  },
+  {
+   "q": "Two instances might both create the same order. Walk through how you would stop it.",
+   "points": [
+    "Unique constraint or insert-or-ignore on the order id",
+    "Or a version compare-and-set on one claim row",
+    "Why per-instance memory or double-checking fails",
+    "Loser returns the winner's result",
+    "Fallback: lock or single owner when it spans steps"
+   ]
+  },
+  {
+   "q": "Someone proposes adding a synchronized block. Explain why that is not enough and what you suggest.",
+   "points": [
+    "Mutex only covers threads in one process",
+    "Instances still race through the shared store",
+    "Move the decision into the store or a shared lock",
+    "Add fencing if the lock can expire"
+   ]
   }
  ]
 }

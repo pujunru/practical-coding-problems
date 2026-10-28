@@ -1,74 +1,53 @@
 {
  "id": "reentrant-lock",
  "title": "Reentrant Lock",
- "summary": "A reentrant lock lets **the thread that already holds it acquire it again** without blocking on itself. A normal lock would deadlock the moment a method that holds the lock calls another method that also takes it.\n\nIt works by tracking an **owner and a hold count**: the first acquire records the owner and sets the count to 1; the same owner acquiring again just increments it; each release decrements it; the lock is truly free only when the count returns to **0**. Other threads wait the whole time.\n\nThis matters in large codebases, where locking methods call each other or recurse; without it people write duplicate \"locked\" and \"unlocked\" versions of every method.\n\nThings to watch:\n\n- **Balance releases with acquires.** Two acquires need two releases; extra release is an error, a missing one leaks the lock.\n- **Reentrancy doesn't make a re-entered section safe.** If an outer call is halfway through changing state and calls something that re-enters and reads it, the inner code now sees a half-updated state the lock used to keep out. Make invariants hold before calling out.\n- **Ownership is the identity of the caller** (thread, or for distributed locks a worker or client id). A different thread is a different owner and still blocks.\n- It can hide a tangled call structure; where the design is yours, prefer a private unlocked helper.\n\nProtocol details are in [acquire / release](#/sd/f/acquire-release); [contention](#/sd/f/lock-contention) behaves the same.",
- "drills": [
+ "explain": "A reentrant lock lets the thread that already holds it acquire it again without blocking on itself. With a plain lock, a method that holds the lock and calls another method that also takes it would deadlock. It is mostly there for large codebases where locking methods call each other or recurse.",
+ "model": "Same thread, same lock, no self-deadlock.\n\nIt tracks **owner + hold count**:\n\n```\nlock()   owner=T1 count=1\nlock()   owner=T1 count=2   (same owner: just increment)\nunlock() count=1            (still held; others still blocked)\nunlock() count=0            (free)\n```\n\nOther threads wait the whole time: reentrancy is keyed on the owner identity (a thread, or for distributed locks a worker or client id).\n\nWhy it exists: in a large codebase `transfer()` takes the lock and calls `audit()`, which also takes it. Without reentrancy you write duplicate \"locked\" and \"unlocked\" versions of every method.\n\nHazards:\n\n- **Balance acquires and releases.** A missing release leaks the lock; an extra one is an error.\n- **Re-entry sees half-updated state.** The lock keeps other threads out, not your own callbacks.\n- It can hide a tangled call structure; when the design is yours, prefer a private unlocked helper.\n\nProtocol details: [acquire / release](#/sd/f/acquire-release).",
+ "details": [
   {
-   "type": "choice",
-   "q": "`transfer()` takes `lock` and calls `audit()`, which also takes `lock`. With a plain (non-reentrant) mutex, what happens?",
-   "options": [
-    "The thread blocks forever waiting for a lock it holds itself",
-    "audit() runs normally because it's the same thread",
-    "The second acquire is ignored",
-    "Both calls run in parallel"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A non-reentrant lock has no notion of the owner, so the second acquire waits for a release that can only come from the thread that is now waiting. A reentrant lock recognizes the owner and increments a count instead."
+   "q": "What happens with a plain mutex when `transfer()` calls `audit()` and both take the lock?",
+   "a": "The thread blocks forever on a lock it holds itself. A non-reentrant lock has no notion of owner, so the second acquire waits for a release that only the waiting thread could make."
   },
   {
-   "type": "number",
-   "q": "A thread calls lock(), lock(), lock(), then unlock(), unlock() on a reentrant lock. What is the hold count now?",
-   "answer": 1,
-   "unit": "holds",
-   "tolerance": 0,
-   "explain": "Three acquires set the count to 3; two releases bring it to 1. The lock is still held and other threads remain blocked until the count reaches 0."
+   "q": "A thread calls lock three times and unlock twice. What is the state?",
+   "a": "Hold count is 1; the lock is still held and other threads stay blocked until the count reaches 0."
   },
   {
-   "type": "order",
-   "q": "Put the events on a reentrant lock in order.",
-   "items": [
-    "Thread T1 acquires the lock (owner T1, count 1)",
-    "T1 acquires it again from a nested call (count 2)",
-    "Thread T2 tries to acquire and blocks",
-    "T1 releases once (count 1) and again (count 0)",
-    "T2 acquires the lock"
-   ],
-   "explain": "Only the owner can re-enter. T2 is a different owner, so it waits until the count hits 0, not until the first release."
+   "q": "A second thread of the same process tries to take a lock held by T1. What happens?",
+   "a": "It blocks. Reentrancy is for the owning thread only; sharing a process does not matter."
   },
   {
-   "type": "choice",
-   "q": "An outer method updates `balance` and, before updating `total`, calls a listener that re-enters the same lock and reads both. Why is the reentrant lock not protecting the invariant?",
-   "options": [
-    "Re-entry succeeds, so the listener sees balance and total out of sync; update both before calling out",
-    "Reentrant locks allow other threads in during callbacks",
-    "The listener should have been given a read lock",
-    "Reentrant locks reset the hold count on a callback"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The lock excludes other threads, not the same thread. Reentrancy turns a deadlock into a silent consistency bug unless the state is consistent whenever control leaves your code."
+   "q": "An outer method updates `balance`, then calls a listener that re-enters the lock and reads `balance` and `total` before `total` is updated. What went wrong?",
+   "a": "Re-entry succeeded, so the listener saw inconsistent state. The lock excludes other threads, not the same thread. Bring the state to a consistent point before calling out."
   },
   {
-   "type": "choice",
-   "q": "Thread T1 holds a reentrant lock. Thread T2 of the same process tries to acquire it. What happens to T2?",
-   "options": [
-    "It blocks: the lock is reentrant for the owning thread only",
-    "It re-enters, because they share a process",
-    "It receives an exception",
-    "It takes over ownership"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Reentrancy is keyed on the owner identity. Another thread is another owner and has to wait for the count to reach 0."
+   "q": "What is the alternative to reentrancy?",
+   "a": "Structure the code so public methods take the lock once and call private unlocked helpers. It makes the locking boundary explicit and avoids hidden re-entry."
   },
   {
-   "type": "recall",
-   "q": "What problem does a reentrant lock solve, how does it work, and what is its main hazard?",
-   "answer": "It prevents a thread from deadlocking on a lock it already holds when methods that lock call each other or recurse. It keeps an owner and a hold count: same-owner acquires increment, releases decrement, and the lock frees at 0. The hazard is that a re-entered section can observe half-updated state, so invariants must hold before calling out, and releases must balance acquires."
+   "q": "Does reentrancy matter for distributed locks?",
+   "a": "Only if ownership is an identity such as a worker id with a count. Then the same worker can re-acquire; a different worker is a different owner and waits. Keep the TTL and fencing rules from [acquire / release](#/sd/f/acquire-release)."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain what problem a reentrant lock solves and how it works.",
+   "points": [
+    "Self-deadlock when locked methods call each other or recurse",
+    "Owner and hold count",
+    "Same owner increments, release decrements",
+    "Free only at zero",
+    "Other threads still wait"
+   ]
+  },
+  {
+   "q": "What are the hazards of reentrant locks?",
+   "points": [
+    "Release must balance acquire",
+    "Re-entered code can see half-updated state",
+    "Can hide tangled call structure",
+    "Prefer unlocked private helpers when possible"
+   ]
   }
  ]
 }
