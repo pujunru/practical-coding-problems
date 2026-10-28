@@ -1,0 +1,151 @@
+{
+ "id": "memcache-load-balancing",
+ "title": "Load-Balance Memcache Servers",
+ "prompt": "Hundreds of application servers read from a pool of memcache servers in front of a database. Design how clients choose which memcache server holds each key so that load stays even, the pool can grow and shrink without a miss storm, and a server failure does not take the database down with it.\n\nAssume **4 million gets a second** across **200 memcache servers**, a 98% hit rate, and a few keys that are 1,000 times hotter than average.",
+ "clarify": [
+  "Are clients smart (they hash and connect directly) or do they go through a proxy tier such as mcrouter?",
+  "What matters most: even load, minimal key movement when the pool changes, or both?",
+  "How skewed is the traffic, and are there known hot keys?",
+  "How much of the database's headroom is available when a cache server fails?",
+  "How is pool membership learned and updated, and how fast must clients react to a change?",
+  "Is cross-datacenter or multi-pool replication in scope, or only one pool?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Map every key deterministically to a server, using only the key and the current membership list\n- Add and remove servers with a small, predictable amount of key movement\n- Keep serving through failures and during the warm-up of new servers\n\n**Non-functional**\n- Max server load no more than about 1.25× the average, even with skewed keys\n- A failed or new (empty) server must not push the database past its capacity\n- Clients converge on a new membership within seconds; no central component on the read path",
+  "estimation": "- Load: 4M gets/s / 200 servers = **20k gets/s** per server on average.\n- Balance target: a cap of 1.25× the average is 25k gets/s per server.\n- Database baseline: a 2% miss rate is 4M × 0.02 = **80k reads/s**.\n- One server fails: its 20k gets/s all miss, so database load becomes 100k/s, **+25%**. Two simultaneous failures: +50%. With plain `hash mod N`, a pool change remaps nearly every key and the hit rate collapses to near zero, which would send up to 4M reads/s to the database, 50× its normal load.\n- Plain consistent hashing moves only 1/200 = **0.5%** of keys on a pool change. Random variance with V virtual nodes per server is about 1/√V, so V = 100 gives roughly 10% standard deviation, and the busiest server can be 30% above the mean.",
+  "api": "```\nclient.get(key)          server = pick(key, membership_version)\nclient.set(key, value, ttl)\nclient.delete(key)\nGET /pool/membership     → {version, servers[{id, addr, weight, state: ACTIVE|WARMING|DRAINING}]}\n```\n- Membership comes from a config service or gossip; clients cache it by version. Servers know nothing of one another.",
+  "data": "- **Ring**: for each server, V virtual points `hash(server_id + i)` (V ≈ 100-400, proportional to its weight). A key goes to the first point clockwise from `hash(key)`.\n- **Per-client load counters**: a recent estimate of requests per server (or of in-flight requests), used for bounded-load decisions.\n- **Membership record**: `server_id, weight, state, since_version`.\n- **Hot-key table**: keys flagged hot by the proxy, with the number of replicas to spread them over.",
+  "design": "```\n app server ──▶ client lib / proxy ─┬─ hash(key) → ring → server A\n                                     │      if A over cap → next point clockwise → B\n   config service ── membership ─────┘      if A down → skip, mark, retry later\n   health checker ── pings servers ──▶ marks DOWN / WARMING\n```\n- The lookup is local and takes microseconds; there is no coordinator on the read path.\n- A health checker (or the clients themselves, after consecutive timeouts) marks a server down, and the config service publishes a new membership version.",
+  "deepdives": "- **Even load: virtual nodes and bounded loads.** Plain consistent hashing is only balanced on average; 100 virtual nodes still leave the busiest server about 30% hot,. **Consistent hashing with bounded loads** sets a capacity of `ceil((1 + ε) × average)` per server (ε = 0.25 gives 25k/s here). If the chosen server is at capacity, walk clockwise to the next one with room. This keeps the maximum load provably near the average while still moving few keys on membership change. The cost is that a key may live on a different server depending on current load, so a later get can miss; this is acceptable for a cache, and the overflow only occurs for the few keys that exceed the cap.\n- **Hot keys.** A key 1,000× hotter than average pins one server regardless of how well the ring is balanced, so bounded load pushes it to a second server and spreads it, but a single key can still exceed one server's capacity. Detect hot keys by sampling requests in the proxy over a sliding window. Then replicate them: write to K servers (`key#0 … key#K-1`) and read from a random one, or hold them in a short-TTL local cache in the app server. Trade-off: K copies mean K invalidations, so the delete must reach all of them, and a stale copy can persist until its short TTL.\n- **Failure and warm-up.** When a server dies, its keys fall to its ring successors, and the next requests miss and reach the database (+25% for one server). Limit the blast radius with many virtual nodes, so the load spreads over all the survivors rather than doubling one neighbour, with request coalescing on misses so one hot miss makes one database read, and with a small *gutter* pool of spare servers that absorbs the failed server's traffic briefly with short TTLs. Do not remove a server on one timeout; require several consecutive failures. A new empty server is the opposite problem: it would take 0.5% of the keys, all of which miss. Add it in a `WARMING` state, ramp its ring weight up in steps over minutes, and on a miss let it fall back to the previous owner for a limited period (a read-through to the old owner, then fill).",
+  "wrapup": "- Client-side consistent hashing with virtual nodes and bounded loads, hot-key replication, health-based failover with a gutter pool, and ramped warm-up for new servers.\n- Trade-offs: balance vs key stability; replication of hot keys vs invalidation cost; fast failure detection vs flapping.\n- Next: multi-region invalidation, per-key-prefix pools, automated capacity planning from hit-rate metrics."
+ },
+ "rubric": [
+  {
+   "text": "Computes per-server load, the database load at the given hit rate, and the extra database load when a server fails",
+   "keywords": [
+    "/s",
+    "miss",
+    "database",
+    "20k",
+    "80k",
+    "+25"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains why `hash mod N` fails on membership change (near-total remap, miss storm) and uses consistent hashing",
+   "keywords": [
+    "mod n",
+    "remap",
+    "consistent hash",
+    "ring",
+    "1/n"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses virtual nodes (and weights) to smooth the load, with the 1/sqrt(V) variance argument or similar",
+   "keywords": [
+    "virtual node",
+    "vnode",
+    "variance",
+    "weight",
+    "smooth"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Applies bounded loads: a per-server capacity of (1+epsilon) times the average with clockwise overflow",
+   "keywords": [
+    "bounded load",
+    "bounded-load",
+    "epsilon",
+    "capacity",
+    "overflow",
+    "clockwise"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Detects hot keys (sampling over a sliding window) and spreads them via replication, key suffixes or a local cache",
+   "keywords": [
+    "hot key",
+    "sampl",
+    "replicat",
+    "suffix",
+    "local cache"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Keeps routing local to the client or proxy with versioned membership from a config service; no coordinator on the read path",
+   "keywords": [
+    "membership",
+    "version",
+    "config",
+    "proxy",
+    "mcrouter",
+    "client-side"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Detects failures robustly (consecutive timeouts, health checks) and avoids flapping or removing servers on one error",
+   "keywords": [
+    "health check",
+    "consecutive",
+    "timeout",
+    "flap",
+    "detect"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Limits database impact of a failure: request coalescing, gutter pool, short TTLs, retry on another server",
+   "keywords": [
+    "gutter",
+    "coalesc",
+    "single-flight",
+    "stampede",
+    "lease",
+    "fallback"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Warms up new servers gradually (weight ramp, fallback to previous owner, pre-population)",
+   "keywords": [
+    "warm",
+    "ramp",
+    "cold",
+    "previous owner",
+    "pre-populat",
+    "drain"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles invalidation consistently when keys can live on several servers (deletes reach all copies)",
+   "keywords": [
+    "invalidat",
+    "delete",
+    "stale",
+    "copies",
+    "ttl"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Discusses trade-offs and observability: hit rate, per-server load, key-movement and their effect on cache correctness",
+   "keywords": [
+    "hit rate",
+    "metric",
+    "trade-off",
+    "monitor",
+    "observab"
+   ],
+   "points": 1
+  }
+ ]
+}

@@ -1,0 +1,147 @@
+{
+ "id": "ai-chat",
+ "title": "Design an AI Chat System (ChatGPT / Claude)",
+ "prompt": "Design the backend and web client of a ChatGPT-style assistant. Users sign in, hold multi-turn conversations with a large language model and see the answer appear token by token. Conversations are saved so they can be reopened, and free and paid tiers get different limits.\n\nAssume **100 million daily active users**, about 8 messages each per day, and an average reply of about 400 tokens.",
+ "clarify": [
+  "Which features are in scope: text only, or also attachments, tools, search and image output?",
+  "Do we store conversation history server-side and let users resume it on any device?",
+  "How are the models served: our own GPU fleet, or an external model API we call?",
+  "What are the latency targets: time to first token and tokens per second?",
+  "What limits exist per tier (messages per window, context length, model access), and what happens at the limit?",
+  "What should happen if the connection drops mid-answer or a GPU fails mid-generation?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Authenticated multi-turn chat; the reply streams token by token and can be stopped\n- Conversations are persisted, listed and resumable across devices; edit or regenerate a message\n- Per-tier limits (free vs paid), with a clear error when exceeded\n\n**Non-functional**\n- Time to first token p50 < 1 s; steady streaming at reading speed (about 20-50 tokens/s)\n- GPU capacity is the scarce resource: protect it with admission control, not unbounded queues\n- Never lose a user's message; a dropped connection must not lose a finished answer",
+  "estimation": "- Messages: 100M × 8 = 800M/day ≈ **9.3k requests/s** avg, ~28k/s at 3× peak.\n- Output tokens: 800M × 400 = 320B/day ≈ **3.7M tokens/s** avg, ~11M/s at peak.\n- Decode capacity: if one GPU sustains about 2,500 tokens/s of batched decoding for a mid-size model (an assumption to state), that is ≈ 1,500 GPUs average and ≈ **4,400** at peak.\n- Prefill: prompts with history average about 1,500 tokens, so 800M × 1,500 = 1.2T tokens/day ≈ 13.9M tokens/s. At roughly 20k tokens/s per GPU for prefill that is ≈ 700 GPUs average, 2,100 at peak. Prefix caching reduces this since history repeats.\n- Open streams (Little's law): 9.3k/s × 15 s per reply ≈ **139k** concurrent streams on average, ~420k at peak.\n- Storage: 800M messages × ~2 KB = 1.6 TB/day ≈ 0.6 PB/year.",
+  "api": "```\nPOST /v1/conversations                         → {conversation_id}\nPOST /v1/conversations/{id}/messages           {parent_id, content, client_msg_id, model}\n     → 200 text/event-stream: delta events …, then done {message_id, usage}\nGET  /v1/conversations/{id}/messages/{mid}/stream?from=n   (resume a stream)\nPOST /v1/messages/{mid}/stop\nGET  /v1/conversations?cursor=                 → list for sidebar\n```\n- `client_msg_id` makes a retried send idempotent. Responses stream as **Server-Sent Events**: traffic is one-way, it works through proxies and reconnects with `Last-Event-ID`. WebSockets add little here, since sends are ordinary POSTs.",
+  "data": "- **conversations**: `conversation_id, user_id, title, created_at, updated_at`; partitioned by `user_id`.\n- **messages**: `message_id, conversation_id, parent_id, role, content, model, token_counts, status`; a tree via `parent_id`, which supports edit and regenerate branches.\n- **usage counters**: `(user_id, window)` in Redis for rate limits, mirrored to a ledger for billing.\n- **stream buffer**: generated tokens for in-flight replies, kept briefly in a fast store keyed `(message_id, offset)`.",
+  "design": "```\nclient ─SSE─▶ edge/API gateway ─▶ chat service ─▶ limiter + moderation ─▶ priority queues\n   (POST + auth)      │ history from DB / cache                │\n                      ▼                                       ▼\n                 conversations DB                   inference scheduler\n                      ▲                       (continuous batching, prefix cache)\n                      │ final message                         │ tokens\n                      └──────── chat service ◀── stream buffer ◀── GPU workers\n```\n- The chat service saves the user message first, builds the prompt from history (truncating or summarising to fit the context window), and submits it to the inference tier.\n- Tokens flow GPU worker → stream buffer → SSE connection. The complete message is written to the database when generation ends.",
+  "deepdives": "- **GPU inference and batching.** Decoding is memory-bandwidth bound, so serving one request per GPU wastes it. Continuous batching admits new sequences into the running batch at every decode step, which gives several times the throughput of static batching. KV-cache memory limits how many sequences fit, so use paged KV allocation and prefix caching for shared system prompts and long histories. Separating prefill from decode on different pools stops long prompts from stalling streaming for others, at the cost of transferring the KV cache between them. Trade-off: larger batches raise throughput but also per-token latency, so set the batch cap from the latency target. Autoscale on queue wait and KV utilisation; GPU nodes take minutes to load a model, so keep a buffer.\n- **Admission control and per-tier limits.** The queue must be bounded: when capacity is short, reject or degrade rather than let wait times grow without limit. Use separate priority queues (paid ahead of free, with a guaranteed minimum for free so it does not starve), a token bucket per user counting **tokens** rather than requests, and a cap on concurrent streams per user. Over the limit, return `429` with `Retry-After`, or route free users to a smaller model. Count usage when a stream ends, using actual tokens, but pre-reserve the maximum to stop users running many long requests in parallel.\n- **Streams that survive failure.** The server writes each delta to the stream buffer with an offset, so a client that reconnects with `Last-Event-ID` resumes where it stopped, even on a different gateway. If a GPU worker dies mid-answer, the scheduler can re-run from the prompt plus the tokens already produced, but sampling is random, so the retry may continue differently: tell the client to continue or restart. Persist the final text even if the client left, so reopening the chat shows the full answer. On the client, append tokens to the last message only, so the whole transcript is not re-rendered per token.",
+  "wrapup": "- SSE gateway, chat service with idempotent sends and a message tree, bounded priority queues, a continuous-batching GPU tier with prefix caching, and a resumable stream buffer.\n- Trade-offs: batch size vs token latency; free-tier fairness vs paid latency; recompute vs retry semantics after a GPU fault.\n- Next: tool use and web search, safety filtering on output, multi-region routing, context summarisation, evaluation and abuse detection."
+ },
+ "rubric": [
+  {
+   "text": "Estimates request rate, token throughput and open streams, and converts tokens/s into a GPU count with a stated per-GPU assumption",
+   "keywords": [
+    "tokens/s",
+    "tokens per second",
+    "gpu",
+    "concurrent",
+    "/s"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Streams replies with SSE (or WebSocket) and justifies the choice; client appends deltas without re-rendering the full transcript",
+   "keywords": [
+    "sse",
+    "server-sent",
+    "websocket",
+    "delta",
+    "stream"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Stores conversations as messages with parent links (edit/regenerate), partitioned by user, with idempotent sends",
+   "keywords": [
+    "parent_id",
+    "branch",
+    "idempotent",
+    "client_msg_id",
+    "partition"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains continuous batching and why decode is memory-bound; mentions KV cache and paged allocation",
+   "keywords": [
+    "continuous batching",
+    "kv cache",
+    "paged",
+    "decode",
+    "batch"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Mentions prefix caching and/or prefill vs decode separation to cut cost for long histories",
+   "keywords": [
+    "prefix cach",
+    "prefill",
+    "disaggregat",
+    "history"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Applies bounded queues and admission control instead of unbounded waiting; degrades or rejects under overload",
+   "keywords": [
+    "admission",
+    "bounded",
+    "load shed",
+    "shedding",
+    "429",
+    "backpressure"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Rate limits per tier by tokens (token bucket), concurrent streams and model access, with priority queues that avoid free-tier starvation",
+   "keywords": [
+    "token bucket",
+    "per-tier",
+    "tier",
+    "priority",
+    "concurrent stream",
+    "retry-after"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles dropped connections with resumable streams (offsets, Last-Event-ID) and persists the final answer regardless",
+   "keywords": [
+    "last-event-id",
+    "resume",
+    "offset",
+    "reconnect",
+    "buffer"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles GPU worker failure mid-generation and is honest about non-deterministic retries",
+   "keywords": [
+    "retry",
+    "re-run",
+    "failover",
+    "mid-generation",
+    "non-determin"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Manages context windows by truncating or summarising history; mentions moderation or safety checks",
+   "keywords": [
+    "context window",
+    "truncat",
+    "summar",
+    "moderation",
+    "safety"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Autoscales GPU capacity on queue wait or KV utilisation, accounting for slow model load",
+   "keywords": [
+    "autoscal",
+    "model load",
+    "warm",
+    "queue wait",
+    "capacity"
+   ],
+   "points": 1
+  }
+ ]
+}

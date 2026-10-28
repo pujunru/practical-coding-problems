@@ -1,0 +1,152 @@
+{
+ "id": "in-memory-database",
+ "title": "Design an In-Memory Database",
+ "prompt": "Design a Redis-like in-memory database: data lives in RAM for microsecond-to-millisecond access, but acknowledged writes must survive a process or machine crash. It supports strings plus a few richer structures (hashes, sorted sets), TTLs, and must stay available when a node fails.\n\nAssume one logical dataset of about **50 million keys averaging 500 bytes**, **200k operations a second** at peak, of which **50k are writes**, and a recovery target of a couple of minutes.",
+ "clarify": [
+  "Is this the system of record or a cache with persistence? What does 'acknowledged' promise: durable on disk, or only on replicas?",
+  "Which data structures and commands are required (strings, hashes, sorted sets, transactions, pub/sub)?",
+  "How much data can we lose on a crash, if any (RPO), and how fast must we recover (RTO)?",
+  "Single node first, or do we need to scale the dataset beyond one machine's RAM?",
+  "Is strong consistency needed on reads from replicas, or are stale reads fine?",
+  "Are multi-key transactions or cross-shard operations needed?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Get/set/delete, TTLs, atomic operations on rich types (hash fields, sorted-set ranges, counters)\n- Durability: a write acknowledged to the client survives a crash\n- Replication to followers, automatic failover, online resharding if the data outgrows one machine\n\n**Non-functional**\n- Median operation well under 1 ms; 200k ops/s on a node\n- Restart recovery in 2-3 minutes; no lost acknowledged writes on a single failure\n- Memory is the limiting resource, so eviction or a clear 'full' behaviour is required",
+  "estimation": "- Memory: 50M keys × 500 B = 25 GB of raw data; with about 1.5× overhead for hash-table slots, pointers and allocator fragmentation ≈ **37.5 GB**, so a 64 GB node fits one shard with headroom for a copy-on-write snapshot.\n- Write log: 50k writes/s × ~600 B per record = **30 MB/s**, about 2.6 TB/day before truncation, which any SSD sustains sequentially.\n- Snapshot: 25 GB at 500 MB/s of disk write takes **~50 s**.\n- Recovery: after a snapshot every 15 minutes the log tail is up to 900 s × 30 MB/s = **27 GB**. Loading the snapshot at ~1 GB/s ≈ 25 s, replaying 27 GB at roughly 500k records/s (45M records) ≈ 90 s, so recovery is about 2 minutes, in line with the target.\n- fsync: one fsync per write would cap throughput at the disk's IOPS, so group commit is required (below).",
+  "api": "```\nSET key value [EX seconds]        GET key        DEL key\nHSET key field value              ZADD key score member     ZRANGE key start stop\nINCR key       EXPIRE key seconds         MULTI … EXEC (single shard)\nREPLICAOF host port               # internal: replication stream from LSN n\n```\n- A text or binary protocol over persistent connections with pipelining, which lets one connection carry thousands of commands per round trip.",
+  "data": "- **Keyspace**: a hash table from key to object (type, encoding, `expires_at`, value). Small hashes and sets use compact arrays; large ones use hash tables; **sorted sets** pair a hash table (member to score) with a skip list or balanced tree (score order), giving O(log n) range queries.\n- **Expiry index**: a min-heap or hierarchical timing wheel by `expires_at`, plus lazy expiry on access.\n- **Write-ahead log (WAL)**: records `(lsn, command, args, checksum)`, segmented files.\n- **Snapshot**: point-in-time dump of the keyspace with the LSN it covers; manifest of the latest valid one.",
+  "design": "```\nclients ─▶ single-threaded command loop (owns all data; no locks)\n                │ apply, then append record\n                ▼\n           WAL buffer ─ group commit (fsync every ≤1 ms) ─▶ disk\n                │ stream of LSNs                         ▲\n                ▼                                         │ background fork / copy-on-write\n       replica(s) ─ ack LSN                          snapshot writer ─▶ object storage\n  sentinel/consensus: detect failure, elect replica with highest LSN\n```\n- Executing commands on one thread removes locking and makes each command atomic. Throughput scales by sharding the keyspace, one such thread per shard, rather than by threading within a shard.\n- A write is acknowledged only after its record is on disk (and optionally on one replica).",
+  "deepdives": "- **Durability: WAL, group commit and snapshots.** Append each mutating command to the log before replying. A separate fsync per write is too slow, so batch: collect all commands that arrive within about a millisecond, write once, fsync once, then acknowledge them all. This adds up to a millisecond of latency but multiplies throughput. Policies range from `fsync always` (no loss, slowest) to `every second` (up to a second lost, fast), or replica acknowledgement. Snapshots bound recovery: fork the process so the child sees a copy-on-write view and dumps it while the parent keeps serving, then truncate the log up to the snapshot's LSN. Copy-on-write can nearly double memory under heavy writes, which is why the 37.5 GB dataset sits on a 64 GB machine. Recovery loads the newest valid snapshot, then replays the log from its LSN, stopping at the first record with a bad checksum (a torn final write).\n- **Replication and failover.** Followers receive the same ordered log. Asynchronous replication is fast but a failover can lose acknowledged writes; waiting for one follower's acknowledgement (semi-synchronous) closes that gap at the price of a network round trip. Failure detection uses heartbeats and a majority of monitors to avoid split brain; the new primary is the follower with the highest LSN, and each election increments a **term/epoch** that the old primary must obey, so a stale primary that wakes up cannot accept writes (fencing). A returning old primary discards log beyond the new primary's history and resyncs.\n- **Memory pressure and scaling out.** When RAM is full choose a policy: reject writes, or evict by LRU/LFU among keys with TTLs. Beyond one machine, split the keyspace into slots (for example 16,384) assigned to shards, and migrate slots online, with redirects while a slot is in transit. Multi-key commands are only atomic within one slot, which is the price of sharding.",
+  "wrapup": "- Single-threaded per-shard engine with rich in-memory structures, group-committed WAL plus fork-based snapshots, replication with epoch-fenced failover, slot-based sharding.\n- Trade-offs: fsync policy vs latency and loss; sync vs async replicas; snapshot memory overhead vs recovery time.\n- Next: transactions across shards, tiered storage for cold values, point-in-time recovery, cross-region replication."
+ },
+ "rubric": [
+  {
+   "text": "Estimates memory with overhead, WAL write rate, snapshot time and recovery time; checks recovery against the target",
+   "keywords": [
+    "gb",
+    "mb/s",
+    "recovery",
+    "snapshot",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains the data structures: hash table keyspace, skip list or tree with a hash table for sorted sets, compact encodings",
+   "keywords": [
+    "hash table",
+    "skip list",
+    "sorted set",
+    "ziplist",
+    "encoding",
+    "data structure"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Executes commands on a single thread per shard (or equivalent) for atomicity, and scales by sharding",
+   "keywords": [
+    "single-thread",
+    "single thread",
+    "lock-free",
+    "atomic",
+    "shard"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a write-ahead log, applied before acknowledging, with checksums and LSNs",
+   "keywords": [
+    "wal",
+    "write-ahead",
+    "lsn",
+    "checksum",
+    "append"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses group commit to avoid an fsync per write and states the fsync policy trade-off",
+   "keywords": [
+    "group commit",
+    "fsync",
+    "batch",
+    "durab"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Takes snapshots without pausing writes (fork/copy-on-write) and truncates the log; recovery = snapshot + log replay",
+   "keywords": [
+    "copy-on-write",
+    "fork",
+    "snapshot",
+    "truncat",
+    "replay"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Designs replication from the log with async vs semi-sync trade-offs and bootstrap of new replicas",
+   "keywords": [
+    "replica",
+    "semi-sync",
+    "async",
+    "catch up",
+    "bootstrap",
+    "psync"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles failover safely: failure detection by quorum, highest-LSN election, term/epoch fencing against split brain",
+   "keywords": [
+    "quorum",
+    "election",
+    "epoch",
+    "term",
+    "fencing",
+    "split brain",
+    "sentinel",
+    "raft"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Implements TTL via lazy expiry plus active sampling or timing wheel",
+   "keywords": [
+    "ttl",
+    "lazy",
+    "timing wheel",
+    "expir",
+    "heap"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Defines behaviour under memory pressure (eviction policies or rejecting writes)",
+   "keywords": [
+    "eviction",
+    "maxmemory",
+    "lru",
+    "lfu",
+    "oom",
+    "full"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Scales out with hash slots, online migration and redirects; notes multi-key operations are limited to one slot",
+   "keywords": [
+    "slot",
+    "reshard",
+    "migrat",
+    "moved",
+    "redirect",
+    "hash tag"
+   ],
+   "points": 1
+  }
+ ]
+}

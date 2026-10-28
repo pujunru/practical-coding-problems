@@ -1,0 +1,156 @@
+{
+ "id": "botnet",
+ "title": "Design a Distributed Command-and-Control Fleet",
+ "prompt": "Design the control plane for a fleet of **millions of agents running on devices an organisation owns or is authorised to manage** (laptops, servers, kiosks, IoT gateways). An operator pushes configuration, software patches and diagnostic commands to selected groups of devices and collects health telemetry. Devices sit behind NATs and flaky networks, and a compromised control plane would be catastrophic.\n\nAssume **10 million agents**, a check-in about every 5 minutes, and software updates of roughly 50 MB.",
+ "clarify": [
+  "Are all devices enrolled and owned or authorised by the operator, and how is identity provisioned at enrolment?",
+  "Which kinds of commands are allowed: config changes, patch installs, restarts, diagnostics? Is arbitrary remote code execution out of scope?",
+  "How fast must an urgent command (for example a security patch or a stop order) reach the fleet: minutes or hours?",
+  "Do agents poll, or do we need a persistent connection for low-latency delivery?",
+  "What are the rollout safety requirements: staged waves, automatic halt on error rate, rollback?",
+  "What must the fleet do when the control plane is unreachable?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Enrol devices with a unique cryptographic identity; organise them in groups and cohorts by labels\n- Deliver commands and desired configuration to targeted cohorts; agents acknowledge and report results\n- Staged rollout with health gates, pause, abort and rollback; collect telemetry\n\n**Non-functional**\n- A forged or replayed command must never execute: every instruction is authenticated and scoped\n- The control plane scales to millions of check-ins and survives a regional outage; agents keep working offline\n- Rollouts are safe by default: bad change affects a small cohort first",
+  "estimation": "- Check-ins: 10M / 300 s ≈ **33k/s**, flattened by per-device jitter (each agent offsets its schedule by a random amount).\n- Telemetry: 33k/s × 2 KB ≈ **67 MB/s** ≈ 5.8 TB/day, mostly deltas that compress well.\n- Fleet state: 10M × ~200 B ≈ **2 GB**, which fits in memory on a few nodes; the history is the large part.\n- Patch delivery: 50 MB × 10M = **500 TB** in total. Serve from a CDN or regional mirrors, never from the control plane; staged waves of 1% (100k devices = 5 TB), 10%, 50%, then 100% keep each wave bounded.\n- Urgent-command latency by polling: average wait = half the interval ≈ 2.5 minutes, worst case 5 minutes. A persistent channel (MQTT or long poll) cuts it to seconds at the cost of holding up to 10M connections.",
+  "api": "```\nPOST /v1/enroll        {device_csr, enrol_token}          → device certificate (mTLS identity)\nPOST /v1/checkin       {state_hash, version, health, acks[]}   → {desired_state_ref, commands[], next_checkin_s}\nGET  <cdn>/artifacts/{sha256}                              (content-addressed, signature verified by the agent)\nPOST /admin/rollouts   {command|config, selector, waves[], gates}   → rollout_id (operators, strong auth + approval)\nPOST /admin/rollouts/{id}/pause | abort | resume\n```\n- Devices authenticate with mutual TLS using the certificate from enrolment. Operators authenticate with SSO plus a second approval for high-impact actions.",
+  "data": "- **devices**: `device_id, cert_fingerprint, labels, cohort, agent_version, last_seen, state_hash`.\n- **commands/rollouts**: `rollout_id, signed_payload, selector, waves, gate_policy, status`.\n- **delivery**: `(device_id, command_id, status: PENDING|DELIVERED|ACKED|FAILED, attempt)` with a TTL; keyed by device in a wide-column or sharded store.\n- **signing keys**: root key offline; online signing keys in an HSM with a key id and validity window. **Artifacts**: immutable, content-addressed.",
+  "design": "```\noperator ─▶ admin API (approval, audit) ─▶ rollout engine ─▶ signer (HSM) ─▶ signed command\n                                                │ waves, gates                  │\n                                                ▼                               ▼\nagents ─mTLS─▶ regional check-in tier (stateless) ─▶ delivery store ◀── cohort desired-state cache\n   │                     │ telemetry                                   artifacts ─▶ CDN\n   └── verify signature ◀┘      stream ─▶ health aggregator ─▶ rollout engine (promote / halt)\n```\n- Agents pull; nothing connects inbound to a device, which works behind NAT and firewalls.\n- The check-in response is mostly a small reference to the desired state for the agent's cohort, so most requests hit a cache.",
+  "deepdives": "- **Authenticating commands.** Transport security is not enough, since a compromised front-end or cache must not be able to issue commands. The operator's request is signed as an envelope containing `command_id, type, parameters, target selector, not_before, expires_at, sequence` and the signing key id, using Ed25519. The root key stays offline and signs short-lived signing keys held in an HSM; agents embed the root public key and verify the chain, the validity window, the target (is this device in the selector?) and that `command_id` or `sequence` has not been seen, which blocks replay and old-command resurrection. Only an allowlist of command types exists; there is no 'run any shell string'. Artifacts are referenced by SHA-256 digest inside the signed envelope. Rotation and revocation are delivered as signed updates.\n- **Check-in at scale and a resilient control plane.** Agents add random jitter to their schedule and use exponential backoff with jitter after failures, so an outage ending does not trigger a thundering herd of 10M devices. The check-in tier is stateless and regional, with load shedding that answers 'retry later' with a `next_checkin_s` value instead of failing. Delivery is at-least-once: a command stays `PENDING` until acknowledged, so agents must be idempotent (keyed by `command_id`). Fleet state and queues are sharded by `device_id`. If the whole control plane is down, agents continue with their last verified configuration, which is why the signed desired state carries an expiry only for commands, not for baseline config.\n- **Staged rollout and safety.** The rollout engine releases waves (canary 0.1%, then 1%, 10%, 50%, 100%) and waits at each gate for a soak period. Gates compare the new cohort's error rate, crash rate and check-in health against the control group, and halt automatically on a regression; the halt itself is a signed command that agents obey. Pick waves by hashing `device_id` so every region and device model is represented. Agents roll back to the previous version automatically if the new one fails a local health check after restart. Trade-off: slower waves lengthen exposure to a real vulnerability, so urgent patches use faster schedules but keep the gates.",
+  "wrapup": "- Pull-based mTLS check-ins, signed and scoped commands with a root of trust kept offline, CDN-delivered content-addressed artifacts, wave-based rollouts with automatic gates, and agents that stay safe when the control plane is unreachable.\n- Trade-offs: polling interval vs urgency and connection cost; rollout speed vs blast radius; central approval vs operational agility.\n- Next: remote diagnostics with scoped, audited sessions, compliance reporting, delta updates, per-region data residency."
+ },
+ "rubric": [
+  {
+   "text": "Estimates check-in rate, telemetry volume, fleet state size and patch bandwidth, and keeps bulk downloads off the control plane (CDN)",
+   "keywords": [
+    "/s",
+    "cdn",
+    "tb",
+    "mb/s",
+    "check-in"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Chooses pull-based check-ins (agents dial out) and justifies it vs persistent connections, with the urgent-latency trade-off",
+   "keywords": [
+    "pull",
+    "poll",
+    "outbound",
+    "nat",
+    "mqtt",
+    "long poll",
+    "persistent"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Gives each device a cryptographic identity at enrolment and uses mutual TLS",
+   "keywords": [
+    "mtls",
+    "mutual tls",
+    "certificate",
+    "enrol",
+    "identity"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Signs commands end to end (not just TLS): signature chain, expiry, target scope, and replay protection by id or sequence",
+   "keywords": [
+    "sign",
+    "ed25519",
+    "replay",
+    "expires_at",
+    "sequence",
+    "nonce",
+    "not_before"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Protects signing keys: offline root, HSM-held online keys, rotation and revocation, multi-person approval",
+   "keywords": [
+    "hsm",
+    "offline",
+    "root key",
+    "rotation",
+    "revocation",
+    "approval"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Restricts command types to an allowlist with scoped parameters, and references artifacts by content digest",
+   "keywords": [
+    "allowlist",
+    "whitelist",
+    "digest",
+    "sha-256",
+    "sha256",
+    "content-addressed"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses jitter and exponential backoff to avoid thundering herds when the control plane recovers",
+   "keywords": [
+    "jitter",
+    "backoff",
+    "thundering",
+    "herd",
+    "stagger"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Delivers commands at-least-once with acknowledgements and idempotent execution keyed by command id",
+   "keywords": [
+    "at-least-once",
+    "ack",
+    "idempoten",
+    "command_id",
+    "pending"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Rolls out in waves with health gates, automatic halt and rollback, and representative cohort selection",
+   "keywords": [
+    "wave",
+    "canary",
+    "gate",
+    "halt",
+    "rollback",
+    "soak",
+    "cohort"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Keeps the control plane resilient: stateless regional tier, load shedding, sharding by device id, agents run on last known config when offline",
+   "keywords": [
+    "stateless",
+    "regional",
+    "shed",
+    "shard",
+    "offline",
+    "last known",
+    "failover"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Covers audit logging and operator access control for admin actions",
+   "keywords": [
+    "audit",
+    "rbac",
+    "sso",
+    "operator",
+    "access control"
+   ],
+   "points": 1
+  }
+ ]
+}

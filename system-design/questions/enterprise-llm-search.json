@@ -1,0 +1,148 @@
+{
+ "id": "enterprise-llm-search",
+ "title": "Design LLM-Powered Enterprise Search",
+ "prompt": "Design a product that lets employees ask natural-language questions over their company's documents (wikis, drives, tickets, chat, email) and get a short, sourced answer. Each document has its own access rules, and an employee must never see, directly or through the answer, anything they could not open in the source system.\n\nAssume **1,000 enterprise tenants**, about **1 billion documents** in total, 2 million employees asking 10 questions a day, and edits to roughly 2% of documents per day.",
+ "clarify": [
+  "Which sources and formats are in scope, and do we sync through the sources' own APIs and webhooks?",
+  "How are permissions defined in the sources (users, groups, nested groups, link sharing), and how quickly must a revoked permission take effect?",
+  "How fresh must the index be after a document changes: seconds, minutes or hours?",
+  "Do we return a generated answer with citations, or only ranked links?",
+  "Is tenant data isolation a contractual requirement, such as separate encryption keys or dedicated indexes?",
+  "What latency is expected for the first answer token, and what retrieval quality bar (recall) do we measure against?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Connect to sources, ingest documents with their permissions, and keep the index current\n- Answer a question with a generated, cited response; also offer plain ranked results\n- Support multi-turn follow-ups\n\n**Non-functional**\n- **Permission safety is the top requirement**: no leak across users or tenants, and revocation takes effect within minutes\n- Freshness of minutes; first token in about 2 s\n- Answers must be grounded: say 'not found' rather than invent",
+  "estimation": "- Chunks: 1B documents × ~8 chunks of ~512 tokens = **8B chunks**.\n- Vectors: 768 dimensions × 2 bytes (fp16) = 1.5 KB per chunk, so ≈ **12 TB**; HNSW graph overhead (about 1.5×) gives ~18 TB. Quantising to int8 cuts raw vectors to ~6 TB. This is the cost driver and is sharded by tenant.\n- Queries: 2M × 10 = 20M/day ≈ **230/s** avg, ~700/s peak. Each prompt carries about 6 chunks × 512 + 500 = ~3.6k tokens, so ≈ 2.5M prompt tokens/s at peak.\n- Ingestion: 2% of 1B = 20M changed documents/day ≈ 230 docs/s ≈ **1.9k chunks/s** to embed.\n- Backfill: 8B chunks at 20k chunks/s of embedding throughput takes about **4.6 days**, so onboarding is a throttled background job.",
+  "api": "```\nPOST /v1/search  {query, conversation_id?, filters?}   → text/event-stream: answer deltas + citations[{doc_id, chunk_id, title, url}]\nGET  /v1/search/results?q=                               → ranked hits only\nPOST /v1/connectors  {tenant_id, type, credentials_ref}  → starts sync\nPOST /v1/feedback  {answer_id, rating, bad_citation?}\n```\n- The caller's identity comes from SSO and is resolved server-side to a principal set: user id plus every group they belong to. Clients never pass ACLs.",
+  "data": "- **documents**: `doc_id, tenant_id, source, source_id, version, content_hash, acl_version, updated_at`.\n- **chunks** (search index record): `chunk_id, doc_id, tenant_id, text, embedding, title, url, acl_principals[]` (allowed users and groups; or a pointer to a group-expanded set).\n- **acl store**: `doc_id → allow set`, plus `group → members`, synced from the source.\n- Raw text and extracted content in object storage; vectors and an inverted index in the search engine; a per-tenant encryption key.",
+  "design": "```\nsources ─▶ connectors ─▶ queue ─▶ parse + chunk ─▶ embed ─▶ index (vector + BM25 + ACL)\n  (webhooks, crawl)            └─▶ ACL sync ─▶ acl store\n\nquery ─▶ authn ─▶ resolve principals ─▶ rewrite query ─▶ hybrid retrieve (ACL filter)\n      ─▶ rerank ─▶ recheck access ─▶ prompt with numbered chunks ─▶ LLM ─▶ cited answer\n```\n- Ingestion and serving are separate pipelines that scale independently; the index is their only meeting point.\n- Indexes are partitioned by tenant (a dedicated index or shard group for large tenants, shared shards with a tenant filter for small ones).",
+  "deepdives": "- **Permission-aware retrieval.** Filter in the index at query time, not after generation. Pre-filtering (restrict the ANN search to chunks whose `acl_principals` intersect the user's principals) is safe but filtered HNSW can lose recall or slow down when the filter is very selective. Post-filtering fetches top-k and drops what the user cannot see, which returns too few results for restrictive ACLs. A practical hybrid is to pre-filter in the engine, over-fetch, and then **re-check** each surviving document against the source of truth (or a fresh ACL cache) before it enters the prompt. Group membership changes are the hard part: storing expanded user lists on every chunk makes a group change rewrite millions of chunks, so store group ids on chunks and expand the user's groups at query time. Revocations must propagate quickly, hence the final re-check. Handle deletion the same way, with a tombstone.\n- **Hybrid search, ranking and grounding.** Dense vectors match meaning but miss exact identifiers and rare terms; BM25 does the opposite. Run both, merge with reciprocal rank fusion, then rerank the top ~50 with a cross-encoder (pointwise scoring is cheap and simple; listwise reranking sees document interactions but costs more latency). Chunk along document structure and attach title and path to each chunk. The prompt contains numbered chunks, the model must cite by number, and the server verifies that each citation refers to a chunk that was actually supplied. If the best score is below a threshold, answer 'I could not find this' instead of guessing. Trade-off: more context improves recall but raises cost, latency and distraction.\n- **Freshness and ingestion.** Use webhooks or change feeds where the source offers them, with periodic crawls to catch misses. Process by content hash, so unchanged documents are not re-embedded, and write idempotently by `(doc_id, version)`. Process permission changes on a faster lane than content changes, since a stale ACL is a security problem and a stale body is only a quality problem. Throttle per-tenant backfills to respect source API rate limits and keep one tenant's import from delaying others.",
+  "wrapup": "- Separate ingestion and serving; hybrid retrieval with ACL pre-filtering plus a final authorisation re-check; reranking, numbered citations that are verified, and an explicit no-answer path.\n- Trade-offs: filter-in-index recall vs safety; embedding cost vs freshness; per-tenant isolation vs shared-infrastructure efficiency.\n- Next: evaluation (retrieval recall, citation accuracy, hallucination rate), semantic caching, agentic multi-step retrieval, per-tenant keys."
+ },
+ "rubric": [
+  {
+   "text": "Estimates chunk count, vector storage and ingestion throughput, and notes backfill time and vector storage as the cost driver",
+   "keywords": [
+    "chunk",
+    "vector",
+    "tb",
+    "/s",
+    "backfill"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Separates the ingestion pipeline (connectors, parse, chunk, embed, index) from the query path so each scales independently",
+   "keywords": [
+    "ingest",
+    "connector",
+    "pipeline",
+    "embed",
+    "chunk"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Enforces ACLs inside retrieval (filter by principals at query time), never relying on the LLM or post-generation redaction",
+   "keywords": [
+    "acl",
+    "principal",
+    "pre-filter",
+    "permission",
+    "filter"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles group membership and permission changes without rewriting all chunks, and re-checks access just before prompting",
+   "keywords": [
+    "group",
+    "re-check",
+    "recheck",
+    "revoc",
+    "propagat"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Isolates tenants (separate index or shard, tenant filter, per-tenant keys)",
+   "keywords": [
+    "tenant",
+    "isolation",
+    "namespace",
+    "per-tenant",
+    "encryption key"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses hybrid retrieval, dense vectors plus BM25 keyword search, merged with a fusion method",
+   "keywords": [
+    "hybrid",
+    "bm25",
+    "dense",
+    "sparse",
+    "rrf",
+    "reciprocal rank"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Adds a reranking stage and can compare pointwise vs listwise or cross-encoder trade-offs",
+   "keywords": [
+    "rerank",
+    "cross-encoder",
+    "pointwise",
+    "listwise"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Grounds the answer: numbered chunks in the prompt, citations validated against supplied chunks, a 'not found' path under a score threshold",
+   "keywords": [
+    "citation",
+    "ground",
+    "hallucinat",
+    "threshold",
+    "not found",
+    "attribution"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Chunks along document structure with metadata, and sizes the trade-off between chunk size, recall and cost",
+   "keywords": [
+    "chunk size",
+    "overlap",
+    "metadata",
+    "structure",
+    "heading"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keeps the index fresh with webhooks or change feeds, content-hash dedup, idempotent writes, and a faster lane for permission changes",
+   "keywords": [
+    "webhook",
+    "change feed",
+    "content hash",
+    "idempoten",
+    "freshness",
+    "incremental"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Describes evaluation: retrieval recall/precision, citation accuracy, hallucination rate, user feedback",
+   "keywords": [
+    "recall",
+    "precision",
+    "evaluat",
+    "ragas",
+    "feedback"
+   ],
+   "points": 1
+  }
+ ]
+}

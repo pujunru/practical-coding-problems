@@ -1,0 +1,154 @@
+{
+ "id": "web-analytics",
+ "title": "Design Google Analytics",
+ "prompt": "Design a web analytics service. Website owners add a small tracking snippet to their pages; the service collects page views and custom events from visitors' browsers and gives owners dashboards: visitors, sessions, top pages, referrers, countries, conversion funnels, with filters and date ranges. Real-time views show the last few minutes, and reports for older periods must stay fast.\n\nAssume **10 million sites** and **50 billion events a day**, with dashboard queries needing to return in under a second or two.",
+ "clarify": [
+  "Which metrics are in scope: page views, unique visitors, sessions, funnels, custom events? Are exact unique counts required or are approximations fine?",
+  "How fresh must data be: a real-time view within seconds, and standard reports within an hour?",
+  "How flexible are queries: fixed dashboards with a few dimensions, or arbitrary filters and group-bys?",
+  "How long is raw data retained, and how long are aggregates kept?",
+  "Are consent, do-not-track and data deletion requests (GDPR) in scope?",
+  "Is multi-tenant isolation or per-site sampling for very large sites acceptable?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Collect events from a browser snippet or SDK (page view, custom event, user and session identifiers)\n- Dashboards: counts, uniques, sessions, top-N by dimension (page, referrer, country, device), time series, funnels\n- Filters and date ranges; a real-time view; export\n\n**Non-functional**\n- The collector never loses an accepted event and never slows the customer's page (tiny async beacon)\n- Real-time data within ~10 s; historical queries p95 < 2 s\n- Privacy: honour consent, minimise personal data, support deletion",
+  "estimation": "- Events: 50B/day ≈ **580k/s** average, ~1.7M/s at 3× peak.\n- Raw volume: 50B × 500 B = **25 TB/day** uncompressed; at roughly 5:1 columnar compression ≈ 5 TB/day, ≈ 1.8 PB/year if raw is kept a year.\n- Collector fleet: if a node handles 20k events/s, peak needs ~90 nodes plus headroom, so a few hundred across regions.\n- Rollups: if hourly aggregates by site and a few dimensions collapse about 25 events into one row, that is 2B rows/day × 100 B ≈ **200 GB/day**, 125× smaller than raw, which is why most queries should read rollups.\n- Query load: 5k dashboard queries/s peak against rollups; scanning raw events for each would be impossible.",
+  "api": "```\nPOST/GET https://collect.example.com/v1/e   {site_id, event, url, referrer, client_id, ts, props}   → 204 (beacon; no body)\nGET /v1/reports/{site_id}?metric=visitors,sessions&dim=page&from=&to=&filter=country:DE&grain=day\n                                                  → {rows[], sampled: false}\nGET /v1/realtime/{site_id}                         → active users, last 30 minutes per minute\nDELETE /v1/users/{client_id}                       (data deletion)\n```\n- The collector answers `204` immediately after durably accepting the event, then processes asynchronously. Clients batch events and use `sendBeacon` so the page unload does not lose them.",
+  "data": "- **Raw events** (columnar files by day and site, in object storage): `site_id, ts, client_id, session_id, event, url, referrer, country, device, props`.\n- **Rollups**: `(site_id, hour, dimension, value) → pageviews, sessions, uniq_sketch (HyperLogLog)`; a second tier at day grain.\n- **Real-time store**: per-site minute buckets in a fast store (memory or an OLAP engine's recent segment).\n- **Session state**: `(site_id, client_id) → last_seen, session_id, first_page` held by the stream processor.\n- **Sites**: `site_id, owner, domains, settings, consent mode`.",
+  "design": "```\nbrowser ─▶ edge collector (validate, geo, bot filter) ─▶ Kafka (by site_id/client_id)\n                                                              │\n          ┌───────────────────────────────┬───────────────────┴──────────────┐\n          ▼                               ▼                                  ▼\n   stream job: sessionise,         raw sink (batch files)           batch job (hourly/daily):\n   per-minute aggregates                  │ object storage           recompute rollups, late events\n          ▼                               ▼                                  ▼\n   real-time store ◀─────────┐     OLAP store (rollups + recent raw) ◀───────┘\n                             └─────────── query service (merge recent + rollup, cache) ◀─ dashboards\n```\n- Streaming gives fresh numbers; batch corrects them with late data and is the source of truth for history.",
+  "deepdives": "- **Ingestion and streaming vs batch.** The collector is stateless, appends to a partitioned log, and acknowledges only after the write is replicated. Partition by `(site_id, client_id)` so a visitor's events stay together for sessionisation, and watch for skew: one huge site can overload a partition, so add a salt for large sites and merge afterwards. Stream processors keep session state (a session ends after 30 minutes of inactivity) and emit per-minute counts using event time and a watermark so late events are included for a few minutes. Events arriving later than that are corrected by the batch job, which recomputes the affected hour from raw data. Trade-off: two code paths to maintain. Make writes idempotent by event id so replays do not double count.\n- **Rollups, uniques and the query layer.** Exact distinct counts do not add up across time buckets (a visitor who comes on Monday and Tuesday is one weekly visitor, not two), so store a HyperLogLog sketch per bucket and merge sketches at query time, accepting about 1-2% error. Pre-aggregate by common dimensions (page, referrer, country, device) at hour and day grain; keep raw events for ad hoc queries and funnels. A columnar OLAP engine (partitioned by site and time, sorted by `site_id, ts`) answers a query by merging rollups for complete hours with the real-time store for the current hour. Keep raw for 14-90 days, hourly rollups for 2 years, daily rollups longer. Trade-off: every extra pre-aggregated dimension multiplies storage, so do not roll up high-cardinality dimensions such as full URLs with query strings; scan raw or sample those.\n- **Cardinality, hot sites and privacy.** A site with 100k events per second would dominate shared resources; give large sites dedicated partitions and query quotas, and use sampling (clearly flagged in the response) for exploratory queries on them. Filter bots, drop IP addresses after geo lookup, and use first-party cookies for visitor ids. For consent and deletion requests, keep a user index so a deletion marks the visitor's raw rows and triggers rewrite of affected partitions, since object-storage files are immutable.",
+  "wrapup": "- A tiny async collector into a partitioned log, streaming sessionisation for real-time numbers, a batch layer that corrects and builds rollups, sketches for uniques, and a query service merging rollups with recent data.\n- Trade-offs: freshness vs correctness (late events); rollup storage vs query flexibility; exact vs approximate counts.\n- Next: funnels and cohort analysis, anomaly alerts, export to a warehouse, cross-device identity."
+ },
+ "rubric": [
+  {
+   "text": "Estimates events per second, raw storage per day and rollup size, concluding that queries must read pre-aggregated data",
+   "keywords": [
+    "/s",
+    "tb",
+    "rollup",
+    "pre-aggregat",
+    "per day"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Designs a lightweight collector: async beacon, immediate 204, stateless, durable write to a log before acknowledging",
+   "keywords": [
+    "beacon",
+    "204",
+    "collector",
+    "kafka",
+    "durable",
+    "log"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Partitions the event log sensibly (site/visitor key), and handles skew from very large sites",
+   "keywords": [
+    "partition",
+    "skew",
+    "salt",
+    "hot site",
+    "key"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Defines sessionisation with an inactivity timeout in a stream processor with keyed state",
+   "keywords": [
+    "session",
+    "inactivity",
+    "30 minute",
+    "keyed state",
+    "stateful"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses event time and watermarks for late events, and a batch job to correct and backfill",
+   "keywords": [
+    "event time",
+    "watermark",
+    "late",
+    "batch",
+    "backfill",
+    "correct"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Explains lambda/kappa trade-offs: streaming for freshness, batch for source of truth, idempotent writes by event id",
+   "keywords": [
+    "lambda",
+    "kappa",
+    "idempoten",
+    "dedup",
+    "replay",
+    "exactly-once"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Pre-aggregates rollups at hour/day grain by dimension and chooses which dimensions to roll up (cardinality trade-off)",
+   "keywords": [
+    "rollup",
+    "hourly",
+    "grain",
+    "cardinality",
+    "dimension",
+    "pre-aggregat"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Counts uniques with HyperLogLog sketches that merge across buckets, and explains why exact distincts do not add",
+   "keywords": [
+    "hyperloglog",
+    "hll",
+    "sketch",
+    "distinct",
+    "unique",
+    "approximate"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses a columnar OLAP store partitioned by site and time, merging rollups with real-time data in a query service with caching",
+   "keywords": [
+    "olap",
+    "columnar",
+    "clickhouse",
+    "druid",
+    "pinot",
+    "query service",
+    "cache"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Defines tiered retention for raw data and rollups, and the cost trade-off",
+   "keywords": [
+    "retention",
+    "tier",
+    "ttl",
+    "cold",
+    "compress"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses privacy: consent, IP minimisation, bot filtering, and deletion requests on immutable files",
+   "keywords": [
+    "consent",
+    "gdpr",
+    "privacy",
+    "bot",
+    "deletion",
+    "pii"
+   ],
+   "points": 1
+  }
+ ]
+}

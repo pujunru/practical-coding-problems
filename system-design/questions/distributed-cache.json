@@ -1,0 +1,147 @@
+{
+ "id": "distributed-cache",
+ "title": "Design a Distributed Cache",
+ "prompt": "Design an in-memory cache cluster that many services share in front of a slower database. It stores key-value pairs, serves reads in about a millisecond, scales by adding nodes, and survives machine failures without turning every failure into a database outage.\n\nAssume **2 million operations a second** at peak (90% reads), about **1 billion keys** with 1 KB values, and a database that can only absorb a small fraction of that load.",
+ "clarify": [
+  "Is it a read-through/cache-aside cache in front of a database, or does it also hold primary data?",
+  "What consistency is acceptable: can readers see stale data for a while, and how stale?",
+  "What is the target hit rate, latency (p99) and availability?",
+  "Do keys have TTLs, and what are the value size limits?",
+  "Is the traffic heavily skewed, with a few very hot keys?",
+  "Do we need data structures beyond get/set, or atomic operations such as increments?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- `get`, `set` with TTL, `delete`; optional atomic increment and compare-and-set\n- Add and remove nodes online; keep serving when a node dies\n- Evict automatically when memory is full\n\n**Non-functional**\n- p99 < 2 ms, hit rate above 95%, availability 99.99% for the read path\n- Losing a node must not send a flood of misses to the database\n- Staleness bounded by TTL and explicit invalidation; no durability guarantee (it is a cache)",
+  "estimation": "- Traffic: 2M ops/s; 1.8M reads/s and 0.2M writes/s.\n- Data: 1B keys × (1 KB value + ~100 B key and metadata) ≈ **1.1 TB**.\n- Nodes: at 64 GB usable per node and 70% target fill (45 GB), 1.1 TB / 45 GB ≈ 25 primaries. With one replica each, **50 nodes**.\n- Per-node load: 2M / 25 ≈ 80k ops/s per primary, within what a well-tuned in-memory server does. Bandwidth: 2M × 1.1 KB = 2.2 GB/s across the cluster, about 90 MB/s per primary.\n- Database protection: at a 95% hit rate, 100k misses/s reach the database; at 90% it is 200k/s. A drop in hit rate of 5 points doubles database load, so the hit rate is itself a capacity number.",
+  "api": "```\nGET    /v1/cache/{key}                       → 200 value | 404\nPUT    /v1/cache/{key}?ttl=300  body: value   (optional If-Version for compare-and-set)\nDELETE /v1/cache/{key}\nPOST   /v1/cache/{key}/incr?by=1\nGET    /v1/cluster/topology                   → {version, shards[{range, primary, replicas}]}\n```\n- In practice a binary protocol over persistent connections. A smart client (or a proxy tier) fetches the topology, routes each key, and follows redirects when the topology changes.",
+  "data": "- **Key space**: `hash(key)` mapped onto a ring of virtual nodes, about 100-200 per server, so each server owns many small ranges.\n- **Entry**: `key, value, expires_at, last_access / frequency counter, version`.\n- **Topology**: shard map `range → primary + replicas`, versioned, held by a small consistent store (etcd or ZooKeeper).\n- Each node has a hash table plus an eviction structure (LRU list or TinyLFU counters) and a TTL index.",
+  "design": "```\napp ─▶ client lib / proxy ──hash(key)──▶ shard primary ──async──▶ replica\n            │  topology (versioned)               │ evict, TTL\n            ▼                                      ▼\n   config service (etcd) ◀── health checks ── nodes        miss ─▶ app reads DB, then sets\n```\n- Cache-aside: the application reads the cache, on a miss reads the database and fills the cache.\n- Writes: the application updates the database, then **deletes** the cache key (not sets it), which avoids races between concurrent writers.",
+  "deepdives": "- **Partitioning and replication.** Consistent hashing with virtual nodes means adding or removing a node moves about 1/N of the keys instead of nearly all of them, and spreads a dead node's load across all survivors. Replication is asynchronous primary-to-replica: fast, but a failover can lose the last few writes, which is acceptable for a cache because entries can be rebuilt from the database. Reads from replicas add capacity but can be slightly stale. After a failure, a replica is promoted and the topology version is bumped. Trade-off: synchronous replication would cost latency on every write for little benefit here.\n- **Eviction, hot keys and stampedes.** Use approximate LRU or TinyLFU (frequency-aware admission protects against scans that push out useful keys). Add random jitter to TTLs so keys written together do not all expire together. When a hot key expires, thousands of readers may hit the database at once: allow one request to recompute (a lock or lease on the key, with others waiting briefly or served the stale value), or refresh early before expiry. For hot keys, detect them with sampled counters in the proxy over a sliding window, and replicate those keys across several nodes (for example `key#1..key#k` chosen at random) or hold them in a small local in-process cache with a short TTL. Trade-off: replicating hot keys costs memory and makes invalidation touch every copy.\n- **Invalidation and staleness.** TTL is the safety net; explicit delete after a database write is the fast path. Failure modes: a delete lost to a network error leaves a stale value until TTL; a slow reader can fill the cache with an old value after the delete. Mitigate with versioned values (reject a set older than the stored version), a lease token issued on a miss that is invalidated by a delete, and by streaming database change events (CDC) to delete keys reliably. Also cache negative results with a short TTL so misses for nonexistent keys do not hammer the database.",
+  "wrapup": "- Consistent-hash sharding with virtual nodes, asynchronous replication, smart-client routing with a versioned topology, approximate LRU or TinyLFU eviction, and layered defences against stampedes, hot keys and stale data.\n- Trade-offs: replication cost vs data loss on failover; TTL length vs staleness; hot-key replication vs invalidation cost.\n- Next: multi-region caches, cache warming, observability on hit rate by key prefix, tiering to flash."
+ },
+ "rubric": [
+  {
+   "text": "Estimates data size, node count with replication and a target fill ratio, and per-node ops",
+   "keywords": [
+    "tb",
+    "nodes",
+    "ops/s",
+    "/s",
+    "fill"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Shows how database load depends on hit rate (miss rate x traffic)",
+   "keywords": [
+    "hit rate",
+    "miss",
+    "hit ratio",
+    "database load"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Partitions with consistent hashing and virtual nodes, explaining minimal key movement when nodes change",
+   "keywords": [
+    "consistent hash",
+    "virtual node",
+    "vnode",
+    "ring",
+    "rebalanc"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Explains replication (primary/replica, async vs sync), failover and promotion, with the trade-off for a cache",
+   "keywords": [
+    "replica",
+    "failover",
+    "promot",
+    "async",
+    "primary"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Names a client/proxy routing approach with a versioned topology in a config store",
+   "keywords": [
+    "topology",
+    "smart client",
+    "proxy",
+    "etcd",
+    "zookeeper",
+    "config"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes eviction policies (LRU, LFU, TinyLFU) and how memory pressure is handled",
+   "keywords": [
+    "lru",
+    "lfu",
+    "tinylfu",
+    "eviction",
+    "evict"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents cache stampede on hot expiry (single-flight, lease, early refresh, stale-while-revalidate) and uses TTL jitter",
+   "keywords": [
+    "stampede",
+    "single-flight",
+    "lease",
+    "jitter",
+    "early refresh",
+    "stale-while"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Detects and mitigates hot keys (sampling, key replication/suffixing, local near cache)",
+   "keywords": [
+    "hot key",
+    "sampl",
+    "replicat",
+    "near cache",
+    "local cache"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Gives an invalidation strategy: cache-aside with delete after write, TTL safety net, CDC, and race handling with versions or leases",
+   "keywords": [
+    "invalidat",
+    "cache-aside",
+    "delete",
+    "cdc",
+    "version",
+    "race"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Caches negative results and discusses cold start / warm-up after a node loss to protect the database",
+   "keywords": [
+    "negative",
+    "warm",
+    "cold start",
+    "penetration",
+    "bloom"
+   ],
+   "points": 1
+  },
+  {
+   "text": "States the consistency and durability contract plainly (eventual, may lose data, rebuildable from the database)",
+   "keywords": [
+    "eventual",
+    "stale",
+    "durab",
+    "consisten"
+   ],
+   "points": 1
+  }
+ ]
+}

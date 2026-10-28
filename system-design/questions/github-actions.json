@@ -1,0 +1,149 @@
+{
+ "id": "github-actions",
+ "title": "Design GitHub Actions",
+ "prompt": "Design a hosted CI/CD service. A push or pull request triggers a workflow described in a YAML file in the repository: a graph of jobs with dependencies, each job a list of steps that runs on a clean machine. Users watch status and logs live, and workflows use secrets, caches and artifacts. A lot of the code being run is untrusted (for example pull requests from forks).\n\nAssume **10 million workflow runs a day**, about 3 jobs per run, and jobs that last 5 minutes on average.",
+ "clarify": [
+  "Are workflows a linear list of jobs or a DAG with `needs:` and matrix fan-out? (Assume a DAG; if the interviewer says linear, drop the graph logic.)",
+  "What does 'exactly once' mean here: no job run concurrently by two runners, or no duplicated side effects? (Assume at-least-once scheduling with an exactly-one-active-attempt guarantee.)",
+  "Do we run untrusted code from forks, and may it see secrets?",
+  "Are runners only our managed fleet, or can customers attach self-hosted runners?",
+  "How soon after a push must a job start (seconds), and how quickly must logs appear?",
+  "Do we need caches, artifacts, concurrency groups and per-organisation limits in scope?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Trigger runs from events (push, pull request, schedule, manual dispatch); parse the YAML into a DAG of jobs (`needs`, matrix expansion)\n- Run each job's steps on an isolated runner; cancel and re-run; pass artifacts between jobs and keep caches\n- Live status and logs; secrets available to a job but never printed\n\n**Non-functional**\n- A job has at most one active attempt at a time; a lost runner never leaves a job stuck\n- Strong isolation for untrusted code; one tenant cannot starve the others\n- Job start p50 < 10 s; first log line visible in about 2 s",
+  "estimation": "- Jobs: 10M runs × 3 = 30M/day ≈ **350/s** avg, ~1,000/s at 3× peak.\n- Concurrency (Little's law): 350/s × 300 s ≈ **104k** jobs running on average, ~310k at peak. Runners are the dominant cost, so the fleet must scale elastically.\n- State changes: ~5 per job (queued, assigned, running, step updates, done) ≈ 1.7k writes/s, easy for a sharded SQL store.\n- Logs: 30M jobs × 2 MB = 60 TB/day raw ≈ **700 MB/s** of ingest while jobs run; text compresses about 6:1, so ≈ 10 TB/day stored.\n- Artifacts and caches: even 20 MB per job is 600 TB/day, so they need lifecycle rules (for example 90 days for artifacts, 7 days unused for caches).",
+  "api": "```\nPOST /internal/events                    {repo, sha, event, ref}        (from the git platform)\nGET  /v1/runs/{id}                       → run, jobs[], status\nPOST /v1/runs/{id}/cancel | /rerun\nGET  /v1/jobs/{id}/logs?from=seq         → SSE stream of log chunks\n\nRunner protocol (outbound-only from the runner):\nPOST /runner/v1/acquire                  → {job, lease_token, secrets_ref}  (long poll)\nPOST /runner/v1/jobs/{id}/heartbeat      {lease_token}                  → renews the lease\nPOST /runner/v1/jobs/{id}/logs           {seq, chunk}                   (idempotent by seq)\nPOST /runner/v1/jobs/{id}/complete       {result, lease_token}\n```\n- The runner always dials out, so runners need no inbound ports. Every runner call carries the lease token and is rejected once the lease is lost.",
+  "data": "- **runs**: `run_id, tenant_id, repo_id, sha, event, status`; sharded by `repo_id`.\n- **jobs**: `job_id, run_id, tenant_id, needs[], pending_deps, status (BLOCKED|QUEUED|ASSIGNED|RUNNING|DONE), attempt, runner_id, lease_expires_at, labels`. All job rows are created when the run is created.\n- **logs**: sequenced chunks in a log stream, flushed to object storage in segments keyed `job_id/segment`; the index is `(job_id, seq range)`.\n- **secrets**: envelope-encrypted values per repo or environment, with the data key in a KMS; **artifacts/caches** in object storage keyed by content hash or cache key.",
+  "design": "```\ngit push ─▶ trigger svc ─▶ parse YAML ─▶ runs/jobs DB ◀─── scheduler (stateless)\n                                            │  job ready (pending_deps = 0)\n                                            ▼\n                              per-tenant queues (weighted fair)\n                                            │ acquire + lease\n                         ┌──────────────────┴───────────────┐\n                  warm microVM pool                      self-hosted runners\n                         │ logs (seq chunks)\n                         ▼\n            log ingest ─▶ stream ─▶ SSE/WebSocket fan-out ; segments ─▶ object storage\n```\n- The trigger service writes the run and every job row in one transaction. Jobs without dependencies go to `QUEUED`; the others stay `BLOCKED`.\n- Schedulers keep no state in memory, so any instance can crash and another resumes from the database.",
+  "deepdives": "- **DAG scheduling and exactly-one active attempt.** Each job has a `pending_deps` counter. When a job finishes, one transaction marks it `DONE` and decrements the counter of every dependent; a dependent that reaches 0 becomes `QUEUED` (an outbox row or CDC event enqueues it, so a crash cannot drop the transition). A runner claims work with a compare-and-set: `UPDATE jobs SET status='ASSIGNED', runner_id=?, lease_expires_at=now()+30s WHERE job_id=? AND status='QUEUED'`; zero rows updated means someone else won. The runner heartbeats to extend the lease; a reaper re-queues jobs whose lease expired and bumps `attempt`, and a stale runner's calls are rejected by its lease token (fencing). This is at-least-once execution with one active attempt, which is the honest meaning of 'exactly once' for jobs with external side effects. Trade-off: a short lease detects death quickly but re-runs jobs on a network blip.\n- **Runner fleet and isolation.** Run each job in a fresh, single-use microVM (Firecracker-style) and destroy it afterwards, since containers on a shared kernel are a weak boundary for hostile code and reused machines leak state between tenants. Cold boot plus image pull would add tens of seconds, so keep a warm pool per image and size it from recent arrival rates; scale on queue depth. Fork pull requests get no secrets and a read-only token. Limit egress and block the cloud metadata address. Per-tenant concurrency caps with weighted fair queuing keep one organisation from consuming the fleet.\n- **Live logs and secrets.** The runner buffers output and ships numbered chunks, so retries are idempotent and a viewer can resume with `from=seq`. A log service appends to a partitioned stream, fans out to connected viewers over SSE, and rolls segments into object storage. Mask known secret values in two places, at the runner and again at ingest,; encoded secrets can still leak, so prefer short-lived OIDC credentials. Secrets are decrypted only when a lease is granted, and are delivered to that VM alone.",
+  "wrapup": "- Stateless schedulers over a sharded jobs table, DAG readiness by counters, lease-based claiming with fencing, single-use microVM runners from a warm pool, sequenced log streaming, and tightly scoped secrets.\n- Trade-offs: lease length vs spurious re-runs; warm pool cost vs start latency; isolation strength vs boot time.\n- Next: build caches and artifact dedup, concurrency groups, a Kubernetes-based self-hosted autoscaler, cost accounting per tenant."
+ },
+ "rubric": [
+  {
+   "text": "Estimates job rate and uses Little's law to size concurrent runners (~100k average, ~300k peak)",
+   "keywords": [
+    "/s",
+    "little",
+    "concurren",
+    "peak"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models a workflow as a DAG (needs, matrix) with job rows created up front and readiness tracked by dependency counters or events",
+   "keywords": [
+    "dag",
+    "needs",
+    "pending_deps",
+    "matrix",
+    "dependenc"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Claims jobs with an atomic compare-and-set so two runners cannot take the same job",
+   "keywords": [
+    "compare-and-set",
+    "atomic",
+    "where status",
+    "cas",
+    "claim"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses leases and heartbeats with a reaper to recover jobs from dead runners, and fences stale runners (at-least-once with one active attempt)",
+   "keywords": [
+    "lease",
+    "heartbeat",
+    "reaper",
+    "fencing",
+    "visibility timeout",
+    "at-least-once"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Enqueues the next job reliably after a state change (outbox or CDC), so no transition is lost on a crash",
+   "keywords": [
+    "outbox",
+    "cdc",
+    "transactional",
+    "transition"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Isolates untrusted code with single-use microVMs or sandboxes, not shared long-lived machines",
+   "keywords": [
+    "microvm",
+    "firecracker",
+    "gvisor",
+    "sandbox",
+    "ephemeral",
+    "single-use"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles runner start latency with warm pools or pre-pulled images, scaled on queue depth",
+   "keywords": [
+    "warm pool",
+    "pre-pull",
+    "prewarm",
+    "pre-warm",
+    "autoscal",
+    "queue depth"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Ensures fairness and quotas across tenants (per-org concurrency caps, weighted fair queuing)",
+   "keywords": [
+    "fair",
+    "quota",
+    "concurrency cap",
+    "per-tenant",
+    "starv"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Streams logs with sequenced idempotent chunks, resume by offset, fan-out to viewers and archival to object storage",
+   "keywords": [
+    "sse",
+    "websocket",
+    "seq",
+    "offset",
+    "chunk",
+    "object storage"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Protects secrets: envelope encryption, delivered only to the job, masked in logs, no secrets for fork PRs, OIDC",
+   "keywords": [
+    "kms",
+    "envelope",
+    "mask",
+    "oidc",
+    "fork",
+    "secret"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Covers artifacts and caches with content-addressed or key-based storage and lifecycle expiry",
+   "keywords": [
+    "cache key",
+    "artifact",
+    "lifecycle",
+    "content-addressed",
+    "retention"
+   ],
+   "points": 1
+  }
+ ]
+}

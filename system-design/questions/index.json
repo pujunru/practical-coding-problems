@@ -364,6 +364,38 @@
      "companies": [
       "Amazon"
      ]
+    },
+    {
+     "id": "github-actions",
+     "title": "Design GitHub Actions",
+     "difficulty": "Hard",
+     "companies": [
+      "OpenAI"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "AI & LLM systems",
+   "questions": [
+    {
+     "id": "ai-chat",
+     "title": "Design an AI Chat System (ChatGPT / Claude)",
+     "difficulty": "Hard",
+     "companies": [
+      "OpenAI",
+      "NVIDIA",
+      "Anthropic"
+     ]
+    },
+    {
+     "id": "enterprise-llm-search",
+     "title": "Design LLM-Powered Enterprise Search",
+     "difficulty": "Hard",
+     "companies": [
+      "OpenAI",
+      "NVIDIA"
+     ]
     }
    ]
   },
@@ -380,6 +412,56 @@
       "Meta",
       "Microsoft",
       "Stripe"
+     ]
+    },
+    {
+     "id": "distributed-cache",
+     "title": "Design a Distributed Cache",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "in-memory-database",
+     "title": "Design an In-Memory Database",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "memcache-load-balancing",
+     "title": "Load-Balance Memcache Servers",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta",
+      "Apple",
+      "Google"
+     ]
+    },
+    {
+     "id": "botnet",
+     "title": "Design a Distributed Command-and-Control Fleet",
+     "difficulty": "Hard",
+     "companies": [
+      "Meta"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Data platform & analytics",
+   "questions": [
+    {
+     "id": "web-analytics",
+     "title": "Design Google Analytics",
+     "difficulty": "Hard",
+     "companies": [
+      "Google",
+      "Microsoft",
+      "Meta"
      ]
     }
    ]
