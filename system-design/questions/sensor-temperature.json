@@ -1,0 +1,149 @@
+{
+ "id": "sensor-temperature",
+ "title": "Design a Temperature Monitoring System for Distributed Sensors",
+ "prompt": "Design a system that collects temperature readings from a large fleet of sensors installed in warehouses, cold-chain trucks and data centres around the world, stores them, and raises alerts when a location is too hot or too cold or when a sensor looks broken. Operators need live dashboards and historical charts over months.\n\nAssume **1 million sensors**, each sending a reading every 10 seconds, over unreliable cellular and Wi-Fi links.",
+ "clarify": [
+  "How fast must an alert fire after a threshold breach (seconds or minutes), and who is paged?",
+  "What are the retention and query needs: raw data for how long, and what resolution for year-long charts?",
+  "Can sensors buffer data offline and upload it later, and how late can a reading be before we ignore it?",
+  "Are thresholds fixed per location, or should the system detect anomalies relative to each sensor's history?",
+  "How are sensors authenticated and provisioned, and may a compromised sensor send false data?",
+  "Do clocks on sensors drift, or do we trust the device timestamp?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Ingest `(sensor_id, timestamp, temperature)` readings from devices worldwide\n- Query the latest value and time ranges per sensor or group, at suitable resolution\n- Alert on threshold breaches, rapid change, and *silent* sensors (no data for N intervals)\n- Provision, authenticate and retire sensors\n\n**Non-functional**\n- Ingestion keeps working during partial failures; no reading is lost for a sensor that buffers locally\n- Alert latency under ~1 minute; dashboards reflect data within seconds\n- Cheap long-term storage via downsampling\n- Tolerates late, duplicate and out-of-order data",
+  "estimation": "- Ingest: 1M sensors / 10 s = **100,000 readings/s**.\n- Size: ~100 B per reading including headers and ids, so 100k × 100 B = **10 MB/s ≈ 864 GB/day** raw (before compression, which on time series typically gives 5–10×).\n- Raw retention of 7 days ≈ **6 TB** (864 GB × 7).\n- 1-minute rollups (min, max, avg, count ≈ 40 B): 1M × 1,440 = 1.44B points/day ≈ **58 GB/day**; keeping 90 days ≈ 5.2 TB.\n- Hourly rollups: 1M × 8,760 points/year × 40 B ≈ **350 GB/year**, kept for years.\n- Alert evaluation: 100k readings/s through a stream processor is routine when partitioned by sensor.",
+  "api": "```\n# device → cloud (MQTT/HTTPS, batched, mTLS or signed tokens)\nPOST /v1/ingest   {sensor_id, readings:[{ts, value, seq}]}   → 202 (idempotent on (sensor_id, seq))\n\n# operators\nGET  /v1/sensors/{id}/latest\nGET  /v1/series?group=&from=&to=&resolution=raw|1m|1h&agg=avg|max\nPUT  /v1/rules/{id}  {scope, condition:\"temp>8 for 5m\", severity, notify}\nGET  /v1/alerts?state=firing\n```\n- A device may send several buffered readings in one request; the server returns the highest accepted `seq` so the device can trim its buffer.",
+  "data": "- **sensors**(sensor_id, site_id, type, calibration, state, last_seen, cert_id): relational, small (1M rows).\n- **readings**: time-series store partitioned by `(sensor_id, day)`; row = `(ts, value, quality_flag)`. Wide-column or a TSDB with compression.\n- **rollups_1m**, **rollups_1h**: `(sensor_id, bucket_start) → min, max, avg, count`.\n- **rules**(rule_id, scope, condition, window, severity) and **alert_state**(rule_id, entity, state, since, last_notified): state is what gives de-duplication.\n- Hot **latest value** per sensor in a KV/cache for dashboards.",
+  "design": "```\n sensors ─MQTT/HTTPS─▶ regional ingest gateways ─▶ Kafka (partition = hash(sensor_id))\n (local buffer)        (authN, validate, dedupe)         │\n                                   ┌─────────────────────┼───────────────────────┐\n                                   ▼                     ▼                       ▼\n                           raw TSDB writer     stream processor            latest-value\n                                   │         (windows, rollups, rules)        cache\n                                   ▼                     │\n                       compaction → 1m → 1h rollups      └─▶ alert manager ─▶ pager/email\n dashboards ─▶ query API ─▶ pick resolution by range (raw / 1m / 1h)\n```\n- Regional gateways terminate connections near the sensors and forward to a regional log, then replicate to a central store, so a WAN problem does not stop collection.\n- The stream processor uses event-time windows with a lateness allowance (say 5 minutes), emits rollups, and evaluates alert rules.",
+  "deepdives": "- **Time-series storage and downsampling.** Raw points are write-heavy and rarely read after a week. Write in time-ordered, compressed chunks (delta-of-delta timestamps, XOR-compressed floats), partitioned by time so expiry is dropping a partition. Rollups are computed in the stream and again by a periodic job; late data re-opens the affected bucket (hence *min, max, sum, count*, which merge exactly, rather than only an average). The query layer picks the resolution from the requested range so a year-long chart never scans raw data. Trade-off: rolling up loses spikes under averaging, which is why `max` and `min` are kept.\n- **Late, duplicate and faulty sensors.** Use event time from the device but record server receive time; if the device clock drifts more than a bound, correct or flag it. Dedupe by `(sensor_id, seq)`. Buffered offline data is accepted up to a lateness limit for rollups and always stored raw. Detect faults separately from real anomalies: a *heartbeat* check fires \"sensor silent\" when no reading arrives in 3 intervals (distinguish a dead sensor from a dead site by grouping all sensors at that gateway); a stuck-at value, impossible reading (-100 C) or large jump flags `quality=suspect` and is excluded from threshold alerts.\n- **Alerting without noise.** Evaluate rules on windows (\"above 8 C for 5 minutes\") rather than single points to ignore spikes; keep per-entity alert state (OK, firing, acknowledged) so one incident pages once and resolves explicitly; add hysteresis to avoid flapping. For anomalies relative to history, compare to a per-sensor rolling baseline (e.g. time-of-day median and MAD), which is cheap and explainable. Failure of the alerting path itself must be monitored with a dead-man's switch.",
+  "wrapup": "- Edge buffering, regional ingest, a partitioned log, a stream processor for rollups and rules, a compressed time-series store with tiered retention.\n- Trade-offs: raw fidelity vs cost (rollups keep min/max); alert speed vs false positives (windows, hysteresis); edge-first availability vs central consistency.\n- Next: edge-side aggregation, over-the-air calibration, forecasting, multi-tenant isolation."
+ },
+ "rubric": [
+  {
+   "text": "Estimates ingest rate, raw size per day and retention-driven storage with correct arithmetic",
+   "keywords": [
+    "100,000",
+    "100k",
+    "mb/s",
+    "gb/day",
+    "tb"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Provides a scalable, buffered ingestion path: regional gateways, a durable log partitioned by sensor",
+   "keywords": [
+    "kafka",
+    "partition",
+    "mqtt",
+    "gateway",
+    "buffer",
+    "regional"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles intermittent connectivity with device-side buffering, sequence numbers and idempotent ingest",
+   "keywords": [
+    "seq",
+    "idempoten",
+    "offline",
+    "buffer",
+    "dedup"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Chooses a time-series storage layout (time-partitioned, compressed, cheap expiry)",
+   "keywords": [
+    "time-series",
+    "tsdb",
+    "partition",
+    "compress",
+    "chunk"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Downsamples with tiered retention (raw, 1-minute, hourly) and keeps min/max/count, not only the average",
+   "keywords": [
+    "rollup",
+    "downsampl",
+    "min",
+    "max",
+    "retention"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses event-time windows with an allowed lateness for late or out-of-order data",
+   "keywords": [
+    "event time",
+    "event-time",
+    "late",
+    "out-of-order",
+    "watermark"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Detects silent/dead sensors with heartbeats and distinguishes sensor from site/gateway outage",
+   "keywords": [
+    "heartbeat",
+    "silent",
+    "last_seen",
+    "gateway",
+    "missing"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Flags faulty readings (stuck, impossible range, jumps) and excludes them from alerts",
+   "keywords": [
+    "stuck",
+    "suspect",
+    "quality",
+    "outlier",
+    "range"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Designs alerting with windows, hysteresis, per-entity state and de-duplication to avoid noise",
+   "keywords": [
+    "hysteresis",
+    "window",
+    "dedup",
+    "flapping",
+    "alert state",
+    "for 5m"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Mentions anomaly detection vs per-sensor baseline and monitoring the alert pipeline itself",
+   "keywords": [
+    "baseline",
+    "anomaly",
+    "dead-man",
+    "mad",
+    "median"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Covers sensor authentication/provisioning and clock drift",
+   "keywords": [
+    "mtls",
+    "certificate",
+    "provision",
+    "clock",
+    "drift",
+    "authent"
+   ],
+   "points": 1
+  }
+ ]
+}

@@ -1,0 +1,147 @@
+{
+ "id": "user-preferences",
+ "title": "Design a User Preferences Service",
+ "prompt": "Design a service that stores and serves user settings for a large consumer product used on web, mobile and desktop: theme, language, notification choices, model defaults, feature opt-ins and so on. Settings have sensible defaults, can be overridden by an organisation admin, by the user, and per device, and every client must see changes quickly.\n\nAssume **100 million daily active users**, about 300 million accounts, and every app launch reads the user's settings.",
+ "clarify": [
+  "Is the set of settings fixed and typed, or can teams add new keys without a database migration?",
+  "Which scopes exist, and what is the precedence: global default, organisation, user, device? Can an org lock a setting so users cannot change it?",
+  "How quickly must a change appear on the user's other devices: seconds, or at next launch?",
+  "Do clients need to work offline, and how do we resolve conflicting edits from two devices?",
+  "Are any settings sensitive or regulated (privacy choices, data-retention consent) that need audit or deletion guarantees?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Read the effective settings for a user and device; write one or several settings\n- Resolution order: global default < org policy < user < device; an org can mark a key *enforced*\n- New keys and typed values (bool, enum, number, small JSON) added without a schema migration; each key has a definition (type, default, allowed values, scope)\n- Notify other signed-in clients of changes\n\n**Non-functional**\n- Reads dominate and must be fast (p99 under 50 ms) and highly available; stale reads of a few seconds are acceptable\n- Writes are rare; last-writer-wins per key is acceptable except for consent settings\n- Safe defaults whenever the service is unreachable",
+  "estimation": "- Reads: 100M DAU × 10 launches or syncs/day = 1B/day ≈ **11.6k/s** average, ~35k/s at 3× peak.\n- Writes: 100M DAU × 0.1 changes/day = 10M/day ≈ **116/s**: a read:write ratio of about 100:1.\n- Storage: 300M accounts × ~2 KB of overrides (only non-default values are stored) ≈ **600 GB**, small enough for a sharded KV store.\n- Push fan-out: 10M changes/day × ~2 other online devices = 20M notifications/day ≈ 230/s, modest.\n- Cache: the hot set is the DAU's blobs (100M × 2 KB = 200 GB), which fits across a cache cluster; org policies and key definitions are tiny and cached in every API node.",
+  "api": "```\nGET   /v1/settings?device=ios-123            → {version, values:{...}, sources:{key:\"user\"}}  (ETag)\nPATCH /v1/settings   {changes:{k:v,...}, scope:\"user\"|\"device\", if_version}   → 200 {version}\nPUT   /v1/orgs/{id}/policy  {key, value, enforced}                   (org admin)\nGET   /v1/settings/stream?since=version   (SSE / push)  → {version, changed_keys}\n```\n- `GET` supports `If-None-Match` so unchanged settings return 304.\n- Writes carry `if_version` for optimistic concurrency, or per-key timestamps for merging.",
+  "data": "- **definitions**(key PK, type, default, scopes_allowed, schema, owner, deprecated): small, versioned, cached everywhere.\n- **org_policy**(org_id, key, value, enforced): one row per override.\n- **user_settings**(user_id PK, version, values JSON map key→{v, ts}): one item per user, so a launch is a single point read.\n- **device_settings**(user_id, device_id, values JSON): sort key = device.\n- Store only overrides, not resolved values. Resolution is computed at read time, so changing a default or org policy needs no mass rewrite.\n- **change_log**(user_id, version, keys, ts) for sync and audit.",
+  "design": "```\n client ─▶ CDN/gateway ─▶ settings API ─▶ L1 in-process (defs, org policy)\n                              │            L2 cache (user blob by user_id)\n                              │                   │ miss\n                              │                   ▼\n                              │            KV store (user, device)  ◀─ writes\n                              ▼                          │\n                      resolver: default→org→user→device  └─▶ change log ─▶ pub/sub ─▶ push gateway ─▶ clients\n```\n- **Read:** fetch the user's blob (cache first), apply the key definitions and org policy, drop invalid values, return effective values with a version and the source of each key.\n- **Write:** validate against the definition (type, allowed values, not enforced by org), write with optimistic version, bump the version, invalidate the cache entry, append to the change log and publish an event.",
+  "deepdives": "- **Schema flexibility vs safety.** Storing an untyped JSON map lets a team ship a key without a migration, but invites typos and junk. Mitigate with a central key registry: writes of unknown keys or wrong types are rejected, removed keys are tombstoned and ignored on read, and renames ship as alias entries. The alternative, a wide typed table or one row per (user, key), is easier to query (\"who has dark mode?\") but makes every launch a multi-row read and every new key a migration. Use one blob per user on the hot path and feed analytics from the change log.\n- **Propagating changes.** Pure polling at 100M users wastes load; pure push needs a long-lived connection per client. A hybrid works: a lightweight push or SSE message carries only `{version}`; the client then fetches the delta with `since=version`. Org policy changes affect millions of users, so do not fan them out per user. Bump an org policy version; clients and caches compare it on the next request, so propagation takes seconds and no rewrite is needed. Cache invalidation on user writes is a delete, with a short TTL as a backstop.\n- **Conflicts and consistency.** Multi-device edits resolve per key with last-writer-wins on server timestamps (not client clocks), and enforced org keys always win at read time. Consent or privacy settings are different: require a strongly consistent write (read-your-writes through the primary) and an audit record. Read-your-writes for the editing device comes from returning the new blob in the PATCH response. Degradation: if the service is down, clients use the last cached values or compiled-in defaults.",
+  "wrapup": "- One override blob per user, resolved at read time against defaults and org policy, behind a cache; version numbers drive both optimistic writes and delta sync.\n- Trade-offs: blob vs row-per-key; LWW vs stricter merges; push vs poll; read-time resolution vs materialised results.\n- Next: gradual rollouts of new defaults, per-key audit and GDPR export/delete, experiments layered on the same resolver."
+ },
+ "rubric": [
+  {
+   "text": "Estimates read and write QPS and storage, and concludes the service is read-heavy with small data",
+   "keywords": [
+    "qps",
+    "/s",
+    "read-heavy",
+    "100:1",
+    "gb"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Defines the scope hierarchy and precedence (default, org, user, device) including org-enforced keys",
+   "keywords": [
+    "precedence",
+    "override",
+    "org",
+    "enforce",
+    "default"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses a key registry with types and defaults so new settings need no migration but junk is rejected",
+   "keywords": [
+    "registry",
+    "definition",
+    "type",
+    "schema",
+    "migration"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Stores only overrides per user (one blob or item) and resolves at read time",
+   "keywords": [
+    "override",
+    "blob",
+    "resolve",
+    "point read",
+    "sparse"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Chooses a suitable store (KV/document) keyed by user_id and explains the access pattern",
+   "keywords": [
+    "key-value",
+    "kv",
+    "dynamo",
+    "partition",
+    "user_id",
+    "shard"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Caches reads in layers (client, in-process for defs/policy, shared cache) with invalidation on write",
+   "keywords": [
+    "cache",
+    "invalidat",
+    "ttl",
+    "etag",
+    "304"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Propagates changes to other devices with push/SSE plus delta sync by version, or a justified polling interval",
+   "keywords": [
+    "push",
+    "sse",
+    "websocket",
+    "since",
+    "version",
+    "delta"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Avoids per-user fan-out for org-level policy changes (version bump, lazy evaluation)",
+   "keywords": [
+    "fan-out",
+    "fan out",
+    "policy version",
+    "lazy",
+    "bump"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles concurrent edits: optimistic concurrency or per-key LWW with server timestamps",
+   "keywords": [
+    "optimistic",
+    "if_version",
+    "last-writer",
+    "lww",
+    "conflict"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Treats consent/privacy settings specially: strong consistency and audit",
+   "keywords": [
+    "consent",
+    "audit",
+    "strong consisten",
+    "gdpr",
+    "privacy"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Plans degradation: stale cache or built-in defaults when the service is down; offline clients",
+   "keywords": [
+    "fallback",
+    "default",
+    "offline",
+    "degrad",
+    "stale"
+   ],
+   "points": 1
+  }
+ ]
+}

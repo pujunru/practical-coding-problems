@@ -1,0 +1,152 @@
+{
+ "id": "e-voting",
+ "title": "Design an Electronic Voting System",
+ "prompt": "Design an electronic voting system for a national election in which eligible citizens cast ballots from supervised polling-station terminals (and optionally remotely). Each eligible person may vote once, nobody may learn how another person voted, the final count must be verifiable, and the system must keep working on election day.\n\nAssume **150 million registered voters**, about 60% turnout, and a 12-hour voting window with a strong evening peak.",
+ "clarify": [
+  "Is voting supervised (polling-station terminals) or remote over the internet? Remote voting adds coercion and device-compromise risks.",
+  "Can a voter change their vote (re-vote, last one counts) or is it strictly one-shot?",
+  "What assurance is required: voters verify their own ballot was counted (end-to-end verifiability), and independent observers verify the tally?",
+  "What is the identity source (national eID, voter roll, polling-station check) and how do we handle voters registered in another district?",
+  "What is the fallback if the system fails: paper ballots, extended hours?",
+  "Who are the adversaries: outsiders, malicious insiders or administrators, a compromised terminal, a nation state?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Authenticate an eligible voter and issue exactly one right to vote per election\n- Capture a ballot, encrypt it on the voter's device, and record it\n- Give the voter a receipt to check later that the ballot is in the final tally, without proving to anyone how they voted\n- Tally and publish results with proofs that anyone can verify\n\n**Non-functional**\n- **One person, one vote**; **secrecy** (no link from voter to ballot); **integrity** (no ballot altered or dropped); **verifiability**, and **coercion resistance** as far as the channel allows\n- High availability during the 12-hour window; degrade to paper rather than risk correctness\n- Everything is auditable and tamper-evident; no single administrator can change the outcome",
+  "estimation": "- Ballots: 150M × 60% = **90M**.\n- Throughput: 90M / 43,200 s (12 h) = **2,083/s** on average; with a 5× evening peak, about **10,400/s**. This is modest, so the difficulty is trust, not scale.\n- Size: an encrypted ballot with its proofs is ~2 KB, so 90M × 2 KB = **180 GB**; plus receipts and an audit log, still under 1 TB.\n- Eligibility: one lookup per voter in a 150M-row roll (~100 B each = 15 GB), in memory or a sharded KV store.\n- Tally: threshold-decrypting 90M ballots, or homomorphically summing them, finishes in hours on a modest cluster and is parallel by district.",
+  "api": "```\nPOST /v1/auth/session       {credential}                  → {session, eligibility_token (single use)}\nPOST /v1/ballots            {election_id, ciphertext, proofs, eligibility_token}\n                            → 201 {receipt_id, ballot_hash, bulletin_seq}     (409 if token already used)\nGET  /v1/bulletin?from=seq  → public, append-only list of {seq, ballot_hash, prev_hash}\nGET  /v1/receipts/{id}      → inclusion proof (Merkle path) for the voter's own ballot\nPOST /admin/tally           (needs k of n trustee key shares)\nGET  /v1/results            → counts + decryption/shuffle proofs\n```",
+  "data": "- **voter_roll**(voter_id, district, status, voted_flag, voted_at): identity side. Records *that* a person voted, never *how*.\n- **eligibility tokens**: single-use, signed, unlinkable to voter identity after issue (blind signature), or exchanged at the ballot box.\n- **ballot_box**(seq, ciphertext, proofs, ballot_hash, prev_hash, district): the secret side, append-only, with no voter id.\n- **bulletin_board**: public hash chain or Merkle tree over ballot_box entries, with a signed tree head published frequently.\n- **audit_log**: administrative actions, key ceremonies, device attestations, signed and append-only.",
+  "design": "```\n voter ──▶ identity service ──(eligibility check, mark voted, blind-signed token)──▶ voter_roll\n   │                                  (two separate trust domains: no shared keys or tables)\n   └─ encrypt ballot (election public key) + validity proof ─▶ ballot gateway ──▶ ballot_box\n                                                                  │                  │\n                                                       verify token & proof     append, hash-chain\n                                                                  ▼                  ▼\n                                                        receipt (ballot_hash)   public bulletin board\n close ─▶ trustees (k-of-n key shares) ─▶ shuffle/decrypt or homomorphic tally ─▶ results + proofs\n```\n- Identity and ballot services are separate organisations/networks. The token (blind-signed) lets the ballot gateway know \"an eligible person who has not voted\" without learning who.\n- Multiple regional clusters accept ballots into local queues and replicate to the central append-only box.",
+  "deepdives": "- **One person, one vote vs secrecy.** The classic tension: to enforce \"once\" you must know who voted; to keep secrecy the ballot must not carry identity. Solve with two separated stores: the identity service atomically flips `voted_flag` (a conditional write, so two terminals cannot both succeed) and issues a single-use blind-signed token; the ballot box checks the signature and a spent-token set, and never sees the voter. A double-spent token is rejected with 409. Timing and logs can still link identity to ballot, so strip metadata, batch, and keep the two services under different custodians. Re-voting (last ballot counts) fights coercion but must cancel earlier ballots without revealing which.\n- **Verifiability without revealing the vote.** Encrypt each ballot with a threshold public key (ElGamal), attach a zero-knowledge proof that it encodes a valid choice, and let the voter \"spoil\" a challenge ballot (Benaloh challenge) to check the device encrypts honestly. Publish every ballot hash on a public hash-chained bulletin board; the voter receives an inclusion proof for their own entry. The tally is then either homomorphic (sum ciphertexts, decrypt once) or a verifiable mix-net shuffle then decryption; both produce proofs that any observer can check. Homomorphic tallying suits single-choice races, not ranked ballots. The decryption key is split among *n* trustees, *k* needed, so no insider can read ballots early. Remote voting cannot fully prevent vote-buying or compromised phones, which is why many systems keep supervised terminals and a paper trail with risk-limiting audits.\n- **Availability on election day.** Terminals vote offline-capable: they queue encrypted ballots locally and sync later. The ballot gateway is stateless, autoscaled and multi-region, writing to a replicated log with quorum writes; an outage must never cause a voter to vote twice or be silently dropped, so a ballot is acknowledged only after durable replication and the receipt is returned. Add DDoS protection and a defined switch to paper and extended hours; fail closed on any integrity doubt.",
+  "wrapup": "- Separate identity and ballot trust domains, blind-signed single-use tokens, threshold-encrypted ballots, a public hash-chained bulletin board, and verifiable tallying by k-of-n trustees.\n- Trade-offs: secrecy vs preventing double votes; online convenience vs coercion and device risk; speed of results vs audit depth.\n- Next: risk-limiting audits against paper, accessibility, independent code review and a reproducible build of the voting client."
+ },
+ "rubric": [
+  {
+   "text": "Computes peak ballots/s from voters, turnout and window, and concludes scale is modest versus the trust problem",
+   "keywords": [
+    "2,083",
+    "10,4",
+    "/s",
+    "turnout",
+    "90m"
+   ],
+   "points": 1
+  },
+  {
+   "text": "States the security properties up front: one person one vote, secrecy, integrity, verifiability, coercion resistance",
+   "keywords": [
+    "secrecy",
+    "integrity",
+    "verifiab",
+    "coercion",
+    "one person"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Enforces single voting with an atomic voted-flag/conditional write in the identity service",
+   "keywords": [
+    "atomic",
+    "conditional",
+    "voted flag",
+    "voted_flag",
+    "double vote",
+    "once"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Separates identity and ballot stores/services so the ballot carries no voter identity (blind signature or token)",
+   "keywords": [
+    "blind signature",
+    "token",
+    "unlinkab",
+    "separate",
+    "anonymous"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Encrypts ballots on the client with a threshold key and attaches proofs of validity",
+   "keywords": [
+    "threshold",
+    "elgamal",
+    "zero-knowledge",
+    "zkp",
+    "encrypt",
+    "proof"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Provides tamper evidence: append-only hash-chained or Merkle bulletin board with inclusion proofs/receipts",
+   "keywords": [
+    "merkle",
+    "hash chain",
+    "bulletin",
+    "append-only",
+    "inclusion",
+    "receipt"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Describes verifiable tallying: homomorphic sum or mix-net with proofs, key shares held by multiple trustees",
+   "keywords": [
+    "mix-net",
+    "mixnet",
+    "homomorphic",
+    "trustee",
+    "k-of-n",
+    "key share"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Addresses voter verification of device honesty (cast-or-challenge) and a paper trail/risk-limiting audit",
+   "keywords": [
+    "benaloh",
+    "challenge",
+    "paper",
+    "risk-limiting",
+    "audit"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Plans availability: stateless autoscaled gateway, quorum-replicated log, offline-capable terminals, DDoS protection",
+   "keywords": [
+    "quorum",
+    "replicat",
+    "offline",
+    "ddos",
+    "multi-region",
+    "autoscal"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Defines failure behaviour: fail closed, never lose or double-count a ballot, fallback to paper/extended hours",
+   "keywords": [
+    "fail closed",
+    "fallback",
+    "paper",
+    "extended",
+    "durable"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Discusses threats honestly: insiders, compromised devices, coercion/vote-buying in remote voting, re-vote option",
+   "keywords": [
+    "insider",
+    "compromis",
+    "vote-buying",
+    "re-vote",
+    "revote",
+    "threat"
+   ],
+   "points": 1
+  }
+ ]
+}

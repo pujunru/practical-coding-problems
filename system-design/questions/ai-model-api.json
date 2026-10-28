@@ -1,0 +1,150 @@
+{
+ "id": "ai-model-api",
+ "title": "Design an API for AI Model Access",
+ "prompt": "Design the public developer API for a hosted large language model: developers authenticate with API keys, send prompts, and receive completions either as a single response or as a token stream. The platform enforces rate limits and quotas per customer tier, batches requests onto a pool of GPUs, meters every token for billing, and defends itself against abuse.\n\nAssume **5,000 requests/s on average (about 15,000 at peak)**, ~1,000 input and ~400 output tokens per request, and GPU capacity that takes minutes to scale up.",
+ "clarify": [
+  "Which endpoints exist: streaming chat completions, a cheaper asynchronous batch endpoint, embeddings? Which models and versions?",
+  "What tiers and limits do we promise (requests/min, tokens/min, daily spend), and are limits per key, per organisation, or per model?",
+  "What latency targets matter: time to first token, tokens per second, total latency?",
+  "Is billing prepaid or postpaid, and how accurate and timely must usage be (exact invoicing vs near-real-time spend caps)?",
+  "What happens on overload or a GPU failure: queue, shed load by tier, or fail fast with a retryable error?",
+  "What abuse and safety concerns apply: stolen keys, scraping or distillation, content-policy filtering?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- API keys scoped to an organisation, project and permissions; create, rotate, revoke\n- `POST /v1/messages` with optional streaming; an asynchronous batch endpoint at a discount\n- Per-tier rate limits (requests and tokens per minute) and monthly spend caps\n- Exact usage metering per request, feeding invoices and dashboards\n\n**Non-functional**\n- Time to first token under ~1 s at p95 for typical prompts; no silent drops\n- High GPU utilisation without letting batching blow latency\n- Fair under overload: paid tiers degrade last; one customer cannot starve others\n- Billing events are never lost or double-counted",
+  "estimation": "- Tokens: 5,000 req/s × 400 output = **2M output tokens/s**; input 5,000 × 1,000 = 5M tokens/s (prefill is parallel and cheaper per token).\n- GPUs: if one GPU replica sustains ~2,000 output tokens/s with continuous batching (assumption; depends on model size), average need = 2M / 2,000 = **1,000 GPUs**, and 3× peak = **3,000**. Real capacity is below benchmark peak because of tail-latency targets.\n- Metering: 5,000/s × 86,400 = **432M events/day**; at ~100 B each that is **43 GB/day**.\n- Rate-limit checks: every request touches a counter, so about 15k/s peak against an in-memory store, which is easy.\n- Streaming holds a connection for ~10–30 s, so Little's law gives 5,000 × 20 s ≈ **100,000 concurrent streams**: the edge must handle long-lived connections.",
+  "api": "```\nPOST /v1/messages   {model, messages[], max_tokens, stream?, temperature}\n     Headers: x-api-key, Idempotency-Key\n     → 200 {id, content, usage:{input_tokens, output_tokens}}   or   SSE: message_start, delta*, message_stop(usage)\n     → 429 {retry-after, which limit}   503 overloaded   (clear, retryable codes)\nPOST /v1/batches    {requests:[...]}  → 202 {batch_id};  GET /v1/batches/{id}   (24 h SLA, 50% price)\nGET  /v1/usage?org=&from=&to=          · admin: POST/DELETE /v1/keys\n```",
+  "data": "- **orgs**(org_id, tier, spend_cap, billing_state); **keys**(key_id, org_id, hash, prefix, scopes, revoked_at). Store only a salted hash plus a short prefix for display.\n- **limits**(tier, model → rpm, input_tpm, output_tpm): config, cached in the gateway.\n- **usage_events**(request_id PK, org_id, key_id, model, input_tokens, output_tokens, cached_tokens, ts): append-only log; request_id makes ingestion idempotent.\n- **usage_rollups**(org_id, model, hour → tokens, cost) for dashboards and spend caps.\n- Counters live in Redis; the durable source of truth for billing is the event log, not the counters.",
+  "design": "```\nclient ─▶ edge/WAF ─▶ gateway: authN(key→org) ─▶ rate limiter ─▶ safety pre-check ─▶ router\n                                                          (Redis token buckets)         │\n            ┌──────────── tier priority queues (paid > free, batch lowest) ◀───────────┘\n            ▼\n     scheduler per model ─▶ GPU replicas (continuous batching, KV cache, prefill/decode)\n            │ token stream back via gateway ─▶ client\n            └─▶ usage event (Kafka) ─▶ metering ─▶ billing store, spend-cap enforcer\n```\n- The gateway verifies the key from a cache of hashed keys, loads the tier, and charges the limiter before any GPU work.\n- Requests wait in priority queues per model; the scheduler admits them into running batches on GPU workers. On completion, the gateway emits one usage event with the final token counts, even if the client disconnected midway.",
+  "deepdives": "- **Rate limits for token-priced traffic.** Requests per minute alone is not enough, since one request can cost 100 or 100,000 tokens. Use token buckets per (org, model) for requests, input and output tokens. Input tokens are known at admission; output tokens are not, so reserve `max_tokens` up front and refund the unused part on completion. Keep counters in Redis with an atomic script, and sync from local gateway shards approximately to avoid a hot key per org. A static bucket is wrong during GPU shortage: also apply **dynamic throttling from queue depth**: as the wait grows, lower limits for the free tier first, then return `429` or `503` with `Retry-After`, while queues for paid tiers stay short.\n- **Batching on GPUs.** Decode is memory-bound, so one more sequence in the batch is nearly free until KV-cache memory runs out. Use continuous (in-flight) batching so new requests join the running batch every decode step, with paged KV-cache allocation to avoid fragmentation, and separate prefill from decode if long prompts disturb streaming latency. The trade-off is throughput versus time to first token: a larger batch lifts tokens per GPU but raises per-token latency. Route by load (queue depth, free KV blocks), not round-robin, and prefer replicas that already hold a cached prompt prefix. Since GPUs take minutes to start, absorb bursts with queues and backpressure, scale on queue depth, and keep warm headroom.\n- **Metering and abuse.** Emit a usage event keyed by `request_id`; consumers dedupe on it, so retries and replays never double-bill. Spend caps use fast approximate counters; the invoice uses the exact log. For abuse: keys are hashed at rest and scanned for leaks in public repositories; anomaly detection on sudden volume or geography; per-key and per-IP limits for unauthenticated attempts; content classifiers before and after the model; stricter limits and verification for new accounts.",
+  "wrapup": "- Gateway with hashed-key auth, token-aware limiter, tiered queues feeding continuous-batching GPU pools, and an idempotent usage log for billing.\n- Trade-offs: static quotas vs dynamic throttling; batch size vs time to first token; approximate spend caps vs exact invoices; cost of warm GPU headroom.\n- Next: prompt caching, multi-region failover, fine-tuned model hosting, enterprise commitments."
+ },
+ "rubric": [
+  {
+   "text": "Estimates tokens/s and GPU count from QPS, tokens per request and per-GPU throughput",
+   "keywords": [
+    "tokens/s",
+    "tokens per second",
+    "gpus",
+    "gpu count",
+    "per-gpu"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Authenticates with API keys scoped to org/project, stored hashed, with rotation and revocation",
+   "keywords": [
+    "hash",
+    "api key",
+    "rotat",
+    "revoke",
+    "scope"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Rate limits per tier on requests and tokens (token bucket), using reservation of max_tokens and refund",
+   "keywords": [
+    "token bucket",
+    "tpm",
+    "rpm",
+    "reserve",
+    "refund",
+    "tier"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Applies dynamic throttling/load shedding based on queue depth, protecting paid tiers first; returns 429 with Retry-After",
+   "keywords": [
+    "queue depth",
+    "shed",
+    "retry-after",
+    "429",
+    "backpressure",
+    "priority"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Streams responses (SSE) and accounts for long-lived connections and client disconnects",
+   "keywords": [
+    "sse",
+    "stream",
+    "time to first token",
+    "ttft",
+    "disconnect"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains continuous batching and why decode is memory-bound; paged KV cache",
+   "keywords": [
+    "continuous batching",
+    "in-flight",
+    "kv cache",
+    "paged",
+    "decode"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Discusses throughput vs latency trade-off in batch size and prefill/decode separation",
+   "keywords": [
+    "prefill",
+    "trade-off",
+    "tail latency",
+    "batch size"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Routes to GPU replicas by load (queue depth, free KV memory) rather than round-robin",
+   "keywords": [
+    "load-aware",
+    "least",
+    "queue depth",
+    "route",
+    "prefix"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles GPU slow start and failures: queues, warm headroom, retries with idempotency, re-routing",
+   "keywords": [
+    "autoscal",
+    "warm",
+    "idempoten",
+    "failover",
+    "retry"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Meters usage with idempotent events keyed by request id and an append-only log; separates spend caps from exact invoices",
+   "keywords": [
+    "request_id",
+    "request id",
+    "usage event",
+    "idempoten",
+    "metering",
+    "billing",
+    "kafka"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Covers abuse protection: key leak scanning, anomaly detection, content filtering, new-account limits",
+   "keywords": [
+    "abuse",
+    "anomal",
+    "leak",
+    "content filter",
+    "safety",
+    "classifier"
+   ],
+   "points": 1
+  }
+ ]
+}

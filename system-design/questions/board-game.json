@@ -1,0 +1,140 @@
+{
+ "id": "board-game",
+ "title": "Design a Board Game (Chess / Tic-Tac-Toe)",
+ "prompt": "Design the object model for a two-player board game. Use **chess** as the concrete game (state this up front), but keep the design open so that tic-tac-toe, checkers or Connect Four could reuse most of it. The model must validate moves, detect check, checkmate and stalemate, and also work in an **online two-player mode** where two clients on different machines play one game.\n\nAssume thousands of concurrent online games, but one game involves only two players and a few hundred moves.",
+ "clarify": [
+  "Which game exactly, and do we need the full rules (castling, en passant, promotion, draw rules) or a simplified set?",
+  "Is this local pass-and-play only, or also online with two remote players? Spectators?",
+  "Do we need a chess clock, undo, resign and draw offers?",
+  "Must games survive a disconnect or server restart, and can they be replayed from history?",
+  "Should an AI opponent plug in later, and should the design support other board games?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Create a game, make a move, query legal moves, report status (in progress, check, checkmate, stalemate, draw, resigned, timeout)\n- Reject illegal moves: wrong turn, wrong piece, blocked path, or a move that leaves your own king in check\n- Online mode: two clients share one game, each sees the other's move almost immediately; resign, draw offer, reconnect\n\n**Non-functional**\n- Rules live in one place and are testable without any UI or network\n- Adding a game or a piece should not require editing unrelated classes\n- In online mode the **server is authoritative**: clients only propose moves",
+  "estimation": "Sizes are tiny, so say so quickly and move on.\n- Objects per game: 64 squares, 32 pieces, about 80 moves per player in a typical game (the history stays under a few hundred entries).\n- A move is ~10 bytes (`from`, `to`, promotion); a whole game is under 5 KB, so 100,000 live games are ~500 MB of state at most.\n- Naive legality check: ~30 pseudo-legal moves × a check test each is microseconds; no need to optimise.\n- Concurrency is per game: two writers (the players), so a lock or a single-threaded game actor is enough.",
+  "api": "```\nclass Game:\n    new(white: Player, black: Player, rules: Rules = ChessRules)\n    make_move(player_id, move: Move) -> MoveResult   # raises IllegalMove(reason)\n    legal_moves(square) -> list[Move]\n    resign(player_id); offer_draw(player_id); accept_draw(player_id)\n    status -> GameStatus ; turn -> Color ; history -> list[Move]\n\nclass Rules(ABC):                       # strategy: one per game variant\n    initial_board() -> Board\n    legal_moves(board, color) -> list[Move]\n    outcome(board, to_move) -> Outcome | None\n```\nOnline: `POST /games`, WebSocket `move {game_id, move, seq, idempotency_key}`, server pushes `moved {move, seq, status}`.",
+  "data": "- `Color {WHITE, BLACK}`, `PieceType {KING, QUEEN, ROOK, BISHOP, KNIGHT, PAWN}`, `GameStatus {ACTIVE, CHECK, CHECKMATE, STALEMATE, DRAW, RESIGNED, TIMEOUT}`\n- `Square(file, rank)` immutable value object; `Board` holds `Piece | None` per square.\n- `Piece` (abstract): `color`, `has_moved`, `pseudo_legal_moves(board, square)`; subclasses `King`, `Queen`, `Rook`, `Bishop`, `Knight`, `Pawn` each own their movement pattern.\n- `Move(from, to, promotion?, captured?, flags)` immutable, so history is a list of moves and undo is replay.\n- `Game` owns `Board`, `players`, `turn`, `history`, `status`, `version`.\n- `Player(id, name, color)`; online adds `GameSession(game, clock, connections)`.",
+  "design": "```\n Client A ─┐                       ┌──────────────── Game ───────────────┐\n           ├─ WebSocket ─▶ GameSession ─▶ Rules.legal_moves(board,color)  │\n Client B ─┘   (lock/actor)  │          │ board.apply(move)  history+=move │\n                            │          └─ outcome(): check/mate/stalemate │\n              persist ◀──── │ publish moved{seq} to both clients\n```\n- `make_move` checks turn, takes `Rules.legal_moves`, finds the move, applies it on the board, appends it to `history`, then asks `Rules.outcome` for the new status.\n- **Legality = pseudo-legal minus self-check.** Each `Piece` generates pseudo-legal moves; `Rules` applies each on a copy (or applies and undoes), keeps those after which your king is not attacked. Checkmate = in check and no legal move; stalemate = not in check and no legal move.\n- **Online:** `GameSession` serialises moves per game. Each move carries the sequence number the client last saw; a stale one is rejected. The server stores the move list (append-only) and can rebuild the board by replay.",
+  "deepdives": "- **Extensibility.** Piece movement belongs in `Piece` subclasses (polymorphism), while whole-game rules (setup, win condition, special moves) belong in a `Rules` strategy. Tic-tac-toe is a different `Rules` with one `Mark` piece type and a line-of-three outcome check, and the same `Game`, `Board` and session code runs it. Trade-off: a generic `Board` costs some type-safety compared with a chess-only bitboard, which you would use only for an engine. Special moves (castling, en passant, promotion) are `Move` flags handled in `Rules`, not `if` chains in `Game`.\n- **Concurrency and the online mode.** Make each game a single-writer actor: one queue per game, so moves apply in order and no two `make_move` calls interleave. Use a sequence number plus an idempotency key so a retried or duplicated move is acknowledged but not applied twice. Keep the clock on the server by storing the time the turn started and subtracting on each move, never by ticking; a client clock is only a display. Reconnect = send the current snapshot (FEN-like) plus the sequence number.\n- **Testing.** The rules engine has no I/O, so test it with table-driven positions: checkmate, stalemate, pinned piece cannot move, castling through check is illegal, promotion. Add a perft-style count of reachable positions to the known values as a regression guard, and replay recorded games end to end.",
+  "wrapup": "- Core: immutable `Move`, `Board`, polymorphic `Piece`, a `Rules` strategy and a `Game` that enforces turns. The online mode wraps it in a per-game, server-authoritative session.\n- Trade-offs: generic board vs chess-specific speed; copy-and-test vs make/unmake for legality; actor per game vs a lock.\n- Next: AI opponent behind a `Player` interface, rating and matchmaking, spectators, move-list persistence."
+ },
+ "rubric": [
+  {
+   "text": "States the chosen game (chess) and scopes the rules (castling, en passant, promotion, draws) deliberately",
+   "keywords": [
+    "chess",
+    "castling",
+    "en passant",
+    "promotion"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Identifies core entities: Game, Board, Square, Piece hierarchy, Move, Player, GameStatus",
+   "keywords": [
+    "board",
+    "piece",
+    "move",
+    "player",
+    "enum"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Puts movement logic in Piece subclasses (polymorphism) rather than one large switch",
+   "keywords": [
+    "polymorph",
+    "subclass",
+    "abstract",
+    "inherit"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Validates a move in layers: turn, piece movement, path/blocking, and not leaving own king in check",
+   "keywords": [
+    "self-check",
+    "own king",
+    "legal",
+    "pseudo",
+    "pinned"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Detects check, checkmate and stalemate correctly (no legal move: in check vs not)",
+   "keywords": [
+    "checkmate",
+    "stalemate",
+    "in check",
+    "no legal"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Separates game rules into a Rules/strategy object so other games (tic-tac-toe) reuse Game and Board",
+   "keywords": [
+    "strategy",
+    "rules",
+    "tic-tac-toe",
+    "interface",
+    "extensib"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Keeps Move immutable and records history, enabling undo, replay and persistence",
+   "keywords": [
+    "history",
+    "immutable",
+    "undo",
+    "replay",
+    "append"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Online mode is server-authoritative: clients propose moves, server validates and broadcasts",
+   "keywords": [
+    "authoritative",
+    "websocket",
+    "server validates",
+    "broadcast"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Serialises moves per game and handles duplicates or stale moves (single writer, sequence number, idempotency)",
+   "keywords": [
+    "sequence",
+    "idempoten",
+    "version",
+    "actor",
+    "lock",
+    "single-writer"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles disconnect/reconnect and clock on the server by timestamp subtraction, not ticking",
+   "keywords": [
+    "reconnect",
+    "clock",
+    "snapshot",
+    "disconnect"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes a testing strategy: table-driven positions and replay of known games",
+   "keywords": [
+    "test",
+    "perft",
+    "fixture",
+    "position"
+   ],
+   "points": 1
+  }
+ ]
+}

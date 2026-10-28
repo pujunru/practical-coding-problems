@@ -465,6 +465,98 @@
      ]
     }
    ]
+  },
+  {
+   "title": "Low-level design",
+   "questions": [
+    {
+     "id": "board-game",
+     "title": "Design a Board Game (Chess / Tic-Tac-Toe)",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Google",
+      "Meta"
+     ]
+    },
+    {
+     "id": "parking-lot",
+     "title": "Design a Parking Lot",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "card-game",
+     "title": "Design a Card Game (Poker / Blackjack)",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Apple"
+     ]
+    },
+    {
+     "id": "elevator",
+     "title": "Design an Elevator System",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon",
+      "Apple"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Security, identity & access",
+   "questions": [
+    {
+     "id": "user-preferences",
+     "title": "Design a User Preferences Service",
+     "difficulty": "Easy",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "ai-model-api",
+     "title": "Design an API for AI Model Access",
+     "difficulty": "Hard",
+     "companies": [
+      "Anthropic"
+     ]
+    },
+    {
+     "id": "e-voting",
+     "title": "Design an Electronic Voting System",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Observability & reliability",
+   "questions": [
+    {
+     "id": "sensor-temperature",
+     "title": "Design a Temperature Monitoring System for Distributed Sensors",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "cluster-redundancy",
+     "title": "Design Redundancy for a Compute Cluster",
+     "difficulty": "Medium",
+     "companies": [
+      "NVIDIA"
+     ]
+    }
+   ]
   }
  ]
 }

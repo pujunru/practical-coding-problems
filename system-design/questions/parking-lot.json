@@ -1,0 +1,137 @@
+{
+ "id": "parking-lot",
+ "title": "Design a Parking Lot",
+ "prompt": "Design the object model and core logic of a multi-level parking garage. Drivers take a ticket at an entry gate, park in a spot suited to their vehicle, and pay at an exit gate or kiosk before leaving. The design should accept new vehicle types and new pricing rules without rewriting existing classes.\n\nAssume one garage with about **2,000 spots on 5 levels**, three entry and three exit gates, and a peak of roughly one car per second per gate.",
+ "clarify": [
+  "Which vehicle types exist (motorcycle, car, van or truck, electric car needing a charger) and can a small vehicle use a larger spot?",
+  "How is the fee computed: hourly, daily caps, flat event rates, lost-ticket penalty?",
+  "Do drivers choose their spot, or does the system assign one? Is reserved or handicapped parking in scope?",
+  "Do we need a live availability display, and one garage or a chain of garages?",
+  "How do customers pay (cash, card, pre-paid app) and what happens if the payment fails at the exit?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Entry: find a free, compatible spot, issue a `Ticket`, mark the spot taken\n- Exit: compute the fee from the entry time, take payment, release the spot\n- Show free spots per level and per type; reject entry when full\n- Support several vehicle and spot types, and pluggable pricing\n\n**Non-functional**\n- Two gates must never hand out the same spot (correct under concurrency)\n- Entry decision in well under a second; availability counts may be slightly stale\n- Easy to add a vehicle type, a spot type or a pricing rule",
+  "estimation": "Object counts, not traffic, drive this design.\n- Spots: 2,000 over 5 levels = 400 per level; one spot object is ~100 bytes, so the whole garage is ~200 KB in memory.\n- Traffic: 3 entries × ~1 car/s = about 3 `park` operations per second at peak; with an average stay of 3 hours that is ~2,000 vehicles present and ~10,000 tickets/day.\n- Allocation scan: even a linear search over 2,000 spots is microseconds; index free spots per type only for clarity and O(1) availability counts.\n- Concurrency is about a handful of simultaneous gate operations, so one lock around \"claim a spot\" is enough.",
+  "api": "```\nclass ParkingLot:\n    park(vehicle: Vehicle, gate_id) -> Ticket           # raises LotFull\n    calculate_fee(ticket_id, at: datetime) -> Money\n    pay(ticket_id, payment: PaymentMethod) -> Receipt\n    exit(ticket_id, gate_id)                             # requires paid receipt\n    availability() -> dict[SpotType, int]\n\nclass PricingStrategy(ABC):   fee(ticket, exit_time) -> Money\nclass SpotAssigner(ABC):      pick(free_spots, vehicle) -> Spot | None\n```",
+  "data": "- Enums: `VehicleType {MOTORCYCLE, CAR, TRUCK}`, `SpotType {COMPACT, REGULAR, LARGE, EV, ACCESSIBLE}`, `TicketStatus {ACTIVE, PAID, LOST}`.\n- `Vehicle(plate, type)`; subclasses are optional, since behaviour differs only through the `fits` table.\n- `Spot(id, level, number, type, state: FREE|OCCUPIED|OUT_OF_SERVICE)` with `can_fit(vehicle)`.\n- `Level(number, spots)`; `ParkingLot(levels, gates, assigner, pricing)`.\n- `Ticket(id, vehicle, spot, entry_time, status)`; `Payment(ticket, amount, method, paid_at)`.\n- Relationships: Lot 1..* Level 1..* Spot; Ticket → one Vehicle and one Spot; `Spot` knows nothing about tickets.",
+  "design": "```\n EntryGate ──park(vehicle)──▶ ParkingLot ──▶ SpotAssigner.pick(free spots by type)\n                                  │               │ (nearest-to-entrance, best fit)\n                                  │◀── Spot ──────┘\n                                  ├─▶ Ticket(entry_time, spot)   [lock around claim]\n ExitGate ─pay(ticket)──▶ PricingStrategy.fee ─▶ PaymentProcessor ─▶ release Spot\n```\n- `park`: under a lock, ask the assigner for a compatible free spot, flip it to `OCCUPIED`, create the ticket. If none, raise `LotFull`.\n- `exit`: look up the ticket, price it, collect payment, set the ticket to `PAID`, free the spot in the same critical section as the status change, then open the gate.\n- Keep per-type free lists (a set or heap per `SpotType`) so assignment and the availability display are O(1) and O(log n).",
+  "deepdives": "- **Extensibility with strategies.** Pricing (`HourlyPricing`, `DailyCapPricing`, `EventFlatPricing`) and spot choice (`NearestEntrance`, `FillLevelByLevel`, `BestFit`) are separate strategy interfaces injected into `ParkingLot`, so a new rule is a new class, not an edit to `park`. A new vehicle type is an enum value plus a row in the `fits` table (a motorcycle may take compact or regular; a truck needs large or two adjacent spots, which complicates assignment and is worth naming). Avoid a `Vehicle` subclass per type that only returns a constant. Decorate prices for discounts or validation stamps.\n- **Concurrency and failure.** The invariant is one spot, one active ticket. In one process a lock (or a per-type queue) around claim and release is enough; with several gate controllers or servers, use a conditional update in the database (`UPDATE spots SET state='OCCUPIED' WHERE id=? AND state='FREE'`) and retry with the next candidate. Make `pay` idempotent on `ticket_id` so a double-tap does not charge twice, and keep `exit` allowed only for `PAID` tickets. Handle lost tickets with a flat fee and a plate lookup, and let an attendant free stuck spots.\n- **Testing.** Inject a fake clock to test fees across hour boundaries and daily caps; table-test pricing and assignment strategies in isolation; run a stress test with parallel entries on a nearly full lot to prove no spot is double-booked.",
+  "wrapup": "- Entities: Lot, Level, Spot, Vehicle, Ticket, Payment; behaviour moved into `PricingStrategy` and `SpotAssigner`.\n- Trade-offs: simple scan vs indexed free lists; one global lock vs per-type locks vs DB conditional updates; approximate availability vs exact.\n- Next: reservations, EV charging sessions, multiple garages, license-plate recognition at gates."
+ },
+ "rubric": [
+  {
+   "text": "Clarifies vehicle types, spot types and whether small vehicles may use larger spots",
+   "keywords": [
+    "vehicle type",
+    "spot type",
+    "compact",
+    "fit"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models the main entities: ParkingLot, Level, Spot, Vehicle, Ticket, Payment with clear relationships",
+   "keywords": [
+    "ticket",
+    "level",
+    "spot",
+    "vehicle",
+    "payment"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses enums for vehicle/spot types and spot state instead of strings or subclass explosion",
+   "keywords": [
+    "enum",
+    "spottype",
+    "state"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Separates pricing into a strategy so hourly, daily cap or flat-rate rules can be added without changing park/exit",
+   "keywords": [
+    "strategy",
+    "pricing",
+    "pluggable",
+    "open/closed"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Separates spot assignment policy (nearest, best fit, fill by level) as its own abstraction",
+   "keywords": [
+    "assign",
+    "nearest",
+    "best fit",
+    "policy"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes the park and exit flows step by step, including full-lot behaviour",
+   "keywords": [
+    "lot full",
+    "full",
+    "entry",
+    "release"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Prevents double-booking a spot under concurrent gates (lock, atomic claim, or conditional DB update)",
+   "keywords": [
+    "lock",
+    "atomic",
+    "conditional",
+    "double-book",
+    "race",
+    "concurren"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Makes payment idempotent and ties exit to a paid ticket; covers failed payment",
+   "keywords": [
+    "idempoten",
+    "paid",
+    "exit",
+    "retry"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles lost tickets, out-of-service spots or manual override",
+   "keywords": [
+    "lost ticket",
+    "out of service",
+    "override",
+    "attendant"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keeps per-type free lists for O(1) availability counts and a display board",
+   "keywords": [
+    "free list",
+    "availability",
+    "count",
+    "heap",
+    "o(1)"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains testing: fake clock for fees, strategy unit tests, concurrency stress test",
+   "keywords": [
+    "fake clock",
+    "test",
+    "stress",
+    "inject"
+   ],
+   "points": 1
+  }
+ ]
+}

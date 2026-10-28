@@ -1,0 +1,141 @@
+{
+ "id": "elevator",
+ "title": "Design an Elevator System",
+ "prompt": "Design the control software for the elevators of a tall building. Passengers press an up or down button on a floor (a *hall call*) or a destination button inside a car (a *car call*). The controller decides which car answers which call and in what order each car visits floors.\n\nAssume a **40-floor office building with 6 cars**, where the morning rush sends most passengers up from the lobby. Focus on the dispatch algorithm and the object model; ignore physical motor control.",
+ "clarify": [
+  "How many floors and cars, and is it one bank or several zones (low-rise, high-rise)?",
+  "Is it classic up/down buttons or destination dispatch, where the passenger enters the floor at a keypad?",
+  "What matters most: average wait, worst-case wait, or energy use? Any priority modes (fire, VIP, maintenance)?",
+  "Capacity limits: weight or passenger count, door-hold, and what happens when a car is full?",
+  "What if a car breaks down mid-trip, and must the controller stay available if a component fails?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Accept hall calls (floor, direction) and car calls (floor)\n- Assign each hall call to a car; each car serves its stops in a sensible order and opens doors\n- Cars report position, direction and load; the controller handles overload, door obstruction, out-of-service and fire mode\n\n**Non-functional**\n- Low average and bounded worst-case waiting time (no starvation of far-away calls)\n- Safety first: never move with the doors open; never accept a call for a car that is faulted\n- Dispatch is pluggable and testable with a simulated clock",
+  "estimation": "- Size: 40 floors × 2 directions = 80 hall buttons; 6 cars × 40 destination buttons = 240 car buttons. State is a few KB.\n- Load: assume 300 people arrive in the 15-minute morning peak and a car carries 8 per trip, so about 300 / 8 ≈ **38 trips** are needed. A round trip to the upper floors and back takes ~120 s, so 6 cars complete 6 × (900 / 120) = **45 trips** in 15 minutes: about 83% utilisation. Near saturation, queues build quickly, which is why dispatch quality matters in the rush.\n- Dispatch decisions: even at 10 calls/s, scoring 6 cars per call is trivial; computation is never the bottleneck, so choose for fairness and clarity, not speed.",
+  "api": "```\nclass Controller:\n    hall_call(floor, direction)            # button outside\n    car_call(car_id, floor)                # button inside\n    on_car_arrived(car_id, floor)          # sensor events\n    set_mode(car_id, NORMAL | MAINTENANCE | FIRE)\n\nclass Elevator:\n    add_stop(floor) ; step(clock) ; open_doors() ; close_doors()\n    state -> (floor, direction, door, load, stops)\n\nclass DispatchStrategy(ABC):\n    choose(call: HallCall, cars: list[Elevator]) -> Elevator\n```",
+  "data": "- Enums: `Direction {UP, DOWN, IDLE}`, `DoorState {OPEN, OPENING, CLOSED, CLOSING}`, `CarMode {NORMAL, MAINTENANCE, FIRE, FAULT}`.\n- `Elevator(id, current_floor, direction, door, load, capacity, up_stops: sorted set, down_stops: sorted set, mode)`.\n- `HallCall(floor, direction, requested_at)`; `CarCall(car_id, floor)`.\n- `Controller(cars, pending_calls, strategy)`; `Building(floors, zones)`.\n- A car holds two sorted stop sets, one per direction, which is exactly what a sweep algorithm needs.",
+  "design": "```\n Hall button ─▶ Controller ──strategy.choose(call, cars)──▶ Elevator k\n Car button  ─────────────────────────────────────────────▶ Elevator k.add_stop(f)\n                    ▲  events: arrived / door / overload          │\n                    └──────────────────────────────────────── state machine\n Elevator: IDLE ─▶ MOVING_UP/DOWN ─▶ ARRIVING ─▶ DOORS_OPEN ─▶ (next stop | IDLE)\n```\n- **Per-car movement = LOOK/SCAN:** keep moving in the current direction, stop at each requested floor in that direction, reverse only when nothing remains ahead. Compare to FCFS, which zig-zags.\n- **Dispatch = cost function:** for each car, estimate the time to reach the call's floor given its direction, stops already queued, and load; pick the lowest. A car moving toward the caller in the same direction is cheapest; an idle car is next; a car moving away is penalised by the rest of its sweep.\n- The controller re-evaluates pending calls when a car becomes unavailable.",
+  "deepdives": "- **Dispatch algorithm trade-offs.** *Nearest car* is simple but ignores direction and load, so a car going the wrong way gets chosen. *Estimated time of arrival* (sum of travel plus a stop penalty per queued stop) fixes that and is a good default. *Zoning* sends cars to idle in the lobby or evenly spaced to cut wait for the next call, at the cost of idle-trip energy. *Destination dispatch* groups passengers going to nearby floors into one car and performs best in rush hours, but it commits a passenger to a car at the keypad and needs more careful modelling. Prevent starvation by adding an aging term to the cost so a long-pending call eventually wins. Peak modes (up-peak: park idle cars at the lobby) are strategies selected by time or traffic.\n- **Concurrency and robustness.** Calls arrive from many threads while cars move. Simplest correct design: a single controller event loop (or an actor) that processes events in order and owns all state; each car runs its own small state machine fed by that loop, so no shared mutable state needs locks. Make assignment idempotent (a repeated press does not add a second stop). When a car faults, remove it from the candidate set and reassign its unserved hall calls; passengers already inside are taken to the nearest floor and released. Doors must be guarded by invariants such as `moving => door == CLOSED`.\n- **Testing.** Drive the system with a simulated clock and scripted passenger arrivals; assert that every call is served within a bound, that a car never passes a requested stop in its direction, and compare strategies on the same recorded traffic (average and 95th percentile wait). Add state-machine tests for overload and door obstruction.",
+  "wrapup": "- State machine per car with two sorted stop sets (LOOK), and a pluggable `DispatchStrategy` scoring cars by estimated arrival time.\n- Trade-offs: simplicity (nearest car) vs quality (ETA, destination dispatch); energy vs wait via idle positioning; fairness through aging.\n- Next: express zones, VIP and fire modes, predictive traffic patterns, a digital twin for tuning."
+ },
+ "rubric": [
+  {
+   "text": "Clarifies floors, cars, zoning and classic vs destination dispatch",
+   "keywords": [
+    "destination",
+    "zone",
+    "floors",
+    "cars"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models Elevator, Controller, calls (hall vs car), Direction/Door enums and clear responsibilities",
+   "keywords": [
+    "hall call",
+    "car call",
+    "enum",
+    "controller",
+    "elevator"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes each car as a state machine (idle, moving, arriving, doors open) with safety invariants",
+   "keywords": [
+    "state machine",
+    "door",
+    "invariant",
+    "moving"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Orders stops with a sweep algorithm (SCAN/LOOK) using sorted up/down stop sets, not FCFS",
+   "keywords": [
+    "scan",
+    "look",
+    "sorted",
+    "sweep",
+    "direction"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Assigns hall calls with a cost function (ETA, direction, load) and explains why nearest-car is poor",
+   "keywords": [
+    "cost",
+    "eta",
+    "nearest",
+    "estimated",
+    "score"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Makes dispatch pluggable (strategy pattern) and mentions peak modes such as up-peak lobby parking",
+   "keywords": [
+    "strategy",
+    "pluggable",
+    "peak",
+    "lobby",
+    "up-peak"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses fairness: aging or bounded wait so far calls are not starved",
+   "keywords": [
+    "starv",
+    "aging",
+    "fairness",
+    "bounded"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Compares at least one alternative: zoning or destination dispatch, with trade-offs",
+   "keywords": [
+    "destination dispatch",
+    "zoning",
+    "trade-off",
+    "group"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles concurrency with a single event loop/actor and idempotent calls",
+   "keywords": [
+    "event loop",
+    "actor",
+    "idempoten",
+    "thread",
+    "lock"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles faults: overload, door obstruction, out-of-service car, reassigning pending calls, fire mode",
+   "keywords": [
+    "overload",
+    "fault",
+    "reassign",
+    "fire",
+    "out of service"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Tests with a simulated clock and recorded traffic, comparing strategies by average and tail wait",
+   "keywords": [
+    "simulat",
+    "clock",
+    "test",
+    "p95",
+    "wait"
+   ],
+   "points": 1
+  }
+ ]
+}

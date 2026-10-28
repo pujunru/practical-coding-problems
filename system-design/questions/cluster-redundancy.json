@@ -1,0 +1,151 @@
+{
+ "id": "cluster-redundancy",
+ "title": "Design Redundancy for a Compute Cluster",
+ "prompt": "You operate a large GPU compute cluster that runs both long distributed training jobs and low-latency inference services. Hardware fails constantly at this scale: GPUs, hosts, network links, whole racks, even a data hall. Design the redundancy, failover and health-checking strategy so that failures cost little work and capacity targets are still met.\n\nAssume **960 nodes of 8 GPUs (7,680 GPUs)** are needed to serve peak demand, spread across three availability zones.",
+ "clarify": [
+  "Which workloads matter most: synchronous training (one failure stops the whole job), online inference (stateless replicas), or both with different priorities?",
+  "What availability and recovery targets apply (inference 99.9%? training: how much lost work is acceptable per failure)?",
+  "Which failure domains must we survive: one GPU, one node, one rack or top-of-rack switch, a whole zone?",
+  "How much spare capacity is the budget willing to hold idle, and may spares run low-priority jobs?",
+  "How do we detect failures: hard crashes only, or also silent degradation such as throttled GPUs, ECC errors or slow links?",
+  "Is the cluster one region, or may a region be lost entirely?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Detect failed or degraded GPUs, nodes, links and racks quickly and automatically\n- Replace or route around them: reschedule inference replicas, restart training from a checkpoint on healthy nodes\n- Hold enough spare capacity (N+1 / N+2) for the chosen failure domains; drain nodes for maintenance without an outage\n\n**Non-functional**\n- Inference stays within SLO during a single-rack or single-zone loss\n- Training loses at most one checkpoint interval of work per failure\n- Failure handling never causes a second failure (no cascading overload or thrash)\n- Capacity overhead is justified with numbers",
+  "estimation": "- Capacity: 960 nodes × 8 = **7,680 GPUs** needed at peak.\n- Zone loss: with 3 zones, each serving 320 nodes, surviving the loss of any one zone at full capacity needs 960 / 2 = 480 per zone = **1,440 nodes**: 50% overhead. Accepting graceful degradation (shed low-priority work) instead needs far less.\n- Rack loss: say 4 nodes per rack (power-limited), so 80 racks per zone; being N+2 racks means 8 spare nodes per zone, about **2.5%** overhead for rack-level protection.\n- Failure rate (assumption, GPUs only): 5% annualised failure rate × 7,680 = **384 GPU failures/year ≈ 1 per day**; including hosts, NICs, optics and cables, expect several incidents a day.\n- A 1,024-GPU job sees 1,024 × 5% / 365 ≈ 0.14 GPU failures/day; with hosts, NICs and optics included, interruptions are roughly daily, so restart cost dominates.",
+  "api": "```\n# control plane\nPOST /v1/nodes/{id}/cordon | drain | uncordon | repair\nGET  /v1/capacity?zone=&pool=         → {total, healthy, spare, reserved, degraded}\nPUT  /v1/pools/{name}  {min_spare_nodes, spread: \"rack|zone\", priority}\n# jobs\nPOST /v1/jobs {gang_size, checkpoint_interval, priority, restart_policy}\n# health (node agent → controller)\nPOST /v1/health {node, gpu_status[], ecc, temp, link_errors, ts}     (heartbeat, every few seconds)\n```",
+  "data": "- **topology**: `node → rack → row/pod → zone → region`, plus power feed and switch ids. Every placement decision uses it.\n- **node_state**(node_id, state: READY | DEGRADED | CORDONED | DRAINING | FAILED | REPAIR, reason, since, last_heartbeat).\n- **gpu_health**(node_id, gpu_idx, ecc_errors, xid_errors, temp, throttle_flags, link_status).\n- **pool**(name, min_spare, priority class) and **job**(gang, checkpoint_uri, last_checkpoint_step, state).\n- An incident log for repairs and RMAs.",
+  "design": "```\n Zone A              Zone B              Zone C        (each: racks on separate power/switches)\n [node agent: heartbeat, DCGM-style GPU metrics, link tests]\n        │ health stream\n        ▼\n health controller ─▶ node_state ─▶ scheduler (topology-aware, gang)\n   (quorum, hysteresis)                │ inference: spread replicas across racks/zones, N+k\n                                       │ training: gang on one fabric; hot spares per pod\n                                       ▼\n                     repair queue ◀── cordon/drain ── checkpoints in replicated object store\n```\n- Agents report GPU errors, thermals and link counters; a controller consensus (no single-agent verdict) moves nodes between states with hysteresis to avoid flapping.\n- Failure domains are first-class: replicas of one service are spread so that no rack holds more than a bounded share; the scheduler reserves spares per pod so a training job can swap a node in minutes.",
+  "deepdives": "- **Choosing the redundancy level (N+1 vs N+2 vs zone-level).** Match the spare count to the failure domain you promise to survive and its probability. Single-GPU and single-node failures are frequent, so a small pool of hot spares (about 1–2% of nodes) per pod covers them. Rack or switch loss is rarer but removes 4+ nodes at once, so N+2 racks per zone covers it for 2.5%. A full zone loss costs 50% extra hardware to remain at 100% capacity, which is rarely justified; instead drop to a defined degraded mode: reduce the training pool, move interruptible jobs, keep inference at full strength, and accept higher latency for low tiers. Every spare is idle money, so lend spares to preemptible low-priority jobs.\n- **Training failover.** A synchronous job is one big failure domain: any lost GPU halts all of them, so cost = detection time + restart + work since the last checkpoint. Reduce each term: heartbeat plus collective-communication timeouts to detect fast; asynchronous multi-tier checkpoints (local NVMe every few minutes, replicated object store every N minutes) so the lost work is minutes, not hours; a hot-spare node already imaged and burn-in tested; elastic restarts that swap or shrink the gang. Trade-off: checkpoint overhead versus expected lost work; the best interval scales roughly with the square root of (checkpoint cost × mean time between failures).\n- **Health checking and graceful degradation.** Hard failures are easy; the dangerous ones are *gray failures*: a GPU with rising ECC errors, a link running at half speed, a thermally throttled card that makes the whole gang slow. Combine passive metrics with active probes (a short matmul and all-reduce benchmark on idle nodes), compare against peers (a straggler detector), and cordon on trend, not just on failure. Avoid cascades by rate-limiting automated cordons (never drain more than a bounded share of a pool at once) and failing safe if health data is stale. For inference, use outlier ejection, retry budgets and priority-based load shedding.",
+  "wrapup": "- Topology-aware placement, hot spares sized per failure domain (about 2.5% for rack-level N+2; 50% would be needed for a full zone), checkpoint-based training recovery, and active plus passive health checks with controlled automation.\n- Trade-offs: idle spare cost vs risk; checkpoint overhead vs lost work; aggressive cordoning vs false positives.\n- Next: automated repair and RMA flows, burn-in for new hardware, multi-region disaster recovery."
+ },
+ "rubric": [
+  {
+   "text": "Defines failure domains (GPU, node, rack/switch/power, zone, region) and which are survived",
+   "keywords": [
+    "failure domain",
+    "rack",
+    "zone",
+    "power",
+    "switch"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Sizes spare capacity with arithmetic (N+1/N+2, zone loss needs 50% extra for 3 zones) and justifies the choice",
+   "keywords": [
+    "n+1",
+    "n+2",
+    "spare",
+    "50%",
+    "overhead",
+    "480"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Spreads replicas and jobs across domains with topology-aware placement and limits per-rack concentration",
+   "keywords": [
+    "spread",
+    "topology",
+    "anti-affinity",
+    "placement",
+    "per rack"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Distinguishes inference (stateless replicas, reschedule) from training (synchronous gang, restart from checkpoint)",
+   "keywords": [
+    "stateless",
+    "gang",
+    "synchronous",
+    "checkpoint",
+    "inference",
+    "training"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Reduces training failure cost: fast detection, multi-tier checkpoints, hot spares, checkpoint interval trade-off",
+   "keywords": [
+    "checkpoint",
+    "hot spare",
+    "interval",
+    "lost work",
+    "elastic"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Detects failures with heartbeats and GPU metrics (ECC, thermals, link errors) reported to a replicated controller",
+   "keywords": [
+    "heartbeat",
+    "ecc",
+    "dcgm",
+    "metric",
+    "agent",
+    "controller"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles gray failures and stragglers with active probes, peer comparison and trend-based cordoning",
+   "keywords": [
+    "gray failure",
+    "straggler",
+    "probe",
+    "burn-in",
+    "degraded",
+    "cordon"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Avoids cascading failure and flapping: hysteresis, rate-limited automated draining, fail-safe on stale data",
+   "keywords": [
+    "hysteresis",
+    "flapping",
+    "cascad",
+    "rate-limit",
+    "bounded",
+    "stale"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Defines graceful degradation: priority classes, preempting low-priority work, load shedding, reduced mode",
+   "keywords": [
+    "graceful",
+    "degrad",
+    "preempt",
+    "priority",
+    "shed"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Covers maintenance and repair lifecycle: drain, cordon, repair queue, burn-in before returning to service",
+   "keywords": [
+    "drain",
+    "maintenance",
+    "repair",
+    "rma",
+    "uncordon"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Mentions using spare capacity productively (preemptible jobs) and regional disaster recovery",
+   "keywords": [
+    "preemptible",
+    "idle",
+    "disaster recovery",
+    "multi-region",
+    "region"
+   ],
+   "points": 1
+  }
+ ]
+}

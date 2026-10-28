@@ -1,0 +1,142 @@
+{
+ "id": "card-game",
+ "title": "Design a Card Game (Poker / Blackjack)",
+ "prompt": "Design the object model for a card game played by several players against a dealer or against each other. Use **Blackjack** as the concrete game (state this) and show how the same classes would carry **Texas Hold'em poker**. The system deals from a shuffled deck, tracks each hand, applies the rules to decide the outcome, and keeps hidden cards hidden from other players.\n\nAssume a table of up to 7 players, and an online service running tens of thousands of tables at once.",
+ "clarify": [
+  "Which game first, and which rules variants (number of decks, double down, split, dealer hits on soft 17)?",
+  "Is money or chips involved, and must balances be exact and auditable?",
+  "Is it one local process or an online multiplayer service with remote players?",
+  "Must shuffling be provably fair, and do we need to record every hand for dispute resolution?",
+  "Do we need to add another game (poker) later, and with what differences?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Create a table, seat players, shuffle and deal, let players act in turn (hit, stand, double...), settle against the dealer, pay out\n- Compute a hand's value and compare hands; detect busts and blackjack\n- Reveal only what each player is allowed to see\n\n**Non-functional**\n- Fair, unpredictable shuffling; no player can see or influence the deck\n- Game rules are separate from deck, player and hand classes so another game reuses them\n- Money operations are exact and replayable from a log",
+  "estimation": "Tiny state; mention it and move on.\n- Deck: 52 cards (a 6-deck shoe is 312 cards). A hand is a handful of cards; one round at a 7-player table is under 1 KB of state.\n- Shuffle: Fisher-Yates in O(n) = 52 swaps, trivial even at 10,000 tables × a round every 30 s ≈ 330 shuffles/s.\n- Poker evaluation: choose 5 of 7 cards = C(7,5) = 21 combinations per player per showdown, cheap enough to brute force; lookup tables only matter in simulation.\n- Concurrency is per table: one table is a single-writer actor, so tables scale out horizontally.",
+  "api": "```\nclass Table:\n    join(player) ; leave(player_id)\n    start_round()                          # shuffle, deal, move to first player\n    act(player_id, action: Action)         # HIT, STAND, DOUBLE, SPLIT; raises NotYourTurn\n    view_for(player_id) -> TableView       # hides other hands and the deck\n\nclass Game(ABC):                           # template method per rules set\n    deal(table); available_actions(player, table); apply(action); settle(table) -> list[Payout]\n\nclass HandEvaluator(ABC):  value(cards) -> HandRank ; compare(a, b) -> int\n```",
+  "data": "- Enums: `Suit`, `Rank`, `Action`, `RoundState {WAITING, DEALING, PLAYER_TURNS, DEALER_TURN, SETTLED}`, `Outcome {WIN, LOSE, PUSH, BLACKJACK}`.\n- `Card(rank, suit)` immutable; `Deck`/`Shoe(cards, shuffle(rng), draw())`; `Hand(cards, bet)`; `Player(id, chips, hands)`; `Dealer` is a `Player` with a fixed policy.\n- `Table(seats, deck, game, state, round_id)`; `Round` log of `(player, action, cards drawn)` for replay and audits.\n- Blackjack value: sum of ranks, face cards = 10, ace = 11 reduced to 1 while the total exceeds 21.",
+  "design": "```\n Player ──act()──▶ Table (single writer) ──▶ Game.apply(action)      Game = BlackjackGame | HoldemGame\n                      │                         ├─ Deck.draw()        HandEvaluator = Blackjack | Poker5of7\n                      │                         └─ Hand.add(card)\n                      ├─ state machine: DEALING → PLAYER_TURNS → DEALER_TURN → SETTLED\n                      └─ settle(): evaluator.compare → Payout[] → wallet ledger (append-only)\n view_for(p) filters hidden cards;  events pushed to each player's connection\n```\n- `Table` owns the turn order and state machine; `Game` supplies the rules (legal actions, dealer policy, settlement). That is the **template method / strategy** split.\n- The dealer's policy is code, e.g. draw while the value is under 17, so it reuses the same `act` path.\n- Settlement turns the final hands into `Payout` records and applies them through a ledger, not by mutating balances in place.",
+  "deepdives": "- **Extending to poker.** The deck, cards, players and table stay. Hold'em adds community cards, blinds, betting rounds (`PREFLOP, FLOP, TURN, RIVER`) as a richer state machine, a pot with side pots for all-in players, and a `PokerEvaluator` that ranks the best 5 of 7 cards. Because `Game` owns legal actions and `HandEvaluator` owns comparison, those are new classes, not edits. Say honestly where abstraction leaks: blackjack players play against the dealer, poker players against each other, so settlement differs.\n- **Fairness, secrecy and concurrency.** Shuffle with Fisher-Yates driven by a cryptographically secure RNG (not `random()` seeded by time); never send the deck or others' hole cards to a client, only `view_for(player)`. For provable fairness, commit to the shuffled order with a hash before play and reveal the seed afterwards. One table is processed by a single actor, so turns cannot interleave, and an `act` carries the round id plus an idempotency key to defuse retried or late messages. Timeouts auto-stand or fold.\n- **Testing.** Inject a seeded or fixed deck to make rounds deterministic: unit-test hand values (soft aces, multiple aces), bust, blackjack vs 21, and payouts. Property-test that every shuffle is a permutation of 52 unique cards, and check chip conservation (sum of balances is unchanged after settlement).",
+  "wrapup": "- Immutable `Card`, `Deck`, `Hand`, `Player`, a `Table` state machine and a swappable `Game` + `HandEvaluator`; secrecy via per-player views.\n- Trade-offs: template method vs composition for rules; in-place balances vs ledger; plain CSPRNG shuffle vs commit-reveal fairness.\n- Next: tournaments, spectators, bots as `Player` implementations, persistence and hand history."
+ },
+ "rubric": [
+  {
+   "text": "States the concrete game (Blackjack) and variant rules that affect the design",
+   "keywords": [
+    "blackjack",
+    "soft 17",
+    "double",
+    "split"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Identifies entities: Card, Deck/Shoe, Hand, Player, Dealer, Table, with enums for suit, rank and action",
+   "keywords": [
+    "card",
+    "deck",
+    "hand",
+    "dealer",
+    "enum"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Computes hand value correctly, including aces counting as 11 or 1",
+   "keywords": [
+    "ace",
+    "11",
+    "soft",
+    "bust"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Separates game rules from table/deck/player (template method or strategy) so poker can be added",
+   "keywords": [
+    "strategy",
+    "template",
+    "game rules",
+    "interface",
+    "extensib"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Models the round as an explicit state machine with turn order",
+   "keywords": [
+    "state machine",
+    "state",
+    "turn",
+    "round"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Implements an unbiased shuffle (Fisher-Yates) with a secure RNG and discusses fairness",
+   "keywords": [
+    "fisher",
+    "shuffle",
+    "csprng",
+    "secure",
+    "fair",
+    "commit"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Hides secret information: per-player views, never exposing the deck or other hands",
+   "keywords": [
+    "hidden",
+    "view",
+    "secret",
+    "hole card"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains how Hold'em differs: community cards, betting rounds, pots, 5-of-7 evaluator",
+   "keywords": [
+    "hold",
+    "community",
+    "side pot",
+    "betting",
+    "evaluator"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles money exactly: ledger or atomic updates, payouts at settlement, chip conservation",
+   "keywords": [
+    "ledger",
+    "payout",
+    "chip",
+    "balance",
+    "atomic"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles concurrency and retries: single-writer per table, idempotent actions, timeouts",
+   "keywords": [
+    "single-writer",
+    "actor",
+    "idempoten",
+    "timeout",
+    "concurren"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes testing with a fixed or seeded deck and property tests on the shuffle",
+   "keywords": [
+    "seed",
+    "fixed deck",
+    "property",
+    "test",
+    "deterministic"
+   ],
+   "points": 1
+  }
+ ]
+}
