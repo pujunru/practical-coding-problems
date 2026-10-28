@@ -1,0 +1,75 @@
+{
+ "id": "consensus",
+ "title": "Consensus",
+ "summary": "Consensus is how a group of nodes **agrees on a single ordered sequence of decisions** (usually log entries) even though nodes crash and messages are delayed. Everyone ends up applying the same entries in the same order, so every replica of a state machine reaches the same state.\n\nThe shape is always the same: **(1)** a leader proposes an entry, **(2)** replicates it to a [quorum](#/sd/f/quorum), **(3)** once a majority has it the entry is *committed* and every replica applies it in order. Quorum overlap is what stops two different decisions from both succeeding. Families: **Paxos**, [Raft](#/sd/f/raft) and ZAB (ZooKeeper).\n\nGuarantees:\n\n- **Agreement and validity (safety):** no two nodes decide differently, and a decided value was actually proposed. Safety holds even if timing assumptions are violated.\n- **Progress (liveness):** decisions happen while a majority is alive and can talk, and timing is reasonable. Under a partition the minority side stalls.\n\nCosts: at least one majority round trip per decision, `2f + 1` nodes for `f` failures, and no answers without a majority.\n\n**Use it for small, critical coordination data:** who is the leader ([leader election](#/sd/f/leader-election)), configuration, shard maps, locks and [leases](#/sd/f/lease). **Don't** run bulk data or every user click through it; replicate that normally and keep consensus for the metadata that decides who owns what.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Which of these need consensus (not just replication)? Select all that apply.",
+   "options": [
+    "Ensuring that after a failover exactly one node believes it is the database primary",
+    "Agreeing on the order of cluster configuration changes",
+    "Serving product pages from a cache",
+    "Counting page views"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "Both of the first two are 'everyone must agree on one answer' problems where a disagreement (two primaries, two config histories) is a correctness bug. Cached pages and view counts tolerate staleness and can be merged later."
+  },
+  {
+   "type": "choice",
+   "q": "A 5-node consensus cluster is partitioned into groups of 3 and 2. What is the correct behavior for a client writing to the 2-node side?",
+   "options": [
+    "The write cannot commit: it fails or blocks until the partition heals or the client reaches the majority side",
+    "It commits locally and syncs later",
+    "It commits because the old leader is on that side",
+    "It commits if the client retries often enough"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Consensus picks consistency over availability on the minority side. Committing locally would create two divergent histories, exactly what the protocol exists to prevent."
+  },
+  {
+   "type": "order",
+   "q": "Put one decision in a leader-based consensus protocol in order.",
+   "items": [
+    "The leader appends the proposed entry to its own log",
+    "The leader sends the entry to the followers",
+    "A majority of nodes have stored the entry and acknowledged it",
+    "The leader marks the entry committed",
+    "Every replica applies the committed entry, in log order"
+   ],
+   "explain": "The entry is only committed after a majority has stored it. Applying before commit risks exposing a decision that a new leader may not have."
+  },
+  {
+   "type": "number",
+   "q": "A 5-node cluster has its leader in region X. Round-trip times from the leader to the four followers are 2 ms, 6 ms, 40 ms and 90 ms. Ignore disk time and processing. About how long does the leader take to commit an entry, in milliseconds?",
+   "answer": 6,
+   "unit": "ms",
+   "tolerance": 0.1,
+   "explain": "A majority of 5 is 3 including the leader itself, so it needs 2 follower acks: the two fastest, at 2 ms and 6 ms. The commit completes when the second arrives, at 6 ms. Slow followers don't matter, which is why a quorum is faster and more available than 'wait for everyone' (that would take 90 ms)."
+  },
+  {
+   "type": "choice",
+   "q": "Why not make the leader wait for acknowledgements from all replicas before committing?",
+   "options": [
+    "One slow or dead replica would stall every decision; waiting for a majority tolerates f failures",
+    "It would violate agreement",
+    "Followers cannot send acknowledgements to the leader",
+    "It would commit entries out of order"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Waiting for all trades availability for nothing: a majority already guarantees any future leader's quorum overlaps with the committed entry's quorum. Safety is not the issue, availability and latency are."
+  },
+  {
+   "type": "recall",
+   "q": "What does consensus guarantee, what does it cost, and what should you not use it for?",
+   "answer": "Agreement on one ordered sequence of decisions, so replicas apply the same entries in the same order and never decide differently, with progress while a majority can communicate. It costs a majority round trip per decision, 2f+1 nodes, and unavailability without a majority. Use it for small critical metadata (leader, config, locks), not for bulk data or high-volume traffic."
+  }
+ ]
+}

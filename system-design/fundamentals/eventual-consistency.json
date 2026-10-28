@@ -1,0 +1,74 @@
+{
+ "id": "eventual-consistency",
+ "title": "Eventual Consistency",
+ "summary": "Eventual consistency promises one thing: **if writes stop, all replicas converge to the same value**. It says nothing about *when*, and nothing about what a reader sees in the meantime. A write is acknowledged by one replica and spreads to the others in the background.\n\nPicture **news spreading through a town**: everyone ends up knowing, but for a while two neighbours tell different stories.\n\n- **Anomalies you must expect:** stale reads, reads that go backwards (replica 1 then a lagging replica 2), and your own write being invisible for a moment.\n- **Session guarantees** fix the ones users notice: *read-your-writes* (route a user to the leader or a fresh replica right after they write) and *monotonic reads* (pin a session to one replica).\n- **Convergence needs a conflict rule** for concurrent writes: last-write-wins (simple, but silently drops one write), version vectors with a merge, or CRDTs. Background [repair](#/sd/f/leaderless-repair) and cache TTLs are what actually drive convergence.\n\n**Use it** for feeds, like counts, search indexes, caches ([cache invalidation](#/sd/f/cache-invalidation) is an eventual-consistency problem) and anything where a stale read is cheap. **Don't** use it for balances, unique usernames, or the last item in stock: those need a [quorum](#/sd/f/quorum), a single leader, or [consensus](#/sd/f/consensus). Choose per piece of data, not per system.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A user uploads a new profile photo, is redirected to their profile, and still sees the old photo. Refreshing a few seconds later shows the new one. The store is eventually consistent. Which guarantee was missing?",
+   "options": [
+    "Read-your-writes: a user should see their own acknowledged writes",
+    "Durability: the write was lost and later replayed",
+    "Linearizability across all clients",
+    "Convergence: the replicas never agreed"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The write was not lost, and the replicas did converge, so eventual consistency held. What failed is the session guarantee that a user sees their own write, usually fixed by reading from the leader (or a replica known to be fresh) for a short time after a write. Full linearizability would be far more than this user needed."
+  },
+  {
+   "type": "choice",
+   "q": "What does a purely eventually consistent store guarantee?",
+   "options": [
+    "Once writes stop and updates propagate, replicas hold the same value",
+    "Replicas converge within a fixed bound such as 1 second",
+    "A client never sees a value older than one it already read",
+    "Concurrent writes to a key are merged without losing either"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Eventual consistency gives convergence only: no time bound, no monotonic reads, and no conflict-safe merge unless you add one. Last-write-wins, for example, converges by throwing one of two concurrent writes away."
+  },
+  {
+   "type": "choice",
+   "q": "Which of these are reasonable to serve from an eventually consistent store? Select all that apply.",
+   "options": [
+    "A post's like counter",
+    "A feed ordering that may lag by a few seconds",
+    "Claiming a unique username at sign-up",
+    "Decrementing stock for the last unit of a flash-sale item"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "Slightly stale counters and feeds only cost a little accuracy. Uniqueness and 'only one winner' need a coordination point (a unique constraint, a leader, a quorum or consensus), because two replicas can each accept a claim before they hear about the other."
+  },
+  {
+   "type": "number",
+   "q": "A key has one leader and two followers. Replication is asynchronous with 300 ms of lag. Immediately after a write (well within the 300 ms), a client reads from a node chosen uniformly at random among the three. What percentage of such reads return the old value?",
+   "answer": 66.7,
+   "unit": "%",
+   "tolerance": 0.05,
+   "explain": "Only the leader has the new value yet; the two followers are 300 ms behind. A random pick lands on a follower 2 times out of 3, so about 66.7% of reads are stale. Pinning post-write reads to the leader removes this."
+  },
+  {
+   "type": "order",
+   "q": "Put the life of one write in an eventually consistent system in order.",
+   "items": [
+    "The client writes to one replica, which acknowledges",
+    "The replica propagates the update to its peers in the background",
+    "A peer receives it and applies it, resolving any conflict with its own copy by a version rule",
+    "Reads on every replica now return the converged value"
+   ],
+   "explain": "The acknowledgement comes before propagation, which is exactly why reads can be stale. The conflict rule on apply is what makes the final state the same everywhere."
+  },
+  {
+   "type": "recall",
+   "q": "Explain eventual consistency to an interviewer, and say how you would still give users read-your-writes.",
+   "answer": "If no new writes arrive, all replicas eventually hold the same value, but there is no bound on when, and reads in between may be stale or go backwards. To give a user read-your-writes, route their reads to the leader (or a replica known to have their write, e.g. by version or timestamp) for a short window after they write, while everyone else keeps reading from cheap replicas."
+  }
+ ]
+}

@@ -239,6 +239,57 @@
    ]
   },
   {
+   "id": "consistency",
+   "title": "Consistency",
+   "concepts": [
+    {
+     "id": "eventual-consistency",
+     "title": "Eventual Consistency",
+     "drills": 6
+    },
+    {
+     "id": "quorum",
+     "title": "Quorum",
+     "drills": 6
+    },
+    {
+     "id": "consensus",
+     "title": "Consensus",
+     "drills": 6
+    },
+    {
+     "id": "raft",
+     "title": "Raft",
+     "drills": 6
+    },
+    {
+     "id": "leader-election",
+     "title": "Leader Election",
+     "drills": 6
+    },
+    {
+     "id": "race-condition",
+     "title": "Race Conditions",
+     "drills": 6
+    },
+    {
+     "id": "reservation",
+     "title": "Reservation (Race + Long Fulfillment)",
+     "drills": 6
+    },
+    {
+     "id": "multi-state-machine-sync",
+     "title": "Syncing Multiple State Machines",
+     "drills": 6
+    },
+    {
+     "id": "idempotency",
+     "title": "Idempotency",
+     "drills": 6
+    }
+   ]
+  },
+  {
    "id": "leases-locks",
    "title": "Leases & Locks",
    "concepts": [
@@ -251,6 +302,73 @@
      "id": "fencing-token",
      "title": "Fencing Token",
      "drills": 5
+    },
+    {
+     "id": "acquire-release",
+     "title": "Lock Acquire / Release",
+     "drills": 5
+    },
+    {
+     "id": "lock-contention",
+     "title": "Lock Contention",
+     "drills": 6
+    },
+    {
+     "id": "read-write-lock",
+     "title": "Read-Write Lock",
+     "drills": 6
+    },
+    {
+     "id": "reentrant-lock",
+     "title": "Reentrant Lock",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "isolation",
+   "title": "Isolation",
+   "concepts": [
+    {
+     "id": "cell",
+     "title": "Cells",
+     "drills": 6
+    },
+    {
+     "id": "compartment",
+     "title": "Compartments",
+     "drills": 6
+    },
+    {
+     "id": "tenant-isolation",
+     "title": "Tenant Isolation",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "scaling",
+   "title": "Scaling",
+   "concepts": [
+    {
+     "id": "horizontal-scaling",
+     "title": "Horizontal Scaling",
+     "drills": 6
+    },
+    {
+     "id": "partition-expansion",
+     "title": "Partition Expansion",
+     "drills": 6
+    },
+    {
+     "id": "rebalance",
+     "title": "Rebalance",
+     "drills": 6
+    },
+    {
+     "id": "backfill",
+     "title": "Backfill",
+     "drills": 6
     }
    ]
   }

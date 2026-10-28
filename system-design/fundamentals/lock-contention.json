@@ -1,0 +1,70 @@
+{
+ "id": "lock-contention",
+ "title": "Lock Contention",
+ "summary": "Contention is **many callers queuing for one lock**. A lock serializes its critical section, so a single lock can never do better than `1 / hold time` operations per second. Utilization is `arrival rate × hold time`: above 1 the queue grows without bound, and below 1 but close, latency still explodes at the tail.\n\nSymptoms: p99 latency rises while CPU stays low, because threads are waiting rather than working.\n\nCures, in the order to try them:\n\n1. **Shorten the critical section.** Keep slow work (network calls, serialization, logging) outside; hold the lock only for the actual shared state change.\n2. **Shrink what the lock covers.** Lock per key or per row, not one global lock, and **stripe** locks (hash the key to one of N locks) so unrelated work proceeds in parallel.\n3. **Avoid the lock:** atomic operations, compare-and-set with retry (optimistic concurrency), or a single writer per key through a queue or partition.\n4. **Use the right lock type:** a [read-write lock](#/sd/f/read-write-lock) for read-mostly data.\n5. **Shape the waiting:** timeouts, bounded queues, and [backoff with jitter](#/sd/f/backoff-jitter) so thousands of waiters don't retry in lockstep (a thundering herd).\n\nStriping doesn't help a **hot key**: all callers want the *same* lock. Split the data (sub-counters summed on read) or batch updates instead. See [acquire / release](#/sd/f/acquire-release) for the protocol and [race conditions](#/sd/f/race-condition) for why the lock exists.",
+ "drills": [
+  {
+   "type": "number",
+   "q": "One global lock protects a critical section that takes 20 ms. What is the maximum throughput of operations through that lock, per second?",
+   "answer": 50,
+   "unit": "ops/s",
+   "tolerance": 0,
+   "explain": "Operations run strictly one at a time, so the ceiling is 1 / 0.020 s = 50 per second, no matter how many CPUs or instances you add."
+  },
+  {
+   "type": "number",
+   "q": "Requests arrive at 400 per second and each holds a lock for 5 ms. Keys are uniformly distributed. You want each lock's utilization to stay at or below 0.5. How many equal lock stripes do you need?",
+   "answer": 4,
+   "unit": "stripes",
+   "tolerance": 0,
+   "explain": "Total utilization with one lock is 400 × 0.005 = 2.0, which is already over capacity. Splitting uniformly across S stripes gives 2.0 / S each; 2.0 / 4 = 0.5. This only works because keys spread evenly."
+  },
+  {
+   "type": "choice",
+   "q": "A handler holds a lock while calling an external API (200 ms) and then writing one row to the DB (2 ms). Contention is severe. What is the highest-leverage change?",
+   "options": [
+    "Make the API call before acquiring the lock and hold the lock only for the DB write",
+    "Raise the lock's TTL",
+    "Add more instances",
+    "Hold the lock longer so fewer clients retry"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Hold time sets throughput: moving the 200 ms call out of the lock cuts hold time by about 100x. Adding instances adds more contenders for the same lock."
+  },
+  {
+   "type": "choice",
+   "q": "10,000 clients fail to acquire a lock and all retry every 100 ms. The lock service is overwhelmed each cycle. Which change helps most?",
+   "options": [
+    "Exponential backoff with random jitter on retries",
+    "Retry faster so the wait is shorter",
+    "Remove the timeout",
+    "Add a second lock to the same resource"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Synchronized retries make a thundering herd. Backoff spreads the retries over time and jitter breaks the lockstep."
+  },
+  {
+   "type": "choice",
+   "q": "One counter for a viral post is updated 5,000 times a second under a lock. Striping the lock by post id into 64 stripes does not help. Why, and what does?",
+   "options": [
+    "All updates are for the same post, so they still hit the same stripe; shard the counter into sub-counters (or batch updates) and sum on read",
+    "Striping needs 128 stripes to work",
+    "Locks cannot protect counters",
+    "The stripe count must be prime"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Striping separates different keys. A hot key is one key. Splitting the data itself spreads the hot key's writes across multiple locks or atomics."
+  },
+  {
+   "type": "recall",
+   "q": "How would you diagnose and reduce lock contention in a service whose p99 latency is high while CPU is low?",
+   "answer": "Confirm threads are waiting on the lock (utilization = rate × hold time near or above 1). Shorten the critical section by moving slow work outside it, narrow the lock's scope by key or by stripe, replace it with atomics or optimistic CAS where possible, use a read-write lock for read-heavy data, and add timeouts with jittered backoff. For a hot key, split the data rather than the lock."
+  }
+ ]
+}

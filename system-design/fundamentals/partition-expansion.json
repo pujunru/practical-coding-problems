@@ -1,0 +1,74 @@
+{
+ "id": "partition-expansion",
+ "title": "Partition Expansion",
+ "summary": "Systems that scale by moving data usually **fix the number of partitions at bootstrap**, much larger than the number of nodes, and give each node several. A key maps to a partition by hash (stable, never changes), and the **partition-to-node assignment** is what changes when you scale.\n\n```\nbefore: A: P1 P4 P7 P10   B: P2 P5 P8 P11   C: P3 P6 P9 P12\nadd D:  A: P1 P7 P10      B: P2 P8 P11      C: P3 P9 P12     D: P4 P5 P6\n```\n\nAdding a node means **handing a few whole partitions** from existing nodes to the new one (one each in the example). No key is re-hashed, only 3 of 12 partitions move, and the new node can take them in parallel.\n\nWhy this beats `hash(key) mod nodes`: there, changing the node count remaps almost every key. Related: [hash buckets](#/sd/f/hash-bucketing), [partitioning](#/sd/f/partitioning) and [token rebalancing](#/sd/f/token-rebalancing).\n\n**The hard limit is the partition count.** A partition is the smallest unit you can move, so with 50 partitions you can use at most 50 nodes; adding a 51st gives it nothing to own. Raising the *number* of partitions means splitting or re-hashing data, which is a heavy migration that systems usually don't do automatically.\n\nPick the initial count with headroom: well above the largest node count you expect (and with many divisors), but not so high that per-partition overhead (metadata, files, replication streams) becomes significant. The data movement itself is [rebalancing](#/sd/f/rebalance); filling a new partition from history is [backfill](#/sd/f/backfill).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "12 partitions are spread evenly over 3 nodes (4 each). You add a fourth node and rebalance to an even spread of 3 partitions per node, moving the fewest partitions possible. How many partitions move?",
+   "answer": 3,
+   "unit": "partitions",
+   "tolerance": 0,
+   "explain": "The new node must end with 3 partitions and only existing nodes give them up, so exactly 3 partitions move (for example one from each old node). Nothing else needs to move, and no key is re-hashed."
+  },
+  {
+   "type": "choice",
+   "q": "A cluster has 50 partitions on 50 nodes and traffic keeps growing. You add 25 more nodes. What is the effect?",
+   "options": [
+    "The new nodes sit idle: a partition is the unit of assignment, so with 50 partitions at most 50 nodes can own data",
+    "Each partition splits automatically across the new nodes",
+    "Throughput rises by 50%",
+    "The system picks a new hash function"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "More nodes than partitions cannot be used. To use them you must increase the partition count, which is a re-split of data and usually a deliberate, manual migration."
+  },
+  {
+   "type": "choice",
+   "q": "Why do fixed partitions beat `hash(key) mod number_of_nodes` when you add nodes?",
+   "options": [
+    "A key's partition never changes; only whole partitions move between nodes. With mod N, changing N remaps most keys",
+    "Mod N cannot balance load",
+    "Fixed partitions avoid storing a mapping",
+    "Mod N needs consensus"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Stable key-to-partition mapping is the idea: scaling touches a small, whole-partition subset of data. Mod N remaps nearly everything when N changes."
+  },
+  {
+   "type": "choice",
+   "q": "A cluster should grow from 8 nodes now to about 40 nodes over three years. Which initial partition count is the best choice?",
+   "options": [
+    "512",
+    "8",
+    "40",
+    "5,000,000"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "8 and 40 leave no headroom (or only barely, with uneven splits at 30 nodes). 5 million partitions makes the metadata, files and per-partition overhead the problem. 512 gives about 13 per node at 40 nodes, which keeps the imbalance small."
+  },
+  {
+   "type": "order",
+   "q": "Put the addition of a node to a fixed-partition cluster in order.",
+   "items": [
+    "The new node joins and owns no partitions yet",
+    "A coordinator picks a few partitions from each existing node to move",
+    "Each chosen partition is copied to the new node while the old owner keeps serving it",
+    "When a partition is caught up, routing for it switches to the new node",
+    "The old owners delete their copies"
+   ],
+   "explain": "Moving a partition at a time, serving from the old owner until cutover, keeps the system available and the work incremental."
+  },
+  {
+   "type": "recall",
+   "q": "When is adding nodes not enough, and what has to happen instead?",
+   "answer": "When the node count reaches the partition count (or partitions become too big or too hot to move around). Then you must increase the number of partitions, by splitting partitions or re-hashing data into more of them. This is a heavy data migration and is typically manual, so choose the initial partition count with headroom."
+  }
+ ]
+}

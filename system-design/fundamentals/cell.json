@@ -1,0 +1,75 @@
+{
+ "id": "cell",
+ "title": "Cells",
+ "summary": "A cell is **a complete, independently runnable and deployable copy of the service**: app servers, data store, cache, queues, everything. **Cells never talk to each other.** A customer (or tenant, or key range) is assigned to exactly one cell, and a thin **router** in front maps the customer to it.\n\nPicture **watertight compartments in a ship**: a breach floods one section, not the vessel.\n\n- **Blast radius is 1/N.** A bad deploy, a poison request, a runaway query or a failed database affects only that cell's customers.\n- **Cells are the unit of capacity.** Instead of scaling one giant system into untested territory, you cap each cell at a size you've load-tested and add more cells.\n- **Cells are the unit of deployment.** Roll a change out cell by cell, small and internal cells first, and stop at the first sign of trouble.\n\nThe rules that keep it honest: no cross-cell calls and no shared state (a shared database makes the \"cells\" one failure domain again), a routing table that is simple and rarely changes, and the router and its mapping treated as the most critical shared piece.\n\nCosts: more total capacity reserved, global features (cross-customer queries, global uniqueness) are hard, uneven cells need rebalancing, and moving a customer between cells is a migration ([rebalance](#/sd/f/rebalance)).\n\nRelated: [compartments](#/sd/f/compartment) are logical groupings that may or may not share hardware; [tenant isolation](#/sd/f/tenant-isolation) is the multi-tenant strategy; routing resembles [sharding](#/sd/f/sharding) but each shard is a full stack.",
+ "drills": [
+  {
+   "type": "number",
+   "q": "A service runs in 20 identical cells with customers spread evenly. One cell goes down because of a bad deploy. What percentage of customers are affected?",
+   "answer": 5,
+   "unit": "%",
+   "tolerance": 0,
+   "explain": "One cell out of twenty carries 1/20 = 5% of customers. That bounded blast radius is the reason to build cells."
+  },
+  {
+   "type": "choice",
+   "q": "Which of these break cell isolation? Select all that apply.",
+   "options": [
+    "A database shared by every cell",
+    "Cell A calling cell B's API on each request",
+    "A router that maps customer id to a cell",
+    "Each cell having its own cache and database"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "Shared state and synchronous cross-cell calls turn all cells into one failure domain. The router is a necessary, deliberately simple shared component, and per-cell stores are the whole point."
+  },
+  {
+   "type": "choice",
+   "q": "Why cap each cell at a tested size and add more cells, instead of growing one big cell?",
+   "options": [
+    "Behavior at a size you've tested is predictable, and a failure's blast radius stays bounded",
+    "Small cells are cheaper per request",
+    "Large cells can't be deployed",
+    "It removes the need for a router"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "A bigger single system hits untested limits (connection counts, lock contention, shard sizes) and takes more customers down when it fails. Cells trade some efficiency for predictability."
+  },
+  {
+   "type": "order",
+   "q": "Put a safe cell-by-cell rollout in order.",
+   "items": [
+    "Deploy the change to a small internal or canary cell",
+    "Watch error rate and latency in that cell",
+    "Deploy to the next small group of cells",
+    "Continue in progressively larger waves while metrics stay healthy",
+    "Halt and roll back that cell if a regression appears"
+   ],
+   "explain": "Cells make rollouts naturally incremental, so the first sign of trouble only touches a few customers. Rollback is local, too."
+  },
+  {
+   "type": "choice",
+   "q": "A cell design places a single, shared 'user profile' database behind all cells for convenience. What is the main consequence?",
+   "options": [
+    "A failure or overload of that database now affects all cells, so the blast radius is back to 100%",
+    "Cells can no longer be deployed independently of each other's code",
+    "The router becomes unnecessary",
+    "Nothing: reads from a shared database are always safe"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Isolation only holds to the extent that nothing is shared. Either put the data inside each cell (copy or partition it) or treat the shared dependency as the new top-level risk."
+  },
+  {
+   "type": "recall",
+   "q": "Define a cell, and give two benefits and two costs.",
+   "answer": "A cell is a full, independently deployable copy of the service stack that serves a subset of customers and never talks to other cells. Benefits: bounded blast radius (1/N) and a tested unit of capacity and deployment. Costs: duplicated capacity and overhead, hard cross-cell/global features, a critical router, and migrations when moving customers between cells."
+  }
+ ]
+}

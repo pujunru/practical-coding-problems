@@ -1,0 +1,75 @@
+{
+ "id": "tenant-isolation",
+ "title": "Tenant Isolation",
+ "summary": "For multi-tenant systems there are two ways to scale. **Pooled**: one shared fleet, scaled horizontally ([horizontal scaling](#/sd/f/horizontal-scaling)), where every request carries a tenant id. **Isolated (siloed)**: give each tenant, or each group of tenants, **its own instances** and skip cross-tenant horizontal scaling. The second one is the idea here: split by tenant, then scale within each tenant if you must.\n\nWhat isolation buys:\n\n- **Simplicity:** no cross-tenant sharding or coordination, because each instance serves a small, known set of data.\n- **Blast radius and noisy neighbours:** one tenant's spike or bad data can't touch another's ([cells](#/sd/f/cell) are the extreme version).\n- **Per-tenant needs:** data residency, encryption keys, custom versions, per-tenant limits and compliance.\n\nWhat it costs:\n\n- **Utilization:** idle instances still cost money; thousands of tiny tenants make this expensive.\n- **Operations:** N things to deploy, monitor and migrate.\n- **A single huge tenant** is still bounded by what one instance can do; you must partition within it.\n\nIsolation has levels: a `tenant_id` column (weakest, needs row-level security and per-tenant quotas), a schema, a database, a cluster, an account. In practice use a **hybrid**: pool the many small tenants, silo the large or regulated ones, and be able to move a tenant between them ([rebalance](#/sd/f/rebalance)). Compartments provide the logical boundaries; see [compartments](#/sd/f/compartment).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A SaaS company gives each of its 200 customers a dedicated instance and calls the scaling problem solved. One customer grows to 60% of total traffic. What is the limitation?",
+   "options": [
+    "That customer is still limited to one instance's capacity, so it needs partitioning or horizontal scaling inside its own silo",
+    "Dedicated instances can't be resized",
+    "The other 199 customers are slowed down by it",
+    "Tenant isolation prevents any monitoring of it"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Isolation avoids cross-tenant scaling, not within-tenant scaling. The whale's performance is capped by one silo until that silo itself is scaled out."
+  },
+  {
+   "type": "choice",
+   "q": "A product has 50,000 free-tier tenants, each sending a handful of requests a day, plus a few enterprise customers with strict data-residency contracts. Which design fits best?",
+   "options": [
+    "Pooled shared fleet for the free tier; dedicated silos for the contract customers",
+    "A dedicated instance for every tenant",
+    "One shared fleet for everyone, with a tenant_id column",
+    "A dedicated instance for the free tier and a shared fleet for the contract customers"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The free tier's idle silos would cost far more than they earn, while residency contracts require physical separation. Hybrids put isolation where it's needed."
+  },
+  {
+   "type": "number",
+   "q": "A dedicated silo costs $20 per month in baseline infrastructure even when idle. How much, in dollars per month, would it cost to give 5,000 free-tier tenants their own silo, before any real work?",
+   "answer": 100000,
+   "unit": "USD/month",
+   "tolerance": 0,
+   "explain": "5,000 × $20 = $100,000 per month of pure overhead. This is why per-tenant silos are reserved for tenants whose value or requirements justify them."
+  },
+  {
+   "type": "choice",
+   "q": "In a pooled database, which measures protect tenants from a noisy neighbour? Select all that apply.",
+   "options": [
+    "Per-tenant rate limits and quotas",
+    "Per-tenant caps on connections and query concurrency",
+    "Adding a tenant_id column and a `WHERE tenant_id = ?` filter",
+    "Adding an index on tenant_id"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "The filter is about correctness and security (seeing only your own rows) and the index is about speed; neither stops one tenant from consuming shared CPU, I/O and connections. Limits do."
+  },
+  {
+   "type": "order",
+   "q": "Put the migration of a large tenant from the pooled fleet to a dedicated silo in order.",
+   "items": [
+    "Provision the dedicated instance and its data store",
+    "Copy the tenant's existing data while the pooled fleet keeps serving it",
+    "Stream the tenant's new changes until the silo has caught up",
+    "Switch routing for that tenant to the silo",
+    "Delete the tenant's data from the pooled store after verification"
+   ],
+   "explain": "The old home keeps serving until the new one is complete and caught up, so the cutover is a small routing change. Deleting last leaves an escape route."
+  },
+  {
+   "type": "recall",
+   "q": "Compare pooled and siloed multi-tenancy and say how you would combine them.",
+   "answer": "Pooled: shared, horizontally scaled fleet; efficient and easy to roll out, but noisy neighbours and shared blast radius. Siloed: dedicated instances per tenant or group; strong isolation, simple per-tenant needs, but poorer utilization, more operations, and one tenant is capped by its silo. Combine them: pool small tenants, silo large or regulated ones, and keep tenant migration between them routine."
+  }
+ ]
+}

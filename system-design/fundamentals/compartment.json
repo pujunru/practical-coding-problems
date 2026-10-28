@@ -1,0 +1,77 @@
+{
+ "id": "compartment",
+ "title": "Compartments",
+ "summary": "A compartment **logically separates a set of resources** from others: its own namespace, access policy, quota and billing (think cloud-account compartments, Kubernetes namespaces, per-team schemas). It answers *who can touch what and how much they may use*.\n\nWhether it also **limits the blast radius** depends on one question: **is the isolation logical or physical?** Two compartments with different logical databases that sit on the **same physical database** still share its CPU, disk, memory, connection limit and failure. One tenant's heavy query or the host dying can hurt the others.\n\n| Isolation | Examples | What it gives |\n| --- | --- | --- |\n| Logical | namespaces, schemas, IAM policies, quotas | access control, accounting, naming, accident scope |\n| Physical | separate hosts, clusters, networks, accounts | independent failure and performance |\n\nSo when you draw a compartment boundary, ask: **what is shared underneath, and which failure or load crosses it?** Close the gaps that matter: resource limits (per-compartment CPU, IO and connection caps), dedicated clusters for critical ones, or promoting a compartment to a [cell](#/sd/f/cell).\n\nThe difference from a cell: a cell is a *complete, deployable stack* with no cross-access, so it is isolation by construction. A compartment is a boundary on a group of resources that may still share infrastructure. Compartments often implement [tenant isolation](#/sd/f/tenant-isolation).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Tenants A and B use separate Postgres schemas on one database instance. A runs an expensive report and B's queries slow down. What explains this?",
+   "options": [
+    "The schemas are logical compartments sharing the same CPU, I/O and connection pool; the isolation is not physical",
+    "Schemas cannot hold separate tables",
+    "Postgres locks all schemas when one is in use",
+    "B's data was copied into A's schema"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Logical separation controls naming and access, but resources underneath are shared. Fix with per-tenant resource limits, connection caps, or a dedicated instance for noisy tenants."
+  },
+  {
+   "type": "choice",
+   "q": "Which of these provide physical isolation between compartments? Select all that apply.",
+   "options": [
+    "Each compartment on its own database cluster",
+    "Each compartment on dedicated hosts in a separate zone",
+    "Separate schemas in one shared cluster",
+    "Separate Kubernetes namespaces with resource quotas on the same nodes"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "Separate hardware means independent performance and failure. Schemas and namespaces (even with quotas) share machines, so a node failure or noisy neighbour can still cross the boundary."
+  },
+  {
+   "type": "number",
+   "q": "Eight compartments carry equal traffic. They run on two physical database clusters, four compartments per cluster. One cluster fails completely. What percentage of traffic is lost?",
+   "answer": 50,
+   "unit": "%",
+   "tolerance": 0,
+   "explain": "Four of eight compartments, i.e. 50%, sit on the failed cluster. With eight clusters it would be 12.5%. The number of compartments doesn't set the blast radius, the physical sharing does."
+  },
+  {
+   "type": "choice",
+   "q": "What do logical compartments still give you when they share hardware?",
+   "options": [
+    "Access control, quotas, cost attribution and a smaller scope for human mistakes, but not hardware or performance isolation",
+    "Full protection from noisy neighbours",
+    "Protection from host failures",
+    "Independent deployment pipelines for free"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Logical boundaries are valuable for governance and for limiting accidents (a delete in one compartment can't touch another). They don't change what the hardware does under load."
+  },
+  {
+   "type": "choice",
+   "q": "How does a compartment differ from a cell?",
+   "options": [
+    "A cell is a complete, independently deployable stack with no cross-access; a compartment is a boundary around some resources that may still share infrastructure",
+    "They are the same thing with different names",
+    "A cell is logical and a compartment is physical",
+    "A compartment always has its own database"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Cells guarantee isolation by construction (everything inside, nothing shared). Compartments only guarantee what you built into the boundary, so you must check how physical it is."
+  },
+  {
+   "type": "recall",
+   "q": "You're shown a diagram with several compartments. What question do you ask first to estimate blast radius?",
+   "answer": "What is shared underneath the boundary (physical hosts, databases, networks, connection pools, control plane), and which failures or load spikes in one compartment can therefore reach another. Logical separation alone limits access and quota, not shared-fate failures."
+  }
+ ]
+}

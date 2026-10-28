@@ -1,0 +1,81 @@
+{
+ "id": "race-condition",
+ "title": "Race Conditions",
+ "summary": "A race condition is **two actors that both want to do something that must not happen twice or at the same time**, where the outcome depends on who gets there first. The classic shape is check-then-act: both read \"free\", both proceed.\n\nThere are two kinds, and the loser must behave differently in each:\n\n- **Deduplication, \"me or you\":** only one of the actors may do it at all. The winner acts; the loser must **do nothing** (skip, or return the winner's result). Example: two workers both sending the welcome email for signup 123.\n- **Mutual-exclusive execution, \"the bathroom\":** both need to do it, but **one at a time**. The loser **waits** its turn and then acts. Example: two requests updating the same account balance.\n\nRemedies, cheapest first:\n\n1. **Make the step atomic in the store:** a unique constraint, `INSERT ... ON CONFLICT DO NOTHING`, a conditional update (`WHERE balance >= 30`) or a version compare-and-set. No lock needed.\n2. **Serialize through one owner:** route all work for a key to one partition or queue consumer.\n3. **A distributed lock or [lease](#/sd/f/lease):** everyone races for one lock, the winner proceeds, the loser is rejected or waits. Add a [fencing token](#/sd/f/fencing-token) because holders can pause past expiry.\n\nAn in-process mutex cannot help when the racing actors are separate instances. Long-running claims are the subject of [reservation](#/sd/f/reservation); safe retries of [idempotent](#/sd/f/idempotency) requests need the same atomic claim.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Two API instances handle `withdraw $30` and `withdraw $50` on a $100 account at the same moment. Each reads 100, computes its result, and writes back. The final balance is 70 or 50 instead of 20. What is the best fix?",
+   "options": [
+    "Do the check and decrement atomically in the database: `UPDATE ... SET balance = balance - 30 WHERE id = ? AND balance >= 30`",
+    "Add a mutex inside each API instance",
+    "Read the balance twice before writing",
+    "Retry the whole request if the response is slow"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The bug is read-modify-write across two processes. A conditional update makes the database apply them one after the other. A per-instance mutex doesn't see the other instance, and re-reading only narrows the window."
+  },
+  {
+   "type": "choice",
+   "q": "Which pairing of case and loser behavior is right?",
+   "options": [
+    "Two workers racing to send the same email: the loser skips. Two jobs updating the same file: the loser waits, then runs",
+    "Two workers racing to send the same email: the loser waits, then also sends. Two jobs updating the same file: the loser skips",
+    "In both cases the loser retries immediately in a loop",
+    "In both cases the loser fails the whole request"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The email is a deduplication race: a second send is a bug. The file update is mutual exclusion: both updates are legitimate and must both happen, serially. Mixing these up either loses legitimate work or repeats an action."
+  },
+  {
+   "type": "choice",
+   "q": "Order creation inserts a row only after a `SELECT ... WHERE order_id = ?` returns nothing. Under retries, duplicates appear. Which changes truly prevent duplicates? Select all that apply.",
+   "options": [
+    "A unique constraint on order_id with insert-or-ignore semantics",
+    "A version compare-and-set on a single row that claims the id",
+    "Doing the select twice with a short sleep between",
+    "An in-memory set of seen ids in each instance"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "Both options make the claim atomic at one shared place. Doing the check twice, or checking per-instance memory, still leaves a gap between check and insert or between instances."
+  },
+  {
+   "type": "order",
+   "q": "Put a lock-protected update across instances in order.",
+   "items": [
+    "Instance asks the lock service for the lock on the resource and receives a fencing token",
+    "Exactly one instance wins; the others are rejected or queued",
+    "The winner reads the resource, modifies it and writes it back with its token",
+    "The winner releases the lock (or it expires if the winner dies)",
+    "A waiting instance now acquires the lock with a higher token"
+   ],
+   "explain": "Each step narrows the race. The token on the write protects against a winner whose lease expired while it was paused."
+  },
+  {
+   "type": "choice",
+   "q": "You have three instances of a service and add a `synchronized` block (in-process mutex) around check-and-update. Why does the race remain?",
+   "options": [
+    "The mutex only excludes threads in the same process; the three instances still race with each other",
+    "Mutexes are not atomic",
+    "Three instances means three times more locks acquired",
+    "The mutex works but is too slow"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "A process-level lock protects shared memory, not shared data in a database. Cross-instance races need a coordination point all instances share: the database, a distributed lock, or a single owner."
+  },
+  {
+   "type": "recall",
+   "q": "Name the two kinds of race condition and what the loser does in each. What is your first tool to fix them?",
+   "answer": "Deduplication (only one actor may do it, the loser skips or returns the winner's result) and mutual-exclusive execution (all must do it, one at a time, the loser waits). First choice is an atomic operation in the store (unique constraint, conditional update, CAS); a distributed lock or single-owner partition when the work spans several steps."
+  }
+ ]
+}

@@ -1,0 +1,74 @@
+{
+ "id": "read-write-lock",
+ "title": "Read-Write Lock",
+ "summary": "A read-write lock has two modes over the same data.\n\n- **Write lock: blocks everyone.** Take it when you change the content.\n- **Read lock: shared.** Any number of readers hold it at once, but it **blocks writers until every reader is done**. Take it when you must not see data changing under you: while you hold a read lock, the content cannot change.\n\n**Waiting policy matters.** A reader-preferring lock lets new readers in while others read, so a steady stream of readers can **starve a writer**. A **writer-preferring** lock (the convention used here) blocks *new* readers as soon as a writer is waiting; the writer runs when the readers already inside finish. It protects writers at the price of delaying new readers.\n\n```\nR1, R2 hold read lock → W arrives, waits → R3 arrives, queued behind W\nR1, R2 release → W runs alone → W releases → R3 runs\n```\n\n- **Worth it when** reads vastly outnumber writes and the read section is long enough that parallel readers pay off.\n- **Not worth it** for write-heavy data or tiny critical sections: the bookkeeping makes a plain mutex faster.\n- **Never upgrade** from read to write while holding the read lock: the writer waits for all readers, including you. Release, then take the write lock and re-check.\n\nThe same contention rules apply as for any lock ([lock contention](#/sd/f/lock-contention)); the protocol is in [acquire / release](#/sd/f/acquire-release).",
+ "drills": [
+  {
+   "type": "order",
+   "q": "Under a writer-preferring read-write lock, put these events in the order each caller gets to run: R1 and R2 are reading when W arrives, then R3 arrives.",
+   "items": [
+    "R1 and R2 read in parallel",
+    "W requests the write lock and waits for R1 and R2",
+    "R3 requests the read lock and is queued behind W",
+    "R1 and R2 release; W runs alone",
+    "W releases; R3 reads"
+   ],
+   "explain": "Writer preference blocks R3 even though other readers are currently inside. If readers were preferred, R3 would join immediately and a steady stream of readers could delay W forever."
+  },
+  {
+   "type": "choice",
+   "q": "A cache refresh job (writer) needs the lock, but readers arrive constantly and the writer never runs. What is the likely cause and fix?",
+   "options": [
+    "A reader-preferring lock is starving the writer; use writer preference or a fair lock",
+    "Writers need a bigger timeout",
+    "Readers hold the write lock",
+    "The lock should be replaced by a distributed lease"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "With reader preference, new readers keep getting in as long as any reader is in, so the count never reaches zero. Making new readers wait once a writer queues bounds the writer's wait."
+  },
+  {
+   "type": "choice",
+   "q": "A thread holds a read lock and calls `writeLock.acquire()` on the same lock, intending to upgrade. What happens?",
+   "options": [
+    "It deadlocks: the writer waits for all readers to leave, and the thread is one of them",
+    "It succeeds because it is the same thread",
+    "It downgrades silently",
+    "The read lock is released automatically first"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The write lock needs zero readers, and this thread is a reader waiting on itself. Release the read lock, take the write lock, then re-validate what you read, because it may have changed in between."
+  },
+  {
+   "type": "number",
+   "q": "Four readers hold a read lock from t = 0 ms, each for 10 ms, in parallel. A writer requests the lock at t = 1 ms. The lock is writer-preferring and no other reader arrives. How long does the writer wait before it gets the lock, in milliseconds?",
+   "answer": 9,
+   "unit": "ms",
+   "tolerance": 0,
+   "explain": "The writer must wait until the last active reader finishes at t = 10 ms; it arrived at t = 1 ms, so it waits 9 ms. Readers that arrive after t = 1 ms would be blocked behind the writer."
+  },
+  {
+   "type": "choice",
+   "q": "A service updates a shared lookup table on 50% of its requests, and each critical section is a few microseconds. Would you use a read-write lock?",
+   "options": [
+    "Probably not: with frequent writes and tiny sections, a plain mutex is simpler and often faster",
+    "Yes: read-write locks are always faster than mutexes",
+    "Yes: they remove all contention",
+    "No: read-write locks can't protect tables"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The benefit comes from many readers overlapping with few writers. Here readers rarely overlap, while the extra bookkeeping and writer handoffs cost more than they save."
+  },
+  {
+   "type": "recall",
+   "q": "Explain read and write lock semantics, including which side the lock favors and why.",
+   "answer": "Many readers can hold the read lock together, but the write lock is exclusive: it needs no readers and no other writer. While a read lock is held, the data cannot change. A writer-preferring policy makes new readers wait once a writer is queued, so writers are not starved by a continuous stream of readers; the cost is that new readers can be delayed."
+  }
+ ]
+}
