@@ -7,23 +7,36 @@ you run in the browser at https://pujunru.github.io/practical-coding/.
 ## Layout
 
 ```
-index.json                    the problem list: id, title, difficulty, tags
-problems/<id>/README.md       the statement (Markdown)
-problems/<id>/starter.py      what the editor starts with; the module is `solution`
-problems/<id>/tests.py        test_* functions using plain assert
-problems/<id>/solution.py     reference solution, checked by CI
-tools/check.py                validates the bank against the app's harness
+index.json                       the problem list: id, title, difficulty, tags
+problems/<id>/problem.json       levels, each with a title and its test cases
+problems/<id>/levels/<n>.md      statement of level n (Markdown)
+problems/<id>/starter.py         what the editor starts with
+problems/<id>/solution.py        reference solution; checked by CI, and used to
+                                 compute expected output for custom testcases
+tools/check.py                   validates the bank against the app's harness
 ```
 
 ## Writing a problem
 
-- `tests.py` imports from `solution` and defines `test_*` functions. They run in
-  definition order.
-- Name a test `test_l<N>_...` to put it in level N, and define
-  `LEVELS = {1: "Single client", ...}` to name the levels. A test's docstring is
-  its display title.
-- Keep tests deterministic: pass time in as an argument rather than reading a
-  clock, and avoid randomness without a fixed seed.
+- Split the problem into levels that build on each other. Level `n`'s
+  statement lives in `levels/<n>.md`; its title and cases live in
+  `problem.json`.
+- A case is LeetCode's design-problem format:
+
+  ```json
+  {"ops":      ["RateLimiter", "allow",  "allow"],
+   "args":     [[2, 10],       ["a", 0], ["a", 5]],
+   "expected": [null,          true,     true],
+   "example": true}
+  ```
+
+  The first op constructs the class; each later op calls a method on it.
+  `{"raises": "ValueError"}` means the call must raise. Floats match within
+  1e-6.
+- Mark at least one case per level `"example": true`. Examples appear in the
+  statement and seed the Testcase tab; `"explanation"` is shown under them.
+- Keep cases deterministic: pass time in as an argument rather than reading a
+  clock.
 - Ids match `[a-z0-9-]+`. Difficulty is `Easy`, `Medium` or `Hard`.
 
 ## Check
@@ -33,8 +46,9 @@ git clone https://github.com/pujunru/practical-coding.git ../practical-coding
 python3 tools/check.py ../practical-coding/runner/harness.py
 ```
 
-CI runs the same check: every reference solution passes, no starter passes,
-and `index.json` matches the `problems/` folders.
+CI runs the same check: every level is well formed, every reference solution
+passes every case, no starter passes, and `index.json` matches the `problems/`
+folders.
 
 ## License
 
