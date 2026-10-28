@@ -1,0 +1,70 @@
+{
+ "id": "connection-pooling",
+ "title": "Connection Pooling",
+ "summary": "Opening a TCP (and TLS) connection costs round trips, and an outbound host has only so many ports and sockets. When one request fans out to many downstream services, the question is how to share connections without wrecking them.\n\n**Wrong: one global pool.** Whoever grabs a slot first wins. Three failures:\n- **Deadlock.** A request that needs connections to A, B and C may hold A and B while waiting for C, which other requests hold while waiting for A or B.\n- **Connections are not interchangeable.** A socket is bound to its 4-tuple, so a connection to Service-A can never carry a request for Service-B.\n- **Noisy neighbour.** One caller can take 50,000 slots and flatten a single downstream.\n\n**Also wrong: a per-host counter with no pool.** It caps concurrency but discards connections, so every request pays the handshake again.\n\n**Right: an independent pool per host/endpoint**, each with a maximum size and idle reuse (`requests.Session` with `HTTPAdapter(pool_maxsize=50)`, Go's `MaxIdleConnsPerHost`). The cap is both a *quota* protecting the downstream and a *reuse cache*. Put a [rate limiter](#/sd/f/rate-limiter) and [circuit breaker](#/sd/f/circuit-breaker) on top.\n\nPooling lives at the transport layer; authentication and authorization happen per request at layer 7, so reusing a socket skips neither. Idle connections are not free for the server (file descriptors, memory), so size pools modestly and let idle ones time out. See [TCP connection](#/sd/f/tcp-connection).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A single global pool has 100 slots shared by every outbound call. 100 concurrent fanout requests each take one slot for Service-A, and each now needs a second slot for Service-B before it can send anything or release the first. What happens?",
+   "options": [
+    "Deadlock: every slot is held by a request that is waiting for another slot, so none can finish",
+    "Waiting requests get slots as others finish, so throughput just halves",
+    "TCP resets the idle connections after a few seconds and the system recovers",
+    "The pool grows automatically past 100 slots"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "All 100 slots are held by requests that each need one more. Nobody can complete and release, so it is a classic hold-and-wait deadlock. Separate pools per host (with a per-request bound) remove the shared choke point."
+  },
+  {
+   "type": "choice",
+   "q": "A teammate proposes keeping spare warm connections to Service-A and lending them to calls for Service-B when B's pool is empty. Why does this not work?",
+   "options": [
+    "TLS versions differ between services",
+    "Idle connections are always closed after one second",
+    "A TCP connection is bound to one remote IP and port, so a socket to A can only talk to A",
+    "Pools are thread-local in every language"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "The 4-tuple (local IP, local port, remote IP, remote port) identifies the connection. It is physically a pipe to one server, which is why pools must be keyed per host/endpoint."
+  },
+  {
+   "type": "number",
+   "q": "Calls to one downstream: 2,000 requests/s with a mean latency of 50 ms. The client speaks HTTP/1.1, so each connection carries one request at a time. On average, how many connections are busy at steady state?",
+   "answer": 100,
+   "unit": "connections",
+   "tolerance": 0,
+   "explain": "In-flight = rate x latency = 2,000 x 0.05 = 100 (Little's law). The pool max must exceed this average with headroom for bursts and slow responses."
+  },
+  {
+   "type": "number",
+   "q": "RTT to a downstream is 40 ms. A fresh connection needs a TCP handshake (1 RTT) and a full TLS 1.3 handshake (1 RTT) before the request/response itself (1 RTT). Assume zero server processing time. How many milliseconds does reusing an idle pooled connection save per request?",
+   "answer": 80,
+   "unit": "ms",
+   "tolerance": 0,
+   "explain": "Fresh: 3 x 40 = 120 ms. Pooled: just the 40 ms request round trip. Saving: 80 ms per call, plus CPU for the TLS handshake on both sides."
+  },
+  {
+   "type": "choice",
+   "q": "A client limits itself to 100 in-flight calls per host with a semaphore, but opens a new connection per call and closes it afterwards. What is still wrong?",
+   "options": [
+    "Every call pays the TCP and TLS handshake, adding latency and burning ephemeral ports (connections lingering in TIME_WAIT); a pool would reuse idle connections",
+    "Nothing: the semaphore already protects the downstream, which is the only goal of pooling",
+    "The semaphore should be global instead of per host",
+    "The downstream will reject the calls because they are unauthenticated at connection time"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "A counter limits concurrency but gives no reuse. A pool does both: its maximum is the quota and its idle connections are the cache. Authentication is checked per request at layer 7, not per TCP connection."
+  },
+  {
+   "type": "recall",
+   "q": "Why is a pool per downstream host better than one global pool for a fanout service? Give three reasons.",
+   "answer": "(1) A global pool can **deadlock**: requests needing several hosts each hold part of what they need. (2) A socket is bound to one remote host, so a global pool cannot really share connections across hosts. (3) A greedy caller can monopolise slots and overload one downstream; per-host maxima give each downstream a **quota** and isolate failures. The per-host pool also keeps idle connections warm, avoiding repeated handshakes."
+  }
+ ]
+}

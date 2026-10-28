@@ -1,0 +1,82 @@
+{
+ "id": "local-storage",
+ "title": "localStorage",
+ "summary": "`localStorage` is a **browser-managed key-value store with one namespace per origin**. An origin is `scheme + host + port`, so `https://app.example.com`, `http://app.example.com`, `https://app.example.com:8443` and `https://api.example.com` each get a separate store. The path does not matter.\n\nWhat to remember:\n- **Strings only** (`setItem(k, JSON.stringify(v))`), roughly 5 MB per origin, browser-dependent.\n- **Persistent:** survives reloads, closing tabs and restarting the browser until code or the user clears it. There is no expiry; store your own timestamp.\n- **Shared by every tab and window of the origin.** Other tabs get a `storage` event when a value changes, but not the tab that made the change.\n- **Synchronous:** reads and writes block the main thread, so avoid big blobs on hot paths. It is not available in Web Workers.\n- **Never sent to the server.** Unlike [cookies](#/sd/f/cookie), nothing travels automatically.\n- **Readable by any JavaScript on the origin**, including injected (XSS) and third-party scripts. Do not keep session tokens or secrets there.\n\nGood uses: UI preferences (theme, collapsed panels), draft text, a cached copy of non-sensitive data, a signal between tabs. When you outgrow 5 MB, need structured queries or want async access, move to [IndexedDB](#/sd/f/indexeddb). For per-tab state use [sessionStorage](#/sd/f/session-storage).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A page is loaded from `https://app.example.com` (default port 443). Which of these origins share its localStorage? Select all that apply.",
+   "options": [
+    "`https://app.example.com/settings/profile`",
+    "`http://app.example.com`",
+    "`https://app.example.com:8443`",
+    "`https://example.com`",
+    "`https://app.example.com:443/`"
+   ],
+   "answer": [
+    0,
+    4
+   ],
+   "explain": "Only scheme, host and port define the origin; the path is irrelevant, and an explicit default port is the same origin. A different scheme, port or host (even a parent domain) is a different store."
+  },
+  {
+   "type": "choice",
+   "q": "Tab A and tab B of the same origin are open. Tab A calls `localStorage.setItem('theme', 'dark')`. What do the tabs observe?",
+   "options": [
+    "Tab B receives a `storage` event for key `theme`; tab A, which made the change, does not",
+    "Nothing: each tab has its own copy",
+    "Both tabs receive the event",
+    "Only a page reload shows the change"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The store is shared across the origin and the event notifies the others. That makes a convenient cross-tab signal."
+  },
+  {
+   "type": "choice",
+   "q": "A team stores the JWT access token in localStorage so that its single-page app can attach it to API calls. What is the main security downside?",
+   "options": [
+    "localStorage is encrypted with a weak key",
+    "localStorage is cleared at every reload",
+    "Any script that runs on the page, including an XSS payload or a compromised third-party script, can read the token; an HttpOnly cookie cannot be read by JavaScript",
+    "It exceeds the size limit"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "XSS gives attackers full read access to localStorage. Cookies with HttpOnly (plus SameSite) trade that risk for the need to handle CSRF."
+  },
+  {
+   "type": "choice",
+   "q": "An editor writes a 2 MB JSON draft to localStorage on every keystroke and the UI stutters. Why, and what is a better approach?",
+   "options": [
+    "The API is synchronous, so each write blocks the main thread; debounce the writes and, for large or structured data, use IndexedDB",
+    "Because the quota is exceeded",
+    "Because browsers throttle writes by key",
+    "Because JSON.stringify is slow only in Chrome"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Synchronous storage plus large payloads plus a hot path equals jank. Debouncing helps; moving to an async store is the structural fix."
+  },
+  {
+   "type": "recall",
+   "q": "List four properties of localStorage that decide what you may safely put in it.",
+   "answer": "(1) **Per origin** (scheme, host, port), shared by all tabs of that origin. (2) **Persistent**, with no expiry, so stale data lingers unless you version or timestamp it. (3) **Synchronous and about 5 MB, strings only**, so keep values small and avoid hot-path writes. (4) **Readable by any script on the origin and never sent to the server**, so no session tokens or secrets, and nothing the server needs automatically."
+  },
+  {
+   "type": "order",
+   "q": "Put a cross-tab notification in order.",
+   "items": [
+    "Tab A calls setItem on a key",
+    "The browser persists the value for that origin",
+    "Other same-origin tabs receive a storage event",
+    "Tab B's handler reads the key and newValue from the event",
+    "Tab B updates its UI"
+   ],
+   "explain": "The writer's own tab is not notified, so it updates itself directly. Tab B does not poll; the event arrives asynchronously."
+  }
+ ]
+}

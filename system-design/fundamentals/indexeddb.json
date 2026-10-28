@@ -1,0 +1,80 @@
+{
+ "id": "indexeddb",
+ "title": "IndexedDB",
+ "summary": "IndexedDB is the browser's **transactional, asynchronous object store**. It breaks through the limits of [localStorage](#/sd/f/local-storage): it stores structured data (objects, arrays, `Date`, `Blob`, `ArrayBuffer`) without JSON, holds far more (the quota is a share of free disk, typically hundreds of MB or more, browser-dependent), and does not block the main thread. It is per origin and also available in Web Workers.\n\nIt feels like a database but is **not SQL**. The model:\n- A **database** (with a version number) contains **object stores**, like tables keyed by a primary key.\n- **Indexes** on fields allow lookups and range scans by something other than the key. There are no joins or ad hoc queries; combine results in code, or use a wrapper such as Dexie or `idb`.\n- All reads and writes happen inside **transactions** (`readonly` or `readwrite`) that are atomic across stores.\n- Schema changes happen only in the `onupgradeneeded` handler, when you open with a higher version.\n\nGotchas: a transaction **auto-commits when control returns to the event loop with no pending request**, so awaiting a `fetch()` in the middle ends it (`TransactionInactiveError`). Under storage pressure the browser may evict best-effort data; `navigator.storage.persist()` asks for protection. Data is user-editable and readable by any script on the origin, so keep secrets out.\n\nUses: offline-first apps and caches, large datasets, queued writes waiting to sync, files and blobs.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A web app wants to cache 80 MB of API data offline and query it by several fields. Which storage fits?",
+   "options": [
+    "IndexedDB, with an object store and indexes on the queried fields",
+    "localStorage, with one big JSON string",
+    "A cookie",
+    "sessionStorage"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "80 MB exceeds the typical localStorage quota, and its synchronous API would block the UI. IndexedDB is asynchronous, holds structured data and supports indexes."
+  },
+  {
+   "type": "choice",
+   "q": "A developer expects to run 'all orders whose customer is in Germany' as a join between two IndexedDB object stores. What is the accurate answer?",
+   "options": [
+    "Use IndexedDB's SQL dialect",
+    "It joins automatically through foreign keys",
+    "IndexedDB has no joins or SQL: look up the customers through an index, then fetch orders per customer (or store a denormalised field and index it), combining in code",
+    "Use localStorage instead"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "It is a key-value/object store with indexes and cursors. Query shapes must be supported by the indexes you create; joins are application code."
+  },
+  {
+   "type": "choice",
+   "q": "Inside a readwrite transaction, code reads a record, then `await fetch(url)`, then writes the record back. The write throws `TransactionInactiveError`. Why?",
+   "options": [
+    "The transaction auto-committed while awaiting the network, because no IndexedDB request was pending; fetch first, then open the transaction and write",
+    "The server rejected the request",
+    "The record was too large",
+    "IndexedDB does not allow writes after reads"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Transactions live only while requests are queued in the same event-loop turn. Do outside work before or after, not in the middle."
+  },
+  {
+   "type": "order",
+   "q": "Put the steps of first using IndexedDB in order.",
+   "items": [
+    "Call indexedDB.open(name, version)",
+    "The upgrade handler runs: create object stores and indexes",
+    "The open request succeeds and returns the database",
+    "Start a transaction on the stores you need",
+    "Issue requests (put, get, openCursor) and wait for the transaction to complete"
+   ],
+   "explain": "Schema changes are only possible in the upgrade step of open. Data operations always go through a transaction."
+  },
+  {
+   "type": "choice",
+   "q": "A notes app keeps drafts only in IndexedDB. Disk space gets low, and some users find drafts gone. What is the lesson?",
+   "options": [
+    "IndexedDB is encrypted and permanent",
+    "Eviction only affects cookies",
+    "Only mobile Safari deletes data",
+    "By default storage is best-effort and can be evicted under pressure; request persistent storage with `navigator.storage.persist()`, and sync important data to a server"
+   ],
+   "answer": [
+    3
+   ],
+   "explain": "Browser storage is a cache unless it is made persistent, and even then it is local to the device. Anything the user cannot lose belongs on a server."
+  },
+  {
+   "type": "recall",
+   "q": "When do you choose IndexedDB over localStorage, and what do you give up compared with a SQL database?",
+   "answer": "Choose IndexedDB for large or structured data, binary blobs, offline caches or queues, async access, and anything needing indexed lookups. Compared with SQL you give up joins, ad hoc queries and a declarative schema: you design indexes up front, run schema changes in version upgrades, and do combining in code."
+  }
+ ]
+}

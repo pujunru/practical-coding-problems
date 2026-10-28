@@ -1,0 +1,76 @@
+{
+ "id": "change-feed",
+ "title": "Change Feed",
+ "summary": "A change feed (CDC, change data capture) is a **positioned, resumable log view of changes the database has already committed**. A connector reads the WAL, binlog, oplog or native change stream and hands committed changes to consumers, who track a cursor.\n\nIt answers *what changed in the data*: search indexes, caches, warehouses and materialized views follow the source of truth asynchronously. Expect order only per shard or key, **at-least-once** delivery, a **retention** limit (a consumer too far behind needs a new snapshot), and table-shaped payloads, not business events.\n\nIt does **not** answer *what work should run now*. A work queue has one claimer per item, with lease, ack, redelivery and priority; a feed has independent readers and a cursor. A cursor records what a reader has *seen*; a lease records who *owns* a job.\n\nWhy raw CDC is a poor queue:\n- One `SubmitJob` becomes many row changes (job, inputs, quota, audit).\n- Many changes are not work (metadata, backfill, migration).\n- A replayed old \"submit\" can start a job cancelled since.\n- Related rows can arrive split or reordered.\n- Committing an offset is not acking a job: a crash loses or duplicates work.\n\nSafe designs:\n1. A database-native durable queue, if it has claim, lease and redelivery.\n2. **Transactional outbox, then CDC, then Kafka:** state and a semantic event in one transaction.\n3. Raw CDC as a **wake-up hint**: re-read current state and converge idempotently by `job_id + version`.\n\nA change record is a fact about the past, not a command.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Timeline: t1 job J submitted (version 1); t2 metadata updated (v2); t3 J cancelled (v3); t4 the CDC connector restarts and replays old records; t5 the orchestrator receives the version-1 'submit-shaped' change. How should it behave?",
+   "options": [
+    "Treat the record as a hint: read J's current state (cancelled, version 3) and converge to that, so J is not started",
+    "Start J: the record says it was submitted",
+    "Ignore all records that arrive after a restart",
+    "Start J, then cancel it when the version-3 record arrives"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "'Job row changed' is a fact about the past, not a command. The source of truth says CANCELLED at version 3; acting on the stale record would run a cancelled job. Reconcile against current state and compare versions."
+  },
+  {
+   "type": "number",
+   "q": "One `SubmitJob` transaction writes: 1 `jobs` row, 40 `job_inputs` rows, 1 quota update, 12 dependency edges, 1 audit row and 1 billing reservation update. The consumer treats every change record as a queue item for the job. How many times is the job woken for this one submit?",
+   "answer": 56,
+   "unit": "wake-ups",
+   "tolerance": 0,
+   "explain": "1 + 40 + 1 + 12 + 1 + 1 = 56 change records, so 56 wake-ups: event amplification. Coalescing per `job_id` (or emitting one semantic outbox event) turns this into 1."
+  },
+  {
+   "type": "choice",
+   "q": "Which statements correctly contrast a change feed with a work queue? Select all that apply.",
+   "options": [
+    "Several consumers can independently observe the same change in a feed; in a queue an item is normally claimed by one worker",
+    "A feed completes by advancing a cursor; a queue completes by ack, lease or visibility-timeout rules",
+    "Replaying a feed to rebuild derived state is usually safe; replaying queue items can redo side effects",
+    "A feed natively gives claim, lease and redelivery for each change"
+   ],
+   "answer": [
+    0,
+    1,
+    2
+   ],
+   "explain": "Claim, lease and redelivery are queue semantics. A cursor only says how far a reader has read; it says nothing about who owns a piece of work."
+  },
+  {
+   "type": "choice",
+   "q": "A consumer commits its CDC offset, then crashes before it creates the task. What is the effect, and the sound mitigation?",
+   "options": [
+    "Nothing: the offset already protects the work",
+    "The work is duplicated; add more partitions",
+    "The broker retries the task automatically",
+    "The work is lost (the offset moved past it); commit after the effect instead, and make the effect idempotent by `job_id + version`, with a periodic reconciliation to repair drift"
+   ],
+   "answer": [
+    3
+   ],
+   "explain": "Commit-then-act loses work; act-then-commit duplicates it after a crash. You cannot avoid both with offsets alone, so combine at-least-once processing, idempotent materialisation and a reconciler that repairs from the source of truth."
+  },
+  {
+   "type": "order",
+   "q": "Put the transactional outbox path in order.",
+   "items": [
+    "The control plane's transaction writes the Job and an Outbox row (JobChanged, job_id, version)",
+    "The transaction commits, so both exist or neither does",
+    "CDC (or a relay) reads the committed outbox row",
+    "The event is published to Kafka, keyed by job_id",
+    "The orchestrator consumes it, reads the job's current state and converges idempotently by version"
+   ],
+   "explain": "The outbox makes the state change and its semantic event atomic. It does not remove duplicates, which is why the final step still deduplicates by job_id and version."
+  },
+  {
+   "type": "recall",
+   "q": "An interviewer says 'use CDC as the job queue'. Give a 45-second answer.",
+   "answer": "CDC is a resumable subscription to the committed log: great for search indexes, caches, warehouses and other derived views, with at-least-once delivery, per-key or per-shard order, and a retention limit. I would not use raw CDC as a work queue: one business action produces many row changes, metadata, cancel, repair, migration and backfill changes share the feed, and a cursor is not a claim, lease or ack. If the database has a native durable queue, I would use that. If I need fan-out and backlog isolation, I would write a **transactional outbox** event and send it through CDC to Kafka. If I only have raw CDC, I treat it as a **wake-up hint**, re-read the job's current state by id, and converge idempotently using version, with a reconciler as a safety net."
+  }
+ ]
+}

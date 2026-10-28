@@ -1,0 +1,70 @@
+{
+ "id": "time-bucket-counter",
+ "title": "Time Bucket Counter",
+ "summary": "A time bucket counter is the **how** behind a sliding window aggregation (the **what**): it keeps a sliding window total without re-reading history.\n\n**Mental model: a queue, not a clock face.** Slice the window into fixed-width buckets (small tumbling windows) and keep them in a queue, oldest at the head, with a **running total**:\n- **Event:** add its weight to the newest bucket and to the total.\n- **A bucket boundary passes:** append a new empty bucket; pop buckets that have left the window from the head and subtract them from the total.\n- **Query:** return the total, O(1). (A ring buffer is just one way to lay the queue out in memory.)\n\n**Convention here:** a window W with bucket width b is K = W / b buckets *including the current partial one*. Coverage then varies between W - b and W: it can undercount at the old edge by at most b.\n\nKnobs and trade-offs:\n- **Bucket width:** narrower means a sharper edge but more buckets and expiry work.\n- **Eviction:** eager (timer) or lazy (on next access). Lazy must evict *before* reading, or an idle key shows stale heat.\n- **Several windows** (5 min, 30 min, 2 h): share one set of 1-minute buckets (120), not three queues.\n- **Weights:** store a count per event type per bucket, so changing a weight (view = 1, purchase = 20) needs no replay.\n- **Hot key:** more windows mean more writes per event; use [sharding](#/sd/f/sharding) or [batching](#/sd/f/batching).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "A 5-minute window uses 1-minute buckets, K = 5 including the current one. Counts from oldest to newest are 10, 20, 30, 40, 50. The clock crosses the next minute boundary, so a new empty bucket is appended and the oldest bucket is popped. Then 7 events arrive. What is the running total?",
+   "answer": 147,
+   "unit": "events",
+   "tolerance": 0,
+   "explain": "After the pop: 20 + 30 + 40 + 50 = 140, then the new bucket gets 7, so 147. The total is maintained as 150 - 10 + 7 = 147 without summing the history."
+  },
+  {
+   "type": "choice",
+   "q": "A key had 400 views, then went completely quiet for 3 hours. The counter uses lazy expiry and a 5-minute window. A read arrives. What must the implementation do before returning the total?",
+   "options": [
+    "Evict every bucket older than the window (subtracting them) and then return the total, which is now 0",
+    "Return the stored total; it is always current",
+    "Return half of the stored total",
+    "Wait for the next write to arrive"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Lazy expiry only happens when something touches the key. A read must first evict by timestamp, or a quiet key keeps reporting stale heat indefinitely."
+  },
+  {
+   "type": "number",
+   "q": "The same event stream feeds a 5-minute, a 30-minute and a 2-hour window. All share 1-minute buckets, K buckets including the current one for each window. What is the maximum number of buckets that must be stored?",
+   "answer": 120,
+   "unit": "buckets",
+   "tolerance": 0,
+   "explain": "The longest window needs 2 h / 1 min = 120 buckets, and the shorter windows are just the newest 5 and 30 of them. Separate queues would store 5 + 30 + 120 = 155 and triple the write cost per event."
+  },
+  {
+   "type": "choice",
+   "q": "Product decides a purchase should weigh 10 instead of 20. The counter stores only a weighted total per bucket. What is the problem and the fix?",
+   "options": [
+    "No problem: just change the weight going forward and the old totals are already right",
+    "Replay the raw events from cold storage every time a weight changes",
+    "Use a shorter window so the old weights expire sooner",
+    "The old totals are baked in with weight 20; store separate counts per event type per bucket and apply weights at read time, so changing a weight needs no replay"
+   ],
+   "answer": [
+    3
+   ],
+   "explain": "Wider storage buys flexibility: counts per event type are still small, and the weights become a read-time parameter. Replaying history is exactly what the bucket counter was meant to avoid. Waiting for old totals to expire leaves wrong values for a whole window."
+  },
+  {
+   "type": "choice",
+   "q": "Window 60 s, bucket width 10 s, K = 6 including the current bucket. An event arrives at 12:00:05, in bucket [12:00:00, 12:00:10). At 12:01:03 the counter is read. Is that event counted?",
+   "options": [
+    "Yes: it is only 58 seconds old",
+    "No: the bucket [12:00:00, 12:00:10) was evicted when the bucket [12:01:00, 12:01:10) began, so the counter undercounts by up to one bucket width",
+    "Yes: the buckets are never evicted until the window is full",
+    "No: events are only counted in the minute they arrive in"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "With K buckets including the current one, the oldest bucket drops out at each boundary, so coverage at 12:01:03 starts at 12:00:10. The event is 58 s old yet gone. The error is bounded by the bucket width (10 s) and only goes in one direction here."
+  },
+  {
+   "type": "recall",
+   "q": "In two or three sentences, how do sliding window aggregation, time bucket counter and tumbling window relate?",
+   "answer": "**Sliding window aggregation** is the requirement: the aggregate over the last W, continuously. A **time bucket counter** is one way to implement it: a queue of fixed-width buckets, each a small **tumbling window**, plus a running total that is incremented on events and decremented when old buckets expire. The alternative implementation is an exact event log; the counter trades one bucket of precision for memory independent of traffic."
+  }
+ ]
+}

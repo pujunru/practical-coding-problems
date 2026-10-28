@@ -1,0 +1,67 @@
+{
+ "id": "third-party-checklist",
+ "title": "What to Consider with a Third Party",
+ "summary": "Before integrating an external service (payments, shipping, KYC, an LLM vendor), walk the same checklist, in this order:\n1. **Boundary:** which step crosses into someone else's system?\n2. **Ownership:** whose word is final for each fact? (The vendor decides whether money was captured; you decide whether the order ships.)\n3. **Identity:** how do *I* identify the thing, and how do *they*?\n4. **Mapping:** how are the two identities linked, and is the link durable?\n5. **Lifecycle:** how do the two state machines correspond (your `PENDING_PAYMENT` against their `requires_action` or `succeeded`)?\n6. **Recovery:** if a message is lost, duplicated or reordered, how will I reconcile later?\n\nThree ID questions expose a broken design fast:\n- When I send a request, what **external ID** does the other side give me?\n- When something comes back asynchronously (webhook, callback, report file), **which ID will it use** to find me?\n- Can I use that ID to reach my **internal source of truth** directly?\n\nIf the third answer is no, the callback is an orphan. Typical fixes: generate your own ID first and pass it as the vendor's reference or idempotency key, store the mapping *before or atomically with* the call, and index it for lookup.\n\nCallbacks are at-least-once, may be early, and may be missing: make handlers [idempotent](#/sd/f/idempotency) and reconcile periodically against the vendor's records. See [caller diligence](#/sd/f/caller-diligence) for the calls and [polling](#/sd/f/polling) for async completion.",
+ "drills": [
+  {
+   "type": "order",
+   "q": "Put the six checklist questions in the order you should think them through.",
+   "items": [
+    "Boundary: which step crosses to the third party?",
+    "Ownership: who has the final word on each fact?",
+    "Identity: how does each side identify the thing?",
+    "Mapping: how are the two identities linked?",
+    "Lifecycle: how do the two state machines correspond?",
+    "Recovery: how do we reconcile after lost, duplicated or reordered messages?"
+   ],
+   "explain": "Each step needs the one before it: you can only map identities once you know what is being identified, and recovery depends on all of them."
+  },
+  {
+   "type": "choice",
+   "q": "Your service calls the vendor's createPayment and saves the returned id `pay_9f2` after the response arrives. The process crashes after the vendor accepted the call but before saving. Later a webhook arrives carrying only `pay_9f2`. What went wrong, and what is the fix?",
+   "options": [
+    "The mapping was only created after the call, so the callback cannot be tied to an order. Generate your own id first, send it as the vendor's client reference or idempotency key, and persist the intent before calling",
+    "The webhook is invalid and should be ignored",
+    "The vendor should send more fields",
+    "Use polling only"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The three ID questions expose it: the callback's ID is not one you can resolve to your internal record. Making your own id part of the request lets both sides refer to the same thing and makes the retry safe."
+  },
+  {
+   "type": "choice",
+   "q": "Your database says an order is PAID, but the vendor's dashboard shows the charge was refunded manually. Which side's record wins, and what should you do?",
+   "options": [
+    "Yours: you created the order",
+    "Whichever was updated last",
+    "Delete both and retry",
+    "The vendor's, for the fact 'was money captured or refunded'; update your state from it (and reconcile the order status accordingly), because ownership of money facts lies with the payment provider"
+   ],
+   "answer": [
+    3
+   ],
+   "explain": "Ownership is per fact, not per system. The payment processor is the source of truth for money movement; you own whether to ship."
+  },
+  {
+   "type": "choice",
+   "q": "A 'payment succeeded' webhook was lost. The order stays in PENDING_PAYMENT forever. What is the standard defence?",
+   "options": [
+    "Ask the vendor never to lose webhooks",
+    "A reconciliation job (or on-read check) for orders pending longer than expected that queries the vendor by your reference and repairs the state",
+    "Mark every pending order as paid after an hour",
+    "Disable webhooks"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "You cannot guarantee delivery of a message you do not control. Treat webhooks as hints and keep a periodic pull to converge."
+  },
+  {
+   "type": "recall",
+   "q": "State the three ID questions for any third-party integration and the red flag that tells you the design is broken.",
+   "answer": "(1) What external ID does the other side give me when I send a request? (2) When it comes back asynchronously, which ID will it use to find me? (3) Can I use that ID to reach my internal source of truth directly? If the answer to (3) is no, the callback cannot be mapped to your record. Fix it by sending your own ID as a reference or idempotency key and persisting the mapping before or with the call."
+  }
+ ]
+}

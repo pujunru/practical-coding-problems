@@ -1,0 +1,74 @@
+{
+ "id": "caller-diligence",
+ "title": "Caller Diligence",
+ "summary": "When your service calls a third party, you are the one who must behave. Six questions, each with a standard answer:\n1. **How do I avoid storming it?** A per-host [connection pool](#/sd/f/connection-pooling), a client-side [rate limiter](#/sd/f/rate-limiter) matching its quota, and a [concurrency limiter](#/sd/f/concurrency-limiter) on in-flight calls.\n2. **How do I time-box each call?** A per-request [timeout](#/sd/f/timeout), shorter than your own caller's deadline.\n3. **What do I do on an exception?** Classify: retry timeouts, 429 and 503 with [backoff and jitter](#/sd/f/backoff-jitter); do not retry validation errors (4xx); make retried writes [idempotent](#/sd/f/idempotency).\n4. **What if the response is invalid or does not match?** An **output adapter** (an anti-corruption layer): validate the schema, map fields and enums to your model, reject or quarantine bad payloads, so vendor quirks never leak inward. A 200 can still carry garbage.\n5. **What if the failure is critical and earlier steps must be undone?** A **saga**: every step has a compensating action (release inventory, void the authorisation), run in reverse.\n6. **What if it keeps failing?** A [circuit breaker](#/sd/f/circuit-breaker) fails fast and probes later, with backoff and jitter on recovery, so you do not pile retries on a sick service.\n\nThink of these as layers around one call: breaker, limiters and pool, then the timed request, then retry, then adapter, with the saga as the business-level escape hatch. Retries multiply load, so every attempt, not only the first, must pass the limiters, and an open breaker stops attempts altogether.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "The vendor's API sometimes answers HTTP 200 with `{\"status\": \"OK\", \"amount\": null}`. Your code then crashes while posting the ledger entry. Which mechanism addresses this?",
+   "options": [
+    "A circuit breaker",
+    "A longer timeout",
+    "More retries",
+    "An output adapter that validates and maps the response, quarantining payloads that fail the contract"
+   ],
+   "answer": [
+    3
+   ],
+   "explain": "The call succeeded at the transport level; the data is wrong. Validation at the boundary keeps the vendor's quirks out of your domain. Retries and breakers address availability, not shape."
+  },
+  {
+   "type": "choice",
+   "q": "A checkout flow reserves inventory, then charges a card, then asks a shipping vendor to create a label. The label call fails permanently. What is the right way to handle the earlier steps?",
+   "options": [
+    "Ignore it; they will expire",
+    "Run compensating actions in reverse (refund or void the charge, release inventory) as a saga, idempotently",
+    "Retry the label call forever",
+    "Delete the order row"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "There is no distributed rollback across services; a saga undoes completed steps with explicit compensations, which themselves must be retry-safe."
+  },
+  {
+   "type": "order",
+   "q": "Put the guards around a single outbound attempt in a sensible order.",
+   "items": [
+    "Check the circuit breaker: fail fast if it is open",
+    "Acquire a rate-limit token and a concurrency slot",
+    "Take a connection from the host's pool",
+    "Send the request with a per-request timeout",
+    "Validate and map the response with the output adapter"
+   ],
+   "explain": "Fail fast before spending any quota. Limits come before the connection and the call, so storms are stopped at the source. The adapter runs after the data arrives, before it touches your domain."
+  },
+  {
+   "type": "choice",
+   "q": "A vendor is returning 503 for every request. 2,000 callers retry three times immediately, each with a 30 s timeout. The team proposes a 60 s timeout. What is the better change?",
+   "options": [
+    "Longer timeouts: they give the vendor time to recover",
+    "Retry more often to get through sooner",
+    "Open a circuit breaker after repeated failures, and retry with exponential backoff and jitter after it half-opens",
+    "Drop all validations"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Piling on retries and longer waits amplifies load on a service that is already down and ties up your own threads. A breaker stops traffic quickly; backoff and jitter spread the probes."
+  },
+  {
+   "type": "number",
+   "q": "A call allows up to 3 attempts. Each attempt can run for its full 2 s timeout before failing. Between attempts the client waits 0.5 s, then 1 s (no jitter, no wait after the last attempt). What is the longest time in seconds the call can take?",
+   "answer": 7.5,
+   "unit": "s",
+   "tolerance": 0,
+   "explain": "3 attempts x 2 s = 6 s, plus 0.5 + 1 = 1.5 s of waiting: 7.5 s. If your own caller's deadline is shorter, the retry budget must be derived from it, not chosen independently."
+  },
+  {
+   "type": "recall",
+   "q": "List the six caller-diligence questions and a mechanism for each.",
+   "answer": "(1) Not storming: connection pool, client-side rate limiter, concurrency limiter. (2) Time-gating: per-request timeout. (3) Exceptions: classify errors, retry with backoff and jitter, idempotent writes. (4) Invalid or mismatched responses: output adapter. (5) Critical failure needing a revert: saga with compensations. (6) Persistent failure: circuit breaker plus backoff and jitter."
+  }
+ ]
+}

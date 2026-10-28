@@ -1,0 +1,86 @@
+{
+ "id": "token-minting",
+ "title": "Token Minting",
+ "summary": "To **mint** is to create something new under authority that others can recognise as genuine, usually with an expiry. Only the mint strikes coins; anyone can tell a real one. In systems: **issuer signs, verifier checks, TTL or revoke.**\n\nAsk three questions of any mint (a good interview template):\n1. **Who may mint?** The issuer holds the signing secret. Long-lived secrets stay home; the outside world receives only short-lived, narrow things.\n2. **How does a verifier check?** By signature alone (stateless, no database hit) or by lookup (stateful).\n3. **How does it expire or get revoked?** TTL, refresh, denylist, key rotation.\n\nA signed payload is trusted if the signature verifies, so you can hand an otherwise untrusted object to a stranger: pre-signed S3 URLs, JWT access tokens (`sub`, `scope`, `exp`), reset and verification links, CDN signed URLs, webhook signatures, job tokens (`job_id`, `attempt`, `lease_expiry`).\n\nSigning is not encryption: anyone can read a JWT payload. Put in claims fixed at issue time and fine to be stale until expiry (user id, scopes), never secrets.\n\nVerification options: HMAC with a shared secret (every verifier could also mint) or asymmetric keys (private signs, public verifies; publish and rotate with key ids).\n\nRevocation is the cost of statelessness: a bearer token is valid until `exp` unless a denylist is checked, so keep TTLs short and refresh.\n\nMinting is broader than tokens: keys and certs (a KMS data key wrapped by a master key), unique IDs (Snowflake), and coordination numbers ([fencing token](#/sd/f/fencing-token), [lease](#/sd/f/lease), epochs) where higher wins. See [IdP](#/sd/f/idp).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A KMS call `GenerateDataKey` returns a plaintext data key and the same key encrypted under a master key. The application encrypts data with the plaintext key, stores the encrypted key beside the data and discards the plaintext. Which minting principle is this?",
+   "options": [
+    "Mint IDs for global uniqueness",
+    "Fencing: the higher key number wins",
+    "The master key never leaves the issuer; it mints small one-off keys that do the work, and only the issuer can unwrap them later",
+    "Revocation by denylist"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "The long-lived secret stays in the issuer (KMS). The minted artefact is narrow and short-lived in memory. It is the same shape as a JWT signer and its tokens."
+  },
+  {
+   "type": "choice",
+   "q": "Which claims suit a JWT access token that verifiers check only by signature? Select all that apply.",
+   "options": [
+    "The user id",
+    "The scopes granted at login",
+    "The expiry time",
+    "The user's current account balance",
+    "The user's password hash"
+   ],
+   "answer": [
+    0,
+    1,
+    2
+   ],
+   "explain": "Claims should be fixed at issue time and acceptable if stale until `exp`. The payload is readable by anyone who holds the token, so no secrets, and a fast-changing value like a balance would be wrong the moment it changes."
+  },
+  {
+   "type": "choice",
+   "q": "A service verifies JWTs locally with a 15-minute lifetime. An account is banned and the team wants the user cut off 'immediately'. What is the accurate position?",
+   "options": [
+    "With pure stateless checks the ban takes effect when the token expires (up to 15 minutes); for faster effect add a small denylist or session-version check for sensitive endpoints, and shorten TTLs with refresh tokens",
+    "Signature checking makes revocation instant",
+    "Delete the user's row; the signature will fail",
+    "Re-sign all tokens"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "That is the statelessness trade-off. Verification needs no database but cannot see revocations; so revocation needs either a short TTL or some shared state."
+  },
+  {
+   "type": "choice",
+   "q": "Forty microservices verify tokens signed with HMAC-SHA256 using one shared secret. A single service is compromised. What is the risk, and the better design?",
+   "options": [
+    "None: only the auth server can create valid tokens",
+    "The tokens simply stop verifying",
+    "The attacker can mint valid tokens for any user and scope, since verifying and minting use the same secret; use asymmetric signing so verifiers hold only the public key",
+    "Tokens become unreadable"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Symmetric verification means every verifier is also a minter. With a private signing key held by the issuer alone, verifiers can check but never forge."
+  },
+  {
+   "type": "number",
+   "q": "Signing keys rotate: from 12:00 the issuer signs with key B instead of key A. Tokens last 1 hour. Verifiers identify the key by the `kid` header. For how many minutes after 12:00 must verifiers still accept key A?",
+   "answer": 60,
+   "unit": "minutes",
+   "tolerance": 0,
+   "explain": "The last token signed with A was issued just before 12:00 and expires just before 13:00, so A must stay trusted for about 60 minutes. Retire it earlier and valid tokens suddenly fail."
+  },
+  {
+   "type": "order",
+   "q": "Put the stateless verification of a bearer token in order.",
+   "items": [
+    "Parse the token and read its key id (kid) and claims",
+    "Fetch (or use a cached copy of) the issuer's public key for that kid",
+    "Verify the signature over the payload",
+    "Check exp, nbf, issuer and audience",
+    "Authorise the request using the scopes in the claims"
+   ],
+   "explain": "Authenticity first, then validity, then authority. Never use claims before the signature has been verified."
+  }
+ ]
+}

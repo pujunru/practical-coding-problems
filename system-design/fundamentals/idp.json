@@ -1,0 +1,71 @@
+{
+ "id": "idp",
+ "title": "Identity Provider (IdP)",
+ "summary": "An **Identity Provider (IdP)** is the one system that authenticates users (password, MFA, passkey) and vouches for their identity to other applications. Apps (relying parties) stop storing passwords and **trust the IdP's signed answer**: single sign-on, central MFA and policy, one place to disable a departing employee. In token terms, the IdP is the *issuer* ([token minting](#/sd/f/token-minting)).\n\nThe names people mix up:\n- **SAML 2.0:** XML **assertions** carried via browser redirects; common for enterprise SSO into SaaS apps.\n- **OAuth 2.0:** a framework for **delegated authorization**: the user lets an app call an API on their behalf, using an **access token** scoped to what was granted. On its own it does not say who the user is.\n- **OpenID Connect (OIDC):** a thin identity layer on OAuth 2.0 that adds an **ID token** (a signed JWT with `sub`, `iss`, `aud`, `exp`, `nonce`). \"Log in with Google\" is OIDC.\n\n**Authorization code flow (OIDC):**\n1. The app redirects the browser to the IdP.\n2. The user authenticates there.\n3. The IdP redirects back with a one-time code.\n4. The app exchanges the code over a back channel for tokens.\n5. The app validates the ID token (signature against the IdP's published keys, `iss`, `aud`, `exp`, `nonce`) and creates its own session.\n\nLimits: the app's session or access token lives until its TTL, so offboarding bites at the next refresh unless you add revocation or back-channel logout. The IdP is also a critical dependency: its outage blocks every login.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A mobile app wants 'Sign in with X'. A developer uses plain OAuth 2.0 and treats possession of a valid access token as proof of who the user is. What is wrong?",
+   "options": [
+    "An access token says the bearer may call an API; it was not issued to tell your app who logged in, and it may belong to a different app. Use OIDC and validate the ID token (audience, issuer, nonce)",
+    "Nothing: access tokens identify users",
+    "OAuth cannot be used on mobile",
+    "Access tokens must be encrypted first"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "OAuth is delegated authorization. Identity assertions to the client are what OIDC adds. The audience check ensures the token was issued for your app, not replayed from another."
+  },
+  {
+   "type": "choice",
+   "q": "Which checks must your app make on an OIDC ID token before trusting it? Select all that apply.",
+   "options": [
+    "The signature verifies against the IdP's published keys",
+    "`iss` is the IdP you expect and `aud` is your client id",
+    "`exp` has not passed and `nonce` matches the one you sent",
+    "The token string exists in your own users table"
+   ],
+   "answer": [
+    0,
+    1,
+    2
+   ],
+   "explain": "Validation is about signature and claims, not a lookup in your own table: a first-time user is not in your table yet, and a table hit proves nothing about validity."
+  },
+  {
+   "type": "order",
+   "q": "Put the OIDC authorization code flow in order.",
+   "items": [
+    "The app redirects the browser to the IdP",
+    "The user authenticates at the IdP",
+    "The IdP redirects back to the app with a one-time code",
+    "The app exchanges the code at the IdP's token endpoint over a back channel",
+    "The app validates the ID token and creates its own session"
+   ],
+   "explain": "The code travels via the browser but is useless alone; the tokens only come back on the direct app-to-IdP call, so they never appear in the URL, history or referrer headers."
+  },
+  {
+   "type": "number",
+   "q": "An employee is disabled at the IdP at 10:00. Their app session depends on an access token issued at 09:50 with a 15-minute lifetime, which the app verifies locally by signature. The refresh token was revoked at 10:00 and no back-channel logout is configured. How many minutes after 10:00 can the old token still be used, at most?",
+   "answer": 5,
+   "unit": "minutes",
+   "tolerance": 0,
+   "explain": "The token stays valid until 09:50 + 15 min = 10:05, which is 5 minutes after the disablement. Shorter lifetimes shrink this window; immediate cut-off needs a revocation check or session revocation."
+  },
+  {
+   "type": "choice",
+   "q": "A security reviewer asks why the code exchange uses a back channel and not tokens in the redirect URL. What is the answer?",
+   "options": [
+    "URLs cannot contain tokens",
+    "Back channels are faster",
+    "URLs land in browser history, logs and referrer headers; the exchange also lets the IdP authenticate the client (secret or PKCE) and makes the code single-use",
+    "It is required by SAML"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Keeping tokens off the front channel limits where they can leak. PKCE binds the code to the client that started the flow."
+  }
+ ]
+}

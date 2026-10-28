@@ -484,6 +484,171 @@
      "drills": 5
     }
    ]
+  },
+  {
+   "id": "bucketing",
+   "title": "Bucketing Time & Resources",
+   "concepts": [
+    {
+     "id": "connection-pooling",
+     "title": "Connection Pooling",
+     "drills": 6
+    },
+    {
+     "id": "timer-wheel",
+     "title": "Timer Wheel",
+     "drills": 6
+    },
+    {
+     "id": "tumbling-window",
+     "title": "Tumbling Window",
+     "drills": 5
+    }
+   ]
+  },
+  {
+   "id": "aggregation",
+   "title": "Aggregation",
+   "concepts": [
+    {
+     "id": "sliding-window-aggregation",
+     "title": "Sliding Window Aggregation",
+     "drills": 5
+    },
+    {
+     "id": "time-bucket-counter",
+     "title": "Time Bucket Counter",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "batching",
+   "title": "Batching",
+   "concepts": [
+    {
+     "id": "batching",
+     "title": "Batching",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "delivery",
+   "title": "Delivery",
+   "concepts": [
+    {
+     "id": "fanout",
+     "title": "Fanout",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "changes",
+   "title": "Change Data",
+   "concepts": [
+    {
+     "id": "change-feed",
+     "title": "Change Feed",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "multi-client",
+   "title": "Multi-Client Sync",
+   "concepts": [
+    {
+     "id": "cursor",
+     "title": "Cursor",
+     "drills": 5
+    },
+    {
+     "id": "server-log",
+     "title": "Server Log",
+     "drills": 5
+    }
+   ]
+  },
+  {
+   "id": "websocket",
+   "title": "WebSocket",
+   "concepts": [
+    {
+     "id": "websocket-patterns",
+     "title": "WebSocket Design Patterns",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "third-party",
+   "title": "Calling Third Parties",
+   "concepts": [
+    {
+     "id": "third-party-checklist",
+     "title": "What to Consider with a Third Party",
+     "drills": 5
+    },
+    {
+     "id": "caller-diligence",
+     "title": "Caller Diligence",
+     "drills": 6
+    },
+    {
+     "id": "polling",
+     "title": "Polling",
+     "drills": 6
+    },
+    {
+     "id": "adaptive-polling",
+     "title": "Adaptive & Priority Polling",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "auth",
+   "title": "Auth & Tokens",
+   "concepts": [
+    {
+     "id": "idp",
+     "title": "Identity Provider (IdP)",
+     "drills": 5
+    },
+    {
+     "id": "token-minting",
+     "title": "Token Minting",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "browser-storage",
+   "title": "Browser Storage",
+   "concepts": [
+    {
+     "id": "cookie",
+     "title": "Cookie",
+     "drills": 5
+    },
+    {
+     "id": "local-storage",
+     "title": "localStorage",
+     "drills": 6
+    },
+    {
+     "id": "session-storage",
+     "title": "sessionStorage",
+     "drills": 5
+    },
+    {
+     "id": "indexeddb",
+     "title": "IndexedDB",
+     "drills": 6
+    }
+   ]
   }
  ]
 }

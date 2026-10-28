@@ -1,0 +1,69 @@
+{
+ "id": "tumbling-window",
+ "title": "Tumbling Window",
+ "summary": "A tumbling window cuts time into **fixed-size, non-overlapping, back-to-back intervals**: `[start1, end1), [start2, end2), ...`. Each is closed at the start and open at the end, so every event belongs to **exactly one** window: `window_start = ts - (ts mod size)`.\n\nWindows are independent (own state, no overlap) yet contiguous (no gaps), which makes them the natural unit for **counters and totals per period**: requests per minute, revenue per hour. Per window you keep only the aggregate; when the window closes you emit it and drop its state.\n\nDecisions to settle:\n- **Which clock?** Event time (when it happened) is correct but needs a **watermark** to decide when a window is complete and a policy for late events: drop, allow lateness, or emit a correction. Processing time is simple but shifts with delays.\n- **Boundary effect.** Windows never see across their edge: 100 events at 12:00:59 and 100 at 12:01:01 look like two calm minutes. For \"any 60 seconds\" use a [sliding window](#/sd/f/sliding-window-aggregation).\n\n**Data skew** (the flood drowns the wet, the drought kills the dry): one hot key lands on one worker. Fix it with two layers, divide and conquer ([salting](#/sd/f/salting)):\n1. Layer 1 tumbling window: add a random salt (`item_123_0 ... item_123_7`) so the hot key spreads over workers; each computes a partial.\n2. Layer 2 tumbling window: strip the salt and merge the partials per original key and window.\n\nThis works for mergeable aggregates (count, sum, max), not for exact medians.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Tumbling windows are 5 minutes wide and aligned so that boundaries fall at :00, :05, :10, and so on. An event has event time 12:07:42. Which window does it belong to?",
+   "options": [
+    "[12:02:42, 12:07:42)",
+    "[12:05:00, 12:10:00)",
+    "[12:07:00, 12:12:00)",
+    "[12:00:00, 12:05:00)"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "window_start = ts - (ts mod size) rounds down to the aligned boundary: 12:07:42 falls after 12:05:00. The window is half-open, so 12:10:00 itself belongs to the next one. A window ending at the event time describes a sliding window."
+  },
+  {
+   "type": "number",
+   "q": "A rule says 'at most 100 requests per minute', enforced with a tumbling per-minute counter ([start, end) minutes). What is the largest number of requests it can admit within a single 2-second interval that straddles a minute boundary?",
+   "answer": 200,
+   "unit": "requests",
+   "tolerance": 0,
+   "explain": "100 in the last second of one minute plus 100 in the first second of the next: each counter stays at its limit, so 200 pass in 2 seconds. This burst-at-the-edge effect is why rate limiting often uses a sliding window or a token bucket."
+  },
+  {
+   "type": "order",
+   "q": "Put the life of one tumbling window for one key in order (event-time processing).",
+   "items": [
+    "An event arrives and is assigned a window from its timestamp",
+    "The (key, window) partial aggregate is updated",
+    "The watermark passes the window end",
+    "The window result is emitted",
+    "The window state is dropped, and later events for it follow the late-data policy"
+   ],
+   "explain": "State exists only between the first event and the watermark passing the end. The watermark is what lets you close a window despite out-of-order arrivals; anything later is handled by the lateness policy."
+  },
+  {
+   "type": "choice",
+   "q": "A hot key makes up most of the traffic in a windowed count. You add the two-layer design. Where does the salt go?",
+   "options": [
+    "Layer 1 is keyed by the original key; layer 2 adds the salt",
+    "Both layers are keyed by the salted key, and consumers sum the results themselves",
+    "Layer 1 is keyed by key plus a random salt; layer 2 strips the salt and merges partials for the same original key and window",
+    "Only layer 2 uses windows; layer 1 is a plain stream"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Layer 1 must split the hot key across workers, so the salt is in its key. Layer 2 must use the original key and the same window start so that partials for one (key, window) meet. Otherwise you emit several partial counts instead of one."
+  },
+  {
+   "type": "choice",
+   "q": "A tumbling window [12:00, 12:01) was emitted when the watermark passed 12:01:05. At 12:02 an event with event time 12:00:30 arrives. What is the sound handling?",
+   "options": [
+    "Apply the lateness policy: drop it and count it as late, or, if within the allowed lateness, emit a corrected result for [12:00, 12:01) that downstream treats as an update",
+    "Silently add it to the next window [12:01, 12:02) by arrival time, since that is the open window",
+    "Reopen all windows and recompute everything",
+    "Crash the job; late data is a bug"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Assigning by arrival time corrupts two windows at once: the old one is too low and the new one too high. Decide a lateness budget explicitly and make downstream consumers able to upsert corrections if you allow them."
+  }
+ ]
+}

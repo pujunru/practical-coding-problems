@@ -1,0 +1,83 @@
+{
+ "id": "fanout",
+ "title": "Fanout",
+ "summary": "Fanout is one input becoming many outputs. Two different problems share the name.\n\n**Delivery model: who gets this change?** When user U posts and F people follow U:\n- **Fanout-on-write (push):** at post time, copy a reference into each follower's inbox. Reads are one cheap lookup, but a write costs F writes plus storage per follower.\n- **Fanout-on-read (pull):** store the post once; each reader merges the posts of everyone they follow at read time. Writes are cheap; a read costs one lookup per followee.\n\nChoose by read/write ratio and fan degree. Push suits ordinary accounts and read-heavy feeds. For a celebrity with 20 M followers, push is a write storm, so use a **hybrid**: push for ordinary authors, and pull celebrity posts at read time and merge them in.\n\n**Request model: one request calls many downstreams.** First ask whether the fanout can be avoided, then bound what remains:\n- **100 vendors:** manageable. [Batch](#/sd/f/batching) the calls and use per-host [connection pools](#/sd/f/connection-pooling).\n- **100 k vendors:** don't call them all. Filter, match, rank or precompute which ones matter.\n- **1 job becomes 1 M tasks that must all run:** expand **lazily**. Like a generator, turn the job into tasks one page at a time. Push tasks to the queue only while it is below a high watermark and load the next page when it drains, so reads, writes and queue memory never spike.\n\nThird-party fanout also needs the checks in [caller diligence](#/sd/f/caller-diligence).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "A celebrity with 20,000,000 followers posts once. Under pure fanout-on-write, each follower's inbox gets one write, and the inbox store sustains 50,000 writes per second for this job. How many seconds does the fanout take?",
+   "answer": 400,
+   "unit": "s",
+   "tolerance": 0,
+   "explain": "20,000,000 / 50,000 = 400 s, nearly seven minutes during which followers see the post at wildly different times, and the store is saturated for everything else. This is why celebrities are pulled at read time instead."
+  },
+  {
+   "type": "choice",
+   "q": "An ordinary user has 200 followers and posts about once a day, while each follower opens their feed 50 times a day. Which delivery model fits, and why?",
+   "options": [
+    "Fanout-on-write: 200 writes per post are cheap compared with 200 x 50 = 10,000 reads per day, each of which becomes a single lookup",
+    "Fanout-on-read: reads are frequent so merging per read is fine",
+    "Neither; use polling",
+    "Fanout-on-read because storage is cheaper"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Amortise the work where it is rarer. Here writes are rare and bounded (200), reads are frequent, so doing the work at write time is cheaper in total."
+  },
+  {
+   "type": "choice",
+   "q": "In a hybrid feed, what does a read of Alice's timeline do?",
+   "options": [
+    "Reads only her precomputed inbox",
+    "Queries every followee's posts and merges them",
+    "Reads her precomputed inbox, fetches recent posts from the celebrities she follows, and merges them by time",
+    "Asks every celebrity to push to her again"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Push covers the many ordinary authors cheaply; the few celebrities are pulled and merged at read time, which bounds both the write amplification and the read cost."
+  },
+  {
+   "type": "choice",
+   "q": "One job must create 1,000,000 tasks, and each task must run. The first design inserts all 1,000,000 task rows and queue entries in one go. What is the problem, and what is the alternative?",
+   "options": [
+    "It causes a spike of reads and writes and a huge queue backlog; instead materialise tasks page by page, enqueueing only while below a high watermark and loading the next page as the queue drains",
+    "It's fine: databases handle one million inserts instantly",
+    "It needs one thread per task",
+    "It only works with fanout-on-read"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The work is unavoidable but its shape is not. Lazy expansion with a watermark smooths the load end to end and keeps memory bounded, like a generator."
+  },
+  {
+   "type": "order",
+   "q": "Put the lazy materialisation of a large job in order.",
+   "items": [
+    "The job is stored as a compact description (inputs and ranges)",
+    "A page of tasks is created from the description",
+    "Tasks are pushed to the queue while it is below the high watermark",
+    "The queue drains below the low watermark",
+    "The next page of tasks is created"
+   ],
+   "explain": "The job holds only a cursor into its own expansion, so memory and load stay flat regardless of the total number of tasks. See [cursor](#/sd/f/cursor)."
+  },
+  {
+   "type": "choice",
+   "q": "A new job must notify matching vendors out of 100,000 registered. The first design sends a request to every vendor and lets the vendors filter. What is a better approach?",
+   "options": [
+    "Keep it: simple and robust",
+    "Pool connections better so that 100,000 calls are faster",
+    "Send to a random 10%",
+    "Match first (region, category, capacity, a precomputed index) and call only the vendors that qualify"
+   ],
+   "answer": [
+    3
+   ],
+   "explain": "Beyond about a hundred targets, brute-force fanout is a cost and a risk. Reduce the set before you call: filtering or precomputation makes the fanout small."
+  }
+ ]
+}

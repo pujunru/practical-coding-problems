@@ -1,0 +1,67 @@
+{
+ "id": "session-storage",
+ "title": "sessionStorage",
+ "summary": "`sessionStorage` has the same API as [localStorage](#/sd/f/local-storage) (a synchronous string key-value store, roughly 5 MB) but a narrower lifetime and scope: **one namespace per origin per tab** (strictly, per top-level browsing context). Mental model: `sessionStorage ≈ origin + tab`, and when the tab closes, the data goes with it.\n\nWhat that means:\n- **Survives** reloads and navigation within the tab to other pages of the same origin.\n- **Does not survive** closing the tab or window. (Some browsers restore it with a restored tab; do not rely on that.)\n- **Not shared between tabs,** even two tabs on the same page: each has its own copy, and a new tab opened by typing a URL starts empty. Duplicating a tab, or `window.open` without `noopener`, copies the data once; afterwards the two diverge.\n- **Different origins** are separate, also inside iframes.\n- It is never sent to the server and is readable by any script of that origin.\n\nUse it for state that belongs to one working session in one tab: a multi-step form draft, scroll position, a per-tab selection, or an OAuth `state` or PKCE verifier across the redirect round trip. Two tabs editing different drafts cannot clobber each other, which would happen with localStorage.\n\nDo not use it for anything that must outlive the tab (preferences, drafts you want after a crash) or must be shared across tabs: that is localStorage, or the server.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A value was written to sessionStorage in a tab on `https://shop.example.com/cart`. In which situations is it still readable? Select all that apply.",
+   "options": [
+    "The tab is reloaded",
+    "The user follows a link to `https://shop.example.com/checkout` in the same tab",
+    "The user opens `https://shop.example.com/cart` in a new tab by typing the URL",
+    "The user closes the tab, then opens the site in a new tab"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "sessionStorage is scoped to origin plus tab, and lives as long as the tab. A brand-new tab, even for the same page, gets an empty store."
+  },
+  {
+   "type": "choice",
+   "q": "A user opens two tabs to edit two different order drafts. The app saves the draft as `localStorage['draft']`. Edits in one tab overwrite the other's. What fixes it?",
+   "options": [
+    "A bigger quota",
+    "Poll the server every second",
+    "Use a cookie",
+    "Keep each tab's draft in sessionStorage, which is per tab; or key the draft by order id in localStorage if it must outlive the tab"
+   ],
+   "answer": [
+    3
+   ],
+   "explain": "Per-tab state should live in per-tab storage. If the draft must also survive closing the tab, add an id to the key so that two drafts do not collide."
+  },
+  {
+   "type": "choice",
+   "q": "Why store an OAuth PKCE code verifier in sessionStorage rather than localStorage before redirecting to the IdP?",
+   "options": [
+    "sessionStorage is encrypted",
+    "It is only needed in this tab for the redirect round trip: scoping it to the tab keeps parallel logins in other tabs separate, and it disappears with the tab instead of lingering",
+    "localStorage is not available during redirects",
+    "The IdP reads it directly"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "Short-lived, per-flow state belongs to the tab that started the flow. Persisting it in a store shared by all tabs invites cross-flow mix-ups and leaves stale secrets around."
+  },
+  {
+   "type": "order",
+   "q": "Put the lifetime of one sessionStorage value in order.",
+   "items": [
+    "The page in tab 1 calls setItem",
+    "The page reloads and the value is still there",
+    "The user navigates to another page of the same origin in tab 1 and it is still there",
+    "The user opens the site in a new tab: the value is not there",
+    "The user closes tab 1 and the value is gone"
+   ],
+   "explain": "The value follows the tab, not the page or the origin. Each new tab starts with an empty store."
+  },
+  {
+   "type": "recall",
+   "q": "Place cookie, localStorage, sessionStorage and IndexedDB on one line each: scope, lifetime and who can read it.",
+   "answer": "**Cookie:** sent to the server per request; expiry set by the server or session-only; readable by the server and by scripts unless HttpOnly. **localStorage:** per origin, persistent, scripts only, never sent. **sessionStorage:** per origin and per tab, gone when the tab closes, scripts only. **IndexedDB:** per origin, persistent (best-effort eviction), asynchronous and large, scripts only."
+  }
+ ]
+}

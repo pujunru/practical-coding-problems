@@ -1,0 +1,69 @@
+{
+ "id": "server-log",
+ "title": "Server Log",
+ "summary": "A server log lets many clients **stay in sync** without refetching everything. The server keeps:\n- an append-only **change log**: `incremental_id -> entity_id -> revision`. IDs only increase, and each entry says which entity changed and to which revision. It may point at the entity instead of carrying its payload;\n- the **current state** of every entity.\n\nEach client holds a [cursor](#/sd/f/cursor): the last log id it applied. To catch up it asks for entries `cursor+1 ... latest`, fetches the entities they mention, and applies them. Applying is idempotent: skip an entry whose revision is not newer than the local copy.\n\n**Bootstrap** (a new client) reads the current state *together with the log position that state corresponds to*, from one consistent snapshot, then follows the log from that position. Reading the position afterwards can miss changes that landed in between.\n\n**Compaction.** The log cannot grow forever, so the server periodically snapshots and compacts it. A client whose cursor is older than the oldest retained entry has no log to replay; the server answers \"cursor too old\" and the client **reconciles with the current state** (a full resync, or a diff by revision) and takes a new cursor. Plain truncation invalidates such clients; compaction that keeps the newest entry per entity (plus tombstones for deletes, kept long enough) lets many of them still catch up.\n\nRetention is a trade-off: longer logs mean fewer full resyncs but more storage. Size it for realistic offline periods. Related: [change feed](#/sd/f/change-feed), [ETag](#/sd/f/etag).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "A client's cursor is 1,200. The server's latest log id is 1,260 and the log still contains every entry from 1,000 onwards. How many entries does the client fetch to catch up?",
+   "answer": 60,
+   "unit": "entries",
+   "tolerance": 0,
+   "explain": "Entries 1,201 through 1,260 inclusive: 1,260 - 1,200 = 60. The client then sets its cursor to 1,260."
+  },
+  {
+   "type": "choice",
+   "q": "A phone was offline for a month. Its cursor is 1,200; after compaction, the oldest retained log entry is 1,500. What should the server and client do?",
+   "options": [
+    "Serve entries 1,501 onwards and carry on; the gap does not matter",
+    "The client retries until the entries reappear",
+    "The server answers that the cursor is too old; the client reconciles with the current state (full resync or revision diff) and takes a new cursor",
+    "The server rebuilds entries 1,201 to 1,499 on demand"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Entries 1,201 to 1,499 no longer exist, so replay would silently skip changes. The only safe move is a state-based reconcile."
+  },
+  {
+   "type": "choice",
+   "q": "A new client bootstraps by reading all entities, and only afterwards asks the server for the current latest log id to use as its cursor. Writes happen continuously. What can go wrong?",
+   "options": [
+    "Changes committed between the two reads are never replayed (the cursor already includes them) and so are missing from the client's copy; read the state and its log position together in one snapshot",
+    "Nothing; both reads return the same data",
+    "The client's copy will be newer than the server's",
+    "The cursor becomes invalid immediately"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The snapshot must carry the log position it reflects, then catch-up starts right after it. Anything else leaves a gap or double-applies changes."
+  },
+  {
+   "type": "choice",
+   "q": "A client holds entity 7 at revision 6 (it fetched it directly). The log replay then delivers an entry (id 905, entity 7, revision 5). What should it do?",
+   "options": [
+    "Overwrite with revision 5 so that it follows the log",
+    "Reset the whole client",
+    "Ignore it: the entry is not newer than the local revision, so applying is a no-op",
+    "Delete entity 7"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Idempotent, revision-guarded application lets a client replay overlapping ranges and mix log catch-up with direct fetches safely."
+  },
+  {
+   "type": "order",
+   "q": "Put a client's resume in order.",
+   "items": [
+    "The client sends its stored cursor to the server",
+    "The server returns entries after the cursor up to the latest (or 'cursor too old')",
+    "The client fetches the changed entities in those entries",
+    "The client applies each one if its revision is newer than the local copy",
+    "The client stores the new cursor"
+   ],
+   "explain": "Store the cursor last, after the changes are applied. A crash in between just replays the range, which is safe because applying is idempotent."
+  }
+ ]
+}

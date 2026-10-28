@@ -1,0 +1,62 @@
+{
+ "id": "cursor",
+ "title": "Cursor",
+ "summary": "When several clients read the same data, **don't let them mutate the shared data to track progress**. Each client keeps its **own cursor**: a position in a stable ordering, with the request \"give me everything after my cursor\". The data stays one sequence; each reader's progress is independent, so a slow or offline reader never affects another.\n\nExamples: a Kafka consumer-group offset, an infinite-scroll `next_page_token`, a chat app's `last_seen_message_id` per device, a sync client's `last_cursor`.\n\nWhy not a shared \"read\" flag or delete-after-read? One client's consumption changes what another sees, two devices fight over the flag, and a lost response loses data.\n\nDesign rules:\n- The cursor needs a **stable, total order** such as `(created_at, id)`. A bare timestamp can skip rows that share a value.\n- Prefer a cursor over `OFFSET`: `WHERE (ts, id) > (:ts, :id) ORDER BY ts, id LIMIT 50` seeks through an index and does not shift when rows are inserted. `OFFSET n` has to walk past n rows and repeats or skips items after concurrent inserts.\n- Make it **opaque** (encode and sign it) so the server can change its internals.\n- **Who stores it?** Client-held cursors keep the server stateless; server-held offsets (as in Kafka) let a consumer resume on another machine.\n- A cursor into a log expires with retention. When its position no longer exists, the client must re-sync ([server log](#/sd/f/server-log)).\n\nA cursor is a read position, not a lock or a lease.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A notifications service marks each notification `read = true` on the shared row when any device displays it. A user reads on their phone, and their laptop shows the notification as already read, though they never saw it there. What is the cleaner model?",
+   "options": [
+    "Keep the flag, but clear it on a timer",
+    "Add a per-device flag column for every device",
+    "Keep notifications immutable and let each device store its own cursor (last seen id)",
+    "Delete notifications when first displayed"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Reading should not mutate shared data. Each client keeps its position and asks for what is after it; per-device state lives in the device's cursor, not in one column."
+  },
+  {
+   "type": "choice",
+   "q": "A feed API uses the last row's timestamp as the cursor and queries `created_at > :cursor ORDER BY created_at LIMIT 2`. Three rows share `12:00:00.000`. What happens?",
+   "options": [
+    "Page 1 returns two of the three rows; page 2 starts after `12:00:00.000` and skips the third. Use a tiebreaker such as `(created_at, id)` in the cursor",
+    "Nothing, timestamps are unique",
+    "Page 2 repeats the first two rows",
+    "The query errors out"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "A cursor must identify a unique position in a total order. `(created_at, id) > (:ts, :id)` fixes ties; a bare timestamp skips or repeats rows."
+  },
+  {
+   "type": "number",
+   "q": "An API shows 50 rows per page, newest first, with `OFFSET`. The database has no way to jump to a position and must walk past the skipped rows. How many rows are examined to serve page 20,001 (50 rows on that page)?",
+   "answer": 1000050,
+   "unit": "rows",
+   "tolerance": 0,
+   "explain": "Page 20,001 has offset 20,000 x 50 = 1,000,000, so the database walks 1,000,000 + 50 = 1,000,050 rows. A keyset cursor seeks directly to the position and reads about 50."
+  },
+  {
+   "type": "choice",
+   "q": "A user is on page 3 (offset 100, limit 50) of a newest-first list when 5 new items are inserted at the top. They click 'next page' with `OFFSET 150`. What do they see?",
+   "options": [
+    "Exactly the next 50 items",
+    "5 items are skipped",
+    "The last 5 items of the page they just saw again, because everything shifted down by 5",
+    "An error, since the dataset changed"
+   ],
+   "answer": [
+    2
+   ],
+   "explain": "Offsets are positions counted from the head, so inserts at the head shift every later position. A cursor refers to a specific row and is immune to this."
+  },
+  {
+   "type": "recall",
+   "q": "Why prefer a cursor to a shared 'read' flag or page numbers when many clients read the same data? Name two properties a good cursor needs.",
+   "answer": "Each client's progress is private state, so clients cannot interfere with one another and the data stays unmodified; cursors also seek efficiently and survive inserts, which page numbers and offsets do not. A good cursor needs a **stable total order** (for example `(created_at, id)`) and should be **opaque** to clients; with logs it also needs a retention story, because a cursor that falls behind retention must trigger a re-sync."
+  }
+ ]
+}
