@@ -12,27 +12,27 @@
     {
      "id": "low-level-decision-order",
      "title": "Low-Level Decision Order",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "one-way-door",
      "title": "One-Way Doors",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "two-way-door",
      "title": "Two-Way Doors",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "scalable-simplicity",
      "title": "Scalable Simplicity",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "transaction-boundary",
      "title": "Transaction Boundary",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -43,7 +43,7 @@
     {
      "id": "sli-slo-sla",
      "title": "SLI, SLO and SLA",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -54,22 +54,22 @@
     {
      "id": "tcp-connection",
      "title": "TCP Connections",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "multiplexing",
      "title": "Multiplexing",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "proxy-tcp-termination",
      "title": "Proxies, TCP Termination and NAT",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "anycast",
      "title": "Anycast",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -80,7 +80,7 @@
     {
      "id": "load-balancing",
      "title": "Load Balancing",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -91,17 +91,17 @@
     {
      "id": "cache-invalidation",
      "title": "Cache Invalidation",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "client-side-cache",
      "title": "Client-Side Cache",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "etag",
      "title": "ETag",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -112,12 +112,12 @@
     {
      "id": "data-locality",
      "title": "Data Locality",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "json-vs-sql",
      "title": "JSON vs SQL",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -128,12 +128,12 @@
     {
      "id": "sharding",
      "title": "Sharding",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "partitioning",
      "title": "Partitioning",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "consistent-hashing",
@@ -143,7 +143,7 @@
     {
      "id": "hash-bucketing",
      "title": "Bucketing (Fixed Hash Slots)",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "token-rebalancing",

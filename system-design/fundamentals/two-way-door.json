@@ -1,67 +1,61 @@
 {
  "id": "two-way-door",
  "title": "Two-Way Doors",
- "summary": "A **two-way door** is a decision you can reverse cheaply if it turns out wrong, typically anything that varies with scale: instance counts and sizes, cache TTLs, whether a module runs in-process or as its own service, which queue or cache you use behind a clean interface.\n\nApply **minimalism** here: do the simplest thing that works today, because you can change it when scale demands.\n\nThe key technique is **decouple the components, but delay the split**. Keep clean boundaries in the code (modules that talk through explicit interfaces and own their own data), yet deploy them together as one unit. When growth finally requires separation, splitting a module out becomes a change in *physical deployment shape* (an in-process call becomes an RPC), not a rewrite of the architecture.\n\nThe condition is real: the door only stays two-way if the boundaries are honest. If modules reach into each other's tables or share global state, splitting later is a rewrite and the door has quietly become one-way.\n\nSo: a team of five at a few thousand requests per second does not need twelve microservices and a service mesh. It needs a well-structured [modular monolith](#/sd/f/scalable-simplicity) with clean seams, plus a careful look at the real [one-way doors](#/sd/f/one-way-door): the API, data flow and data model.",
- "drills": [
+ "explain": "A two-way door is a decision you can reverse cheaply, typically anything that varies with scale: instance counts and sizes, cache TTLs, whether a module is in-process or its own service. For those I do the simplest thing that works today, and I decouple components but delay the split.",
+ "model": "Apply **minimalism** to two-way doors. The key technique:\n\n> **Decouple the components, but delay the split.**\n\n```\ntoday (one deployable)              later (if scale demands)\n+--------------------------+        +---------+  RPC  +---------+\n| orders --iface--> billing |  -->  | orders  | ----> | billing |\n|   (own tables)  (own tables)|      +---------+       +---------+\n+--------------------------+\ncall = in-process function           call = network call; same interface\n```\n\nKeep clean boundaries in the code: modules talk through explicit interfaces and **own their own data**, yet deploy together. Splitting later is a change in *physical deployment shape*, not a rewrite of the architecture.\n\n**The condition is real:** if modules reach into each other's tables or share global state, extraction becomes a rewrite and the door has quietly become one-way.\n\nExtraction order: make callers use the interface only, give the module its own schema, swap the in-process call for an RPC client, then deploy separately and shift traffic gradually.\n\nSo five engineers at a few thousand requests per second need a well-structured [modular monolith](#/sd/f/scalable-simplicity), plus a careful look at the real [one-way doors](#/sd/f/one-way-door).",
+ "details": [
   {
-   "type": "choice",
-   "q": "A team of five serves about 2,000 requests per second. A teammate proposes 12 microservices connected by Kafka \"so we can scale later\". What is the better plan?",
-   "options": [
-    "Agree: splitting later is impossible, so split now",
-    "Build a modular monolith with explicit module interfaces and per-module data ownership; extract services only when a module needs independent scaling or ownership",
-    "Build one big ball of code and refactor when it hurts",
-    "Use microservices only for the database layer"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Process layout is a two-way door when boundaries are clean, so pay for distribution only when scale demands it. A big ball of code is the opposite mistake: it turns the later split into a rewrite."
+   "q": "A team of five serves about 2,000 req/s and a teammate proposes 12 microservices with Kafka \"to scale later\". Your answer?",
+   "a": "Build a modular monolith with explicit module interfaces and per-module data ownership, and extract services only when a module needs independent scaling or ownership. Process layout is a two-way door when boundaries are clean, so do not pay for distribution early."
   },
   {
-   "type": "choice",
-   "q": "Which conditions keep a module cheap to extract into its own service later? Select all that apply.",
-   "options": [
-    "Other modules call it only through its public interface",
-    "It owns its tables; no other module queries them directly",
-    "It lives in a separate Git repository from day one",
-    "It does not depend on in-memory global state shared with other modules"
-   ],
-   "answer": [
-    0,
-    1,
-    3
-   ],
-   "explain": "Interface-only access, data ownership and no hidden shared state are what make extraction a deployment change. A separate repo is neither necessary nor sufficient; it adds overhead without creating a boundary."
+   "q": "What keeps a module cheap to extract later?",
+   "a": "Other modules call it only through its public interface, it owns its tables with no one else querying them, and it has no hidden shared in-memory state. A separate repository is neither necessary nor sufficient."
   },
   {
-   "type": "choice",
-   "q": "Which of these is most clearly a two-way door?",
-   "options": [
-    "The ID format exposed in public URLs",
-    "The TTL of an internal cache entry",
-    "The wire format of events consumed by other teams",
-    "Which fields a public webhook payload contains"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "A TTL is a config value that can be changed with a deploy and no external effect. The other three are published contracts that others have built on."
+   "q": "What is the opposite mistake?",
+   "a": "A big ball of code where everything touches everything. It looks simple but turns the later split into a rewrite, so the two-way door becomes one-way."
   },
   {
-   "type": "order",
-   "q": "Order the steps to extract a module from a modular monolith into its own service.",
-   "items": [
-    "Make all callers use the module's interface, with no direct table access",
-    "Give the module its own schema or database",
-    "Replace the in-process call behind the interface with an RPC client",
-    "Deploy the module separately and shift traffic gradually"
-   ],
-   "explain": "Boundaries and data ownership are prepared first, while everything is still in one process and easy to test. Only then does the call become remote; deploying last lets you shift traffic and roll back."
+   "q": "Which is the most clearly a two-way door: a public ID format, an internal cache TTL, an event wire format, a webhook payload?",
+   "a": "The internal cache TTL: a config change with a deploy and no external effect. The others are published contracts that others build on."
   },
   {
-   "type": "recall",
-   "q": "What does \"decouple the components but delay the split\" mean, and what makes it fail?",
-   "answer": "Keep clean module boundaries (interfaces, owned data) inside one deployable so that later separation only changes deployment shape. It fails when modules share tables or global state, because then splitting becomes a rewrite and the two-way door has turned into a one-way door."
+   "q": "What changes when you extract a module into a service?",
+   "a": "An in-process call becomes a network call: now you need timeouts, retries, partial-failure handling, serialization, and often versioned contracts. That is why you wait until scale or ownership justifies it."
+  },
+  {
+   "q": "How do you sequence an extraction safely?",
+   "a": "Force all callers through the interface, give the module its own schema while still in one process, replace the call with an RPC client, then deploy separately and shift traffic gradually so you can roll back."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain \"decouple the components but delay the split\" and what makes it fail.",
+   "points": [
+    "Clean interfaces and owned data inside one deployable",
+    "Later split changes deployment shape only",
+    "Fails when modules share tables or global state",
+    "The door then silently becomes one-way"
+   ]
+  },
+  {
+   "q": "Argue for a modular monolith over microservices for a small team, then say when you would split.",
+   "points": [
+    "Small team and moderate load do not need distribution costs",
+    "Two-way door: reversible if boundaries are honest",
+    "Split when independent scaling, deploy cadence or ownership demands it",
+    "Mention the added failure modes of remote calls"
+   ]
+  },
+  {
+   "q": "Describe the steps to extract a module from a monolith into its own service.",
+   "points": [
+    "Callers use the interface only",
+    "Module gets its own schema",
+    "Replace the in-process call with an RPC client",
+    "Deploy separately and shift traffic gradually"
+   ]
   }
  ]
 }

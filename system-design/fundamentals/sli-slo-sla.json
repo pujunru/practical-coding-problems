@@ -1,77 +1,65 @@
 {
  "id": "sli-slo-sla",
  "title": "SLI, SLO and SLA",
- "summary": "Three layers, each built on the one before:\n\n- **SLI (Service Level Indicator):** a *metric* that measures how the service behaves for users, expressed as a ratio of good events to valid events: \"fraction of requests that return non-5xx\", \"fraction served in under 300 ms\".\n- **SLO (Service Level Objective):** an SLI plus a **target** plus a **time window**: \"99.9% of requests succeed, measured over a rolling 30 days\". It is an internal goal that steers engineering decisions.\n- **SLA (Service Level Agreement):** a **contract** with customers that attaches consequences (credits, refunds, termination rights) if a level is missed. SLAs are deliberately looser than the SLO behind them, so you notice and react before you owe money.\n\nThe target implies an **error budget**: with 99.9%, 0.1% of events (about 43 minutes of full outage per 30 days) may fail. Spend it on deploys and experiments; when it is gone, slow down and fix reliability. Alert on the **burn rate** of the budget rather than on single failures.\n\nChoose SLIs from the **user's** view and use percentiles for latency: an average hides the slow tail that real users feel, and a healthy server CPU says nothing about whether requests succeeded. Related: [load shedding](#/sd/f/load-shedding), timeouts and retries are the mechanisms that defend an SLO under stress.",
- "drills": [
+ "explain": "Three layers, each built on the one before. An SLI is a metric of how the service behaves for users, an SLO is an SLI plus a target plus a time window that steers engineering decisions, and an SLA is a contract that attaches consequences when a level is missed. The SLO implies an error budget I spend on change and protect when it runs low.",
+ "model": "```\nSLI  metric           \"fraction of requests with non-5xx\"  /  \"fraction served < 300 ms\"\nSLO  SLI + target + window    \"99.9% of requests succeed over a rolling 30 days\"\nSLA  contract + consequences  \"below 99.5% monthly: 10% credit\"   (looser than the SLO)\n```\n\n- **SLI:** a ratio of good events to valid events, from the **user's** view. Use percentiles or threshold fractions for latency; averages hide the slow tail, and CPU says nothing about whether requests succeeded.\n- **SLO:** internal goal. **SLA:** external contract, deliberately looser than the SLO so you notice and react before you owe money.\n- **Error budget:** 100% minus the target. 99.9% over 30 days allows 0.1% of 43,200 minutes, about 43.2 minutes of full outage; 99.99% shrinks it to about 4.3 minutes. Spend it on deploys and experiments; when it is gone, slow down and fix reliability.\n- **Alerting:** on the budget **burn rate**, not on single failures.\n\nOperating loop: pick a user journey, choose its SLI, set target and window from expectations and history, alert on burn, use remaining budget in release decisions. Mechanisms that defend an SLO under stress: [load shedding](#/sd/f/load-shedding), timeouts and retries.",
+ "details": [
   {
-   "type": "choice",
-   "q": "Which statement is an SLO rather than an SLI or an SLA?",
-   "options": [
-    "Fraction of HTTP requests answered with non-5xx status",
-    "99.9% of requests succeed, measured over a rolling 30-day window",
-    "If monthly availability falls below 99.5%, the customer receives a 10% credit",
-    "p99 latency of the checkout endpoint in milliseconds"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "An SLO combines an indicator, a target (99.9%) and a window (30 days). The first and last are SLIs (just metrics); the credit clause is an SLA because it carries a contractual consequence."
+   "q": "How do you tell an SLI, an SLO and an SLA apart?",
+   "a": "An SLI is just a metric (p99 latency, success ratio). An SLO adds a target and a window to it (99.9% over 30 days). An SLA is a contract with consequences, such as credits or refunds, when it is missed."
   },
   {
-   "type": "number",
-   "q": "A service has a 99.9% availability SLO over a 30-day window, measured as time with full outage. How many minutes of full outage fit in the error budget? (30 days = 43,200 minutes)",
-   "answer": 43.2,
-   "unit": "minutes",
-   "tolerance": 0.01,
-   "explain": "The budget is 0.1% of the window: 43,200 × 0.001 = 43.2 minutes. Going from 99.9% to 99.99% shrinks it tenfold to about 4.3 minutes, which is why each extra nine costs far more engineering than the last."
+   "q": "How big is the error budget for a 99.9% availability SLO over 30 days?",
+   "a": "0.1% of 43,200 minutes is 43.2 minutes of full outage. Going to 99.99% shrinks it to about 4.3 minutes, which is why each extra nine costs far more engineering than the last."
   },
   {
-   "type": "number",
-   "q": "A request-based SLO requires 99.95% of requests to succeed in a window. The service handles 10,000,000 requests in that window. How many failed requests can it afford?",
-   "answer": 5000,
-   "unit": "requests",
-   "tolerance": 0,
-   "explain": "The allowed failure fraction is 100% − 99.95% = 0.05% = 0.0005, and 10,000,000 × 0.0005 = 5,000. Once 5,000 requests have failed, the budget is spent."
+   "q": "How many failed requests can a 99.95% request-based SLO afford over 10 million requests?",
+   "a": "0.05% of 10,000,000 is 5,000 failed requests. Once that many have failed, the budget is spent."
   },
   {
-   "type": "choice",
-   "q": "Why is the SLA usually set looser than the internal SLO (say SLA 99.5% against an SLO of 99.9%)?",
-   "options": [
-    "Lawyers prefer round numbers",
-    "So the team is alerted and can fix problems while still inside the SLO, before breaching the contract and owing customers",
-    "Because SLAs measure different metrics than SLOs",
-    "Because the SLO is for customers and the SLA is internal"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "The gap is a safety margin. The SLO is the internal target that triggers action; the SLA is the point at which money changes hands. The roles in the last option are reversed."
+   "q": "Why is the SLA looser than the SLO, say 99.5% against 99.9%?",
+   "a": "The gap is a safety margin: the SLO is the internal target that triggers action, the SLA is the point where money changes hands. You want to be alerted and fix things while still inside the contract."
   },
   {
-   "type": "choice",
-   "q": "Which SLI best reflects what users feel about a search endpoint's speed?",
-   "options": [
-    "Mean latency across all requests",
-    "CPU utilisation of the search hosts",
-    "Fraction of requests faster than 300 ms (or p99 latency)",
-    "Number of requests per second"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Averages hide the slow tail, and a handful of 10-second requests barely move the mean. CPU and QPS describe the system, not the user's experience. A threshold fraction or a high percentile captures the tail."
+   "q": "Which SLI best captures how fast search feels?",
+   "a": "The fraction of requests faster than a threshold such as 300 ms, or p99 latency. The mean hides a few 10-second requests, and CPU or QPS describe the system, not the user's experience."
   },
   {
-   "type": "order",
-   "q": "Put the steps of defining and operating an SLO in order.",
-   "items": [
-    "Pick a user journey that matters (e.g. checkout)",
-    "Choose the SLI that measures its quality (success ratio, latency under a threshold)",
-    "Set a target and a window from user expectations and past data",
-    "Alert on error-budget burn rate",
-    "Spend or protect the remaining budget when deciding about releases"
-   ],
-   "explain": "You cannot set a target before you have a metric, nor a metric before you know which user experience matters. Burn-rate alerts and budget-based release decisions only make sense once the SLO exists."
+   "q": "Why alert on burn rate rather than on each error?",
+   "a": "Single failures are expected and within budget. Burn rate tells you whether you are consuming the budget fast enough to exhaust it before the window ends, which is what needs human attention; use multi-window alerts to avoid flapping."
+  },
+  {
+   "q": "What do you do when the error budget is exhausted?",
+   "a": "Freeze risky launches and spend engineering time on reliability until the budget recovers. That policy is what makes the SLO actually steer decisions."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain SLI, SLO and SLA with a concrete example for a checkout service.",
+   "points": [
+    "SLI: success ratio or latency-under-threshold of checkout requests",
+    "SLO: target plus window, such as 99.9% over 30 days",
+    "SLA: contract with credits, looser than the SLO",
+    "Measured from the user's perspective"
+   ]
+  },
+  {
+   "q": "Explain error budgets and how you would use them day to day.",
+   "points": [
+    "Budget is 1 minus the target, for example 43.2 minutes per 30 days at 99.9%",
+    "Spend on deploys and experiments",
+    "Alert on burn rate",
+    "When exhausted, prioritise reliability over features"
+   ]
+  },
+  {
+   "q": "Choose SLIs for a search endpoint and justify them.",
+   "points": [
+    "Availability: fraction of non-error responses",
+    "Latency as a threshold fraction or percentile, not the mean",
+    "User-facing measure rather than CPU or QPS",
+    "Notes the target and window must come from expectations and history"
+   ]
   }
  ]
 }

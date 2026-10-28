@@ -1,73 +1,62 @@
 {
  "id": "low-level-decision-order",
  "title": "Low-Level Decision Order",
- "summary": "When a system is too slow or too big, reach for mechanisms in order of **increasing complexity**. Cheaper, simpler fixes come first; do not shard before you have tried caching.\n\n1. **Eliminate unnecessary work.** Cache repeated reads, deduplicate identical requests, batch small operations. Work that is never done costs nothing and adds almost no moving parts.\n2. **Replicate capacity.** Add more stateless instances (horizontal scaling). Then ask *why you cannot keep replicating*: the answer points at the next step.\n3. **Partition stateful parts.** Once the limit is a single stateful node (one database primary, one in-memory index), replicas of the app do not help; split the state with [partitioning or sharding](#/sd/f/sharding).\n4. **Absorb mismatch with a queue.** When work **arrives** at a different rate or time than it can be **processed**, put a queue between producer and consumer.\n\nThe order is a heuristic, not a law: a queue is sometimes the first and simplest fix for a bursty, delay-tolerant workload. But the habit it builds is right: every step adds operational cost (cache invalidation, rebalancing, ordering and redelivery), so only pay for it when the cheaper steps are exhausted. Pair this with [high-level thinking](#/sd/f/high-level-thinking), which tells you *which* bottleneck you actually have.",
- "drills": [
+ "explain": "When a system is too slow or too big, I reach for mechanisms in order of increasing complexity. First eliminate unnecessary work, then replicate capacity, then partition stateful parts, and use a queue when arrival time and processing time do not match. Each step adds operational cost, so I pay for it only when the cheaper step is exhausted.",
+ "model": "Core principle: the lower the complexity, the earlier it comes.\n\n```\n1. Eliminate work      cache, dedup (single-flight), batch\n2. Replicate capacity  more stateless instances; then ask WHY you cannot keep replicating\n3. Partition state     stateful node is the limit -> partitioning / sharding\n4. Absorb mismatch     work arrives at a different rate/time than it is processed -> queue\n```\n\n- Step 1 adds almost nothing: work not done costs nothing. Example: 10,000 rows/s written at 2 ms per call plus 0.01 ms per row costs about 20,100 ms of database time per second unbatched, but batching 100 per call costs 100 calls x 3 ms = 300 ms.\n- Step 2 hits a wall at anything stateful, such as one database primary; that wall tells you what to partition ([sharding](#/sd/f/sharding)).\n- Step 4 smooths bursts; it does not fix sustained overload, because the backlog just grows.\n\nIt is a heuristic: a queue can be the simplest first fix for a bursty, delay-tolerant workload. Use [high-level thinking](#/sd/f/high-level-thinking) to learn which bottleneck you really have.",
+ "details": [
   {
-   "type": "order",
-   "q": "Put these in the order you would reach for them when a service gets slow.",
-   "items": [
-    "Eliminate unnecessary work (cache, dedup, batch)",
-    "Replicate stateless capacity horizontally",
-    "Partition or shard the stateful component",
-    "Add a queue to absorb arrival-vs-processing mismatch"
-   ],
-   "explain": "Complexity rises down the list. Removing work is nearly free; replicas add routing; sharding adds rebalancing and cross-shard queries; queues add asynchrony, ordering and redelivery concerns."
+   "q": "Why does the order put eliminate-work before add-instances before shard?",
+   "a": "Each step adds more operational complexity: removing work adds almost nothing, replicating stateless instances adds routing, sharding adds rebalancing and cross-shard operations. Pay for the cheaper fix first and move down only when you can explain why it no longer helps."
   },
   {
-   "type": "choice",
-   "q": "A report API recomputes the same expensive aggregation for identical parameters; about 40% of requests are exact repeats and CPU is saturated. What first?",
-   "options": [
-    "Shard the database by customer",
-    "Add a message queue in front of the API",
-    "Cache or deduplicate (single-flight) identical computations",
-    "Double the number of API instances"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Removing 40% of the work is cheaper than any structural change. Adding instances would also work but pays for the redundant computation forever; sharding and queues add complexity that the actual problem (repeated work) does not need."
+   "q": "A report API recomputes the same aggregation and 40% of requests are exact repeats; CPU is saturated. What first?",
+   "a": "Cache or single-flight identical computations. Removing 40% of the work is cheaper than any structural change; more instances would also work but pay for the redundant computation forever."
   },
   {
-   "type": "choice",
-   "q": "A stateless API tier scaled out to 40 instances, but p99 latency stays bad. All instances write to one Postgres primary whose write IOPS are saturated around the clock. What is the next step?",
-   "options": [
-    "Add 40 more API instances",
-    "Partition or shard the data so writes spread over several primaries",
-    "Add a cache in front of the primary to absorb writes",
-    "Put a queue in front and keep one primary"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "You have hit the step-2 wall: replication of the app tier no longer helps because the bottleneck is stateful. A queue only smooths bursts; with sustained saturation the backlog grows without bound. A read cache does not reduce writes."
+   "q": "A stateless tier has 40 instances but p99 is bad, and the single Postgres primary is IOPS-saturated around the clock. Next step?",
+   "a": "Partition or shard so writes spread over several primaries. You have hit the step-2 wall: the bottleneck is stateful. A queue only smooths bursts and a read cache does not reduce writes."
   },
   {
-   "type": "choice",
-   "q": "Traffic jumps tenfold for five minutes each hour, and results may be delivered a few minutes late. Average load is easily handled. Which mechanism fits best?",
-   "options": [
-    "Shard everything so peak load is spread thin",
-    "Provision permanent capacity for the peak",
-    "A queue between producers and workers to absorb the burst",
-    "Remove the cache so no stale data is served"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "The problem is time mismatch between arrival and processing, and delay is acceptable, which is the textbook queue case. Provisioning for peak wastes capacity 92% of the time; sharding fixes volume, not burstiness."
+   "q": "Traffic spikes tenfold for five minutes every hour and a few minutes of delay is fine. What fits?",
+   "a": "A queue between producers and workers: the issue is arrival time versus processing time and delay is acceptable. Provisioning for peak wastes capacity most of the time, and sharding fixes volume, not burstiness."
   },
   {
-   "type": "number",
-   "q": "Each database write call costs a fixed 2 ms of overhead plus 0.01 ms per row. The system receives 10,000 rows per second. If rows are batched 100 per call, how many milliseconds of database time are spent per second of traffic?",
-   "answer": 300,
-   "unit": "ms/s",
-   "tolerance": 0,
-   "explain": "10,000 rows/s ÷ 100 = 100 calls/s. Each call costs 2 + 100 × 0.01 = 3 ms, so 100 × 3 = 300 ms/s. Unbatched it would be 10,000 × 2.01 = 20,100 ms/s, i.e. twenty cores of work. Batching removed the per-call overhead, which is the 'eliminate unnecessary work' step."
+   "q": "When is a queue not the answer?",
+   "a": "When load is sustained above capacity, since the backlog grows without bound, or when callers need an immediate answer. Then you need less work, more capacity or partitioning."
   },
   {
-   "type": "recall",
-   "q": "Why does the order put 'eliminate work' before 'add instances' before 'shard'?",
-   "answer": "Each step adds more operational complexity than the last: removing work adds almost nothing, replicating stateless instances adds routing, sharding adds rebalancing and cross-shard operations. Pay for the cheaper fix first and only move down when you can explain why it no longer helps."
+   "q": "Show a numeric example of eliminating work by batching.",
+   "a": "10,000 rows/s with 2 ms per call + 0.01 ms per row: one row per call costs 10,000 x 2.01 = 20,100 ms/s, about twenty cores. Batches of 100 give 100 calls/s x 3 ms = 300 ms/s. Batching removed per-call overhead."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "State the low-level decision order and the reason for it.",
+   "points": [
+    "Eliminate work, replicate, partition state, queue",
+    "Ordered by increasing operational complexity",
+    "Each step has a cost you pay only when needed",
+    "It is a heuristic, not a law"
+   ]
+  },
+  {
+   "q": "A service is slow. Walk through how you would diagnose and pick a fix using this order.",
+   "points": [
+    "Find the bottleneck first (CPU, stateful store, bursts)",
+    "Check for repeated or batchable work",
+    "Scale stateless tier and see why it stops helping",
+    "Partition the stateful limit",
+    "Use a queue for burst or timing mismatch"
+   ]
+  },
+  {
+   "q": "Distinguish when to choose a queue versus sharding.",
+   "points": [
+    "Queue: time mismatch, bursty, delay-tolerant",
+    "Sharding: sustained volume beyond one stateful node",
+    "Queue backlog grows if overload is sustained",
+    "Sharding does not smooth bursts by itself"
+   ]
   }
  ]
 }

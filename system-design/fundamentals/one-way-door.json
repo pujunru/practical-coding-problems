@@ -1,68 +1,62 @@
 {
  "id": "one-way-door",
  "title": "One-Way Doors",
- "summary": "A **one-way door** is a decision you cannot easily walk back through. The cost of reversing it is not engineering effort in your own code but **other people and stored data depending on it**. The three that matter in system design:\n\n- **API.** Once clients integrate, every field name, meaning, error code and default is a contract. Removing or re-interpreting one breaks someone you cannot redeploy.\n- **Data flow.** Who produces which event, who consumes it, and what the message means. Downstream consumers build on it.\n- **Data modeling.** How data is shaped, keyed and stored. Migrating billions of rows, or changing the meaning of an ID that is already in URLs and other tables, is slow and risky.\n\n**Hold one-way doors to a very high standard**: review them with consumers, write them down, think about what you will want in two years. Prefer designs that can *grow additively* (new optional fields, new endpoints, new event types) because additive changes do not break existing callers; and when a break is unavoidable, version it and migrate gradually.\n\nEverything else (instance sizes, cache TTLs, internal module boundaries, which queue library) is a [two-way door](#/sd/f/two-way-door): decide quickly, change later. The skill is *sorting decisions* into the right bucket, and spending your scarce care on the first.",
- "drills": [
+ "explain": "A one-way door is a decision you cannot easily walk back through, because the cost of reversing it is other people and stored data depending on it, not your own engineering effort. In system design the three that matter are the API, the data flow and the data model. I hold those to a very high standard and decide everything else fast.",
+ "model": "The three classic one-way doors:\n\n- **API:** once clients integrate, every field name, meaning, error code and default is a contract. Removing or re-interpreting one breaks someone you cannot redeploy.\n- **Data flow:** who produces which event, who consumes it, what the message means. Downstream consumers build on it.\n- **Data model:** how data is shaped, keyed and stored. Migrating billions of rows, or changing the meaning of an ID already in URLs and other tables, is slow and risky.\n\nHow to treat them: review with consumers, write them down, think about what you will want in two years, and prefer designs that **grow additively** (new optional fields, endpoints, event types).\n\n```\nbreaking change, safely:\nadd new field/version beside the old -> announce deprecation, help migrate\n   -> watch old traffic fall to ~0 -> remove old\n```\n\nEverything else is a [two-way door](#/sd/f/two-way-door). The skill is *sorting* decisions into the right bucket and spending scarce care on the first. Compare how [high-level thinking](#/sd/f/high-level-thinking) flags what to scrutinise.",
+ "details": [
   {
-   "type": "choice",
-   "q": "Which of these are one-way doors? Select all that apply.",
-   "options": [
-    "The name, type and meaning of a field in a public API response",
-    "The schema and key design of a table that other services read",
-    "The cache eviction policy (LRU vs LFU) of an internal cache",
-    "The shape and meaning of an event that three other teams consume",
-    "The number of replicas of a stateless service"
-   ],
-   "answer": [
-    0,
-    1,
-    3
-   ],
-   "explain": "Public contracts, shared data models and published events all have external dependents. Eviction policy and replica count are internal knobs you can change with a deploy and no one else notices."
+   "q": "Which of these is a one-way door: a public response field, a table other services read, an internal cache eviction policy, an event three teams consume, a replica count?",
+   "a": "The response field, the shared table and the event. They have external dependents. Eviction policy and replica count are internal knobs changeable with a deploy and nobody else notices."
   },
   {
-   "type": "choice",
-   "q": "A public API returns `\"price\": 12.5` (float, dollars). Two years later the team wants integer cents. Why is this painful, and what would have avoided it?",
-   "options": [
-    "It is not painful: just change the field type in the next deploy",
-    "Clients parse the existing field; a silent change breaks them. It needed careful modelling up front, and now needs a versioned or additive change (a new `price_cents` field)",
-    "It is painful only because of the database; the API can change freely",
-    "It could have been avoided by using GraphQL"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "The type and unit of a published field is a contract. The tempting 'just change it' breaks every client you cannot redeploy. The remedy is additive evolution (add the new field, deprecate the old, migrate callers)."
+   "q": "A public API returned `\"price\": 12.5` in dollars and you now want integer cents. Why is that painful?",
+   "a": "Clients parse the published field, so silently changing type or unit breaks everyone you cannot redeploy. The remedy is additive evolution: add `price_cents`, deprecate the old field, migrate callers. Modelling money as integer minor units up front would have avoided it."
   },
   {
-   "type": "choice",
-   "q": "You are unsure whether a new internal service should be one process or two. A team member wants a three-week design review to decide. How should you treat this decision?",
-   "options": [
-    "Spend the three weeks: every architecture decision deserves it",
-    "Decide fast and keep the boundary clean, because process layout is a two-way door; spend the review time on the public API instead",
-    "Defer all decisions until real traffic arrives",
-    "Always choose microservices, since splitting later is impossible"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Care should be proportional to irreversibility. Deployment shape is cheap to change when code boundaries are clean; the API that other teams call is not."
+   "q": "How do you make a breaking change to a published API without breaking clients?",
+   "a": "Run both versions side by side, announce deprecation and help clients migrate, monitor traffic on the old version until it reaches roughly zero, then remove it. Removing first and fixing complaints later is how outages are made."
   },
   {
-   "type": "order",
-   "q": "Order the steps to make a breaking change to a published API without breaking clients.",
-   "items": [
-    "Add the new version or field alongside the old one",
-    "Announce deprecation and help clients migrate",
-    "Monitor traffic on the old version until it reaches (near) zero",
-    "Remove the old version"
-   ],
-   "explain": "Both versions live side by side so nobody is forced to move at once; removal happens only when telemetry shows nobody depends on the old contract. Removing first and fixing complaints later is how outages are made."
+   "q": "A teammate wants a three-week review on whether a new internal service is one process or two. Response?",
+   "a": "Decide fast; process layout is a two-way door if code boundaries are clean. Spend the review time on the API other teams will call."
   },
   {
-   "type": "recall",
-   "q": "Name the three classic one-way doors in system design and give one habit that lowers their risk.",
-   "answer": "API, data flow, and data modeling. Habit: design them to evolve additively (new optional fields/events instead of changing existing ones), review them with consumers, and version any unavoidable break."
+   "q": "Why is data modelling a one-way door even when you own the database?",
+   "a": "Because stored data and IDs leak into other tables, URLs, caches, exports and downstream consumers. Changing keys or meanings means migrating all of them, usually online and with dual writes."
+  },
+  {
+   "q": "What habit lowers the risk of a one-way door?",
+   "a": "Design for additive growth, review with the consumers before shipping, write the contract down, and version any unavoidable break."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain one-way doors and name the three that matter in system design.",
+   "points": [
+    "Hard to reverse because others and stored data depend on it",
+    "API, data flow, data model",
+    "Cost is outside your own code",
+    "Hold them to a very high standard"
+   ]
+  },
+  {
+   "q": "You must change a published API field's meaning. Walk through how you roll it out.",
+   "points": [
+    "Add new field or version beside the old one",
+    "Announce deprecation and help migration",
+    "Monitor old-version traffic",
+    "Remove only when usage is near zero",
+    "Prefer additive changes"
+   ]
+  },
+  {
+   "q": "Sort these into one-way and two-way doors and justify: cache TTL, event schema, instance type, URL ID format, internal module layout.",
+   "points": [
+    "Event schema and URL ID format are one-way",
+    "TTL, instance type and module layout are two-way",
+    "Reason is external dependents versus a local deploy",
+    "Spend review effort proportional to irreversibility"
+   ]
   }
  ]
 }

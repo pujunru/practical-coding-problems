@@ -1,69 +1,67 @@
 {
  "id": "client-side-cache",
  "title": "Client-Side Cache",
- "summary": "The cheapest request is the one never sent. HTTP lets the server steer browser and CDN caching through the `Cache-Control` response header:\n\n- **`no-store`**: do not keep it anywhere (browser, CDN, proxy). For secrets and sensitive pages.\n- **`no-cache`**: despite the name, it *may* be stored, but must be **revalidated before every reuse** (typically with an [ETag](#/sd/f/etag) conditional request, which returns `304` if unchanged).\n- **`max-age=3600`**: the response is *fresh* for 3,600 seconds; the browser reuses it with **no request at all**. If a CDN held it for 600 s, the `Age` header says so and counts against this lifetime.\n- **`private`**: only the user's own browser may cache it. Shared caches (CDN, proxy) must not. Use for per-user responses.\n- **`public`** / **`s-maxage`**: shared caches may store it, with their own lifetime.\n- **`immutable`**: do not revalidate even on reload; pair with a long `max-age` for content-hashed files like `app.3f9a1c.js`.\n\nMental model: freshness (`max-age`) decides **whether to ask**; validators (ETag, `Last-Modified`) decide **whether the answer changed**; scope (`private`/`public`) decides **who may keep it**.\n\nPractical recipe: fingerprinted static assets get a year and `immutable`; HTML that references them gets `no-cache`; personalised API responses get `private` with a short `max-age`, or `no-store` if sensitive. Remember the downside: a long `max-age` cannot be recalled, which is why the URL must change when content changes. See [cache invalidation](#/sd/f/cache-invalidation) for the server-side counterpart.",
- "drills": [
+ "explain": "The cheapest request is the one never sent. With HTTP caching the server steers the browser and CDN through the Cache-Control header: how long a response is fresh, whether it must be revalidated, and who may store it. I pick the header per kind of content rather than one policy for the whole site.",
+ "model": "Three questions, each answered by a different mechanism:\n\n| Question | Mechanism |\n| --- | --- |\n| **Whether to ask** the server again | freshness: `max-age` |\n| **Whether the answer changed** | validators: [ETag](#/sd/f/etag), `Last-Modified` |\n| **Who may keep a copy** | scope: `private` / `public` |\n\nDirectives:\n- `no-store`: keep nowhere (browser, CDN, proxy); for secrets.\n- `no-cache`: may store, but **revalidate before every reuse** (conditional request, `304` if unchanged).\n- `max-age=3600`: fresh for 3,600 s; reuse with no request. A CDN-held copy shows its time in `Age`, which counts against the lifetime.\n- `private`: only the user's browser; `public` / `s-maxage`: shared caches too.\n- `immutable`: never revalidate, for content-hashed files.\n\n**Recipe:** fingerprinted assets (`app.3f9a1c.js`) get a year and `immutable`; the HTML that references them gets `no-cache`; personalised API data gets `private` with a short `max-age`, or `no-store` if sensitive. A long `max-age` cannot be recalled, so the URL must change when the content does. Server-side counterpart: [cache invalidation](#/sd/f/cache-invalidation).",
+ "details": [
   {
-   "type": "choice",
-   "q": "A banking dashboard HTML page must never be shown stale, but you still want cheap 304 responses when it has not changed. Which header fits?",
-   "options": [
-    "Cache-Control: no-store",
-    "Cache-Control: no-cache",
-    "Cache-Control: max-age=0, public",
-    "Cache-Control: immutable"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "no-cache means 'store it, but revalidate before reuse', so every load costs a small conditional request that returns 304 when nothing changed. no-store would forbid storing at all and always cost a full download. Its name misleads many people."
+   "q": "What is the difference between no-store and no-cache?",
+   "a": "no-store forbids keeping the response at all, so every request is a full download. no-cache allows storing but requires revalidation before each reuse, so an unchanged page costs only a small conditional request returning 304. The name misleads people."
   },
   {
-   "type": "choice",
-   "q": "Your API returns personalised account data behind a CDN. You want the user's browser to reuse it for 60 seconds, but the CDN must never serve one user's data to another. Which header?",
-   "options": [
-    "Cache-Control: public, max-age=60",
-    "Cache-Control: private, max-age=60",
-    "Cache-Control: no-cache",
-    "Cache-Control: s-maxage=60"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "private restricts storage to the single user's browser cache. public and s-maxage invite shared caches to store it, which would leak data between users unless the cache key includes the user."
+   "q": "A banking HTML page must never be stale but should be cheap when unchanged. Which header?",
+   "a": "`Cache-Control: no-cache` with an ETag. Every load revalidates; if nothing changed the server answers 304 with no body."
   },
   {
-   "type": "choice",
-   "q": "You ship a build with files named app.3f9a1c.js, where the hash changes whenever the content changes. What caching policy is best for those files?",
-   "options": [
-    "no-cache, to always be safe",
-    "public, max-age=31536000, immutable",
-    "max-age=60",
-    "no-store"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "The URL itself changes with the content, so a stale copy can never be served for new content; caching forever costs nothing. The HTML that references the hashed names is the part that needs no-cache."
+   "q": "Personalised API data sits behind a CDN. How do you let the browser reuse it for 60 s without leaking between users?",
+   "a": "`Cache-Control: private, max-age=60`. private limits storage to the single user's browser; public or s-maxage would invite the CDN to store it and serve it to others."
   },
   {
-   "type": "number",
-   "q": "A CDN received a response with `Cache-Control: max-age=3600` and has held it for 600 seconds. The browser fetches it from the CDN, which adds `Age: 600`. Ignoring transit time, for how many more seconds can the browser reuse it without contacting anyone?",
-   "answer": 3000,
-   "unit": "seconds",
-   "tolerance": 0,
-   "explain": "Freshness lifetime 3,600 s minus current age 600 s = 3,000 s. The Age header is how downstream caches know part of the lifetime is already spent, so stacked caches do not extend the total freshness."
+   "q": "How do you cache fingerprinted static files?",
+   "a": "`public, max-age=31536000, immutable`. The URL changes whenever the content does, so a stale copy can never be served for new content; the HTML that references the hashed names is what needs no-cache."
   },
   {
-   "type": "order",
-   "q": "Order the browser's decision when a cached resource is requested.",
-   "items": [
-    "Look up the resource in the local cache",
-    "If it is fresh (within max-age), use it with no request",
-    "If stale and it has a validator, send a conditional request (If-None-Match)",
-    "If the server answers 304, reuse the cached body and refresh its lifetime",
-    "If the server answers 200, replace the cached copy with the new response"
-   ],
-   "explain": "Freshness is checked first, because a fresh entry needs no network at all. Only a stale entry triggers revalidation, and the server's answer (304 vs 200) decides whether the body is reused."
+   "q": "How long can a browser reuse a response with max-age=3600 that the CDN has already held for 600 s?",
+   "a": "3,600 - 600 = 3,000 more seconds. The Age header tells downstream caches part of the lifetime is spent, so stacked caches do not extend total freshness."
+  },
+  {
+   "q": "What does the browser do when a cached resource is requested?",
+   "a": "It checks freshness first; a fresh entry is used with no network. A stale entry with a validator triggers a conditional request (If-None-Match); 304 reuses the body and refreshes its lifetime, 200 replaces the copy."
+  },
+  {
+   "q": "What is the downside of a long max-age?",
+   "a": "It cannot be recalled: clients will not ask again until it expires. That is why long lifetimes belong on content-addressed URLs, not on mutable ones."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain the three roles in HTTP caching: freshness, validators and scope.",
+   "points": [
+    "max-age decides whether to ask the server",
+    "ETag / Last-Modified decide whether the answer changed",
+    "private / public decide who may store it",
+    "Gives a concrete header example for each"
+   ]
+  },
+  {
+   "q": "Choose cache headers for a typical web app: hashed JS bundles, the HTML shell, a personalised API and a page with secrets.",
+   "points": [
+    "Bundles: long max-age, immutable",
+    "HTML shell: no-cache plus validators",
+    "Personalised API: private with short max-age",
+    "Secrets: no-store",
+    "Reason for each choice"
+   ]
+  },
+  {
+   "q": "Walk through a request for a cached resource that has gone stale.",
+   "points": [
+    "Freshness check fails, validator exists",
+    "Conditional request with If-None-Match",
+    "304 reuses cached body and refreshes lifetime",
+    "200 replaces the stored copy",
+    "Mention Age when a CDN is in between"
+   ]
   }
  ]
 }

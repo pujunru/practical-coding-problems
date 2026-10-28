@@ -1,74 +1,61 @@
 {
  "id": "etag",
  "title": "ETag",
- "summary": "An **ETag** is a **version tag** for a resource representation: a string the server returns in the `ETag` header that changes whenever the content changes. It can literally be a version number or, more commonly, a **signature** such as a content hash, so that \"same tag\" means \"same content\".\n\nIts main use is **cache revalidation**:\n1. The first response carries `ETag: \"v7\"`.\n2. When the cached copy is stale, the client sends `If-None-Match: \"v7\"`.\n3. If unchanged, the server returns **`304 Not Modified` with no body**, and the client reuses its copy. If changed, a normal `200` with a new body and tag.\n\nThis saves **bandwidth and transfer time**, not the round trip. It saves server work too, *if* the tag is cheap to compute: derive it from a stored row version or `updated_at` rather than rendering and hashing the whole body. When several servers answer, they must generate the **same tag for the same content** (a content hash, not a file inode or timestamp).\n\nThe same mechanism gives **optimistic concurrency** for writes: send `If-Match: \"v3\"` with a `PUT`, and the server rejects it with **`412 Precondition Failed`** if the current version is no longer v3, preventing silent lost updates.\n\n*Strong* tags mean byte-identical; *weak* tags (`W/\"...\"`) mean semantically equivalent. See [client-side caching](#/sd/f/client-side-cache) for the surrounding headers.",
- "drills": [
+ "explain": "An ETag is a version tag for a resource: a string the server returns that changes whenever the content changes. It can be a plain version number or, more commonly, a signature such as a content hash. I use it for cache revalidation, so an unchanged resource costs a tiny 304 instead of a full download, and for optimistic concurrency on writes.",
+ "model": "ETag is, simply put, a version number; very often it is the resource's signature, so \"same tag\" means \"same content\".\n\n```\nGET /report            -> 200  ETag: \"v7\"   (body)\n...cached copy goes stale...\nGET /report\nIf-None-Match: \"v7\"    -> 304 Not Modified  (no body)   # still v7: reuse your copy\n                       -> 200  ETag: \"v8\"   (new body)  # changed\n```\n\n- **Revalidation:** saves bandwidth and transfer time, not the round trip. To skip the round trip the response must still be fresh (`max-age`; see [client-side caching](#/sd/f/client-side-cache)).\n- **Cheap tags:** derive from a stored row version or `updated_at` so the server can answer 304 before rendering anything. Multiple servers must emit the **same tag for the same content** (a content hash, not an inode or timestamp).\n- **Optimistic concurrency:** `PUT` with `If-Match: \"v3\"`; if the current version is no longer v3 the server returns `412 Precondition Failed`, preventing lost updates.\n- **Strong vs weak:** `\"abc\"` means byte-identical; `W/\"abc\"` means semantically equivalent.",
+ "details": [
   {
-   "type": "order",
-   "q": "Order a conditional GET that finds the resource unchanged.",
-   "items": [
-    "Server's first response includes ETag: \"v7\"",
-    "Client's cached copy becomes stale",
-    "Client sends the request with If-None-Match: \"v7\"",
-    "Server sees the current tag is still \"v7\" and replies 304 with no body",
-    "Client reuses its cached body"
-   ],
-   "explain": "The client echoes the tag back as a question: 'is this still current?'. A 304 carries no body, which is where the saving comes from."
+   "q": "What does a 304 save compared with a 200?",
+   "a": "The response body only. The request and response still make the round trip. To avoid the round trip the cached response must still be fresh, so the client does not ask at all."
   },
   {
-   "type": "choice",
-   "q": "What does a 304 response save compared with a fresh 200?",
-   "options": [
-    "The network round trip",
-    "The transfer of the response body",
-    "The TLS handshake",
-    "The client's cache lookup"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "The request and response still travel, so the round trip is paid. Only the body is omitted. To save the round trip itself, the response must still be fresh (max-age) so the client does not ask."
+   "q": "Why is hashing the whole body a poor way to compute an ETag for an expensive endpoint?",
+   "a": "You must render the body to hash it, so a 400 ms report still costs 400 ms even when the answer is 304. Derive the tag from a stored row version, updated_at or a counter and check it before rendering."
   },
   {
-   "type": "choice",
-   "q": "Computing an ETag by hashing the full response body is expensive for a large report endpoint that takes 400 ms to render. What is the better design?",
-   "options": [
-    "Skip ETags altogether",
-    "Derive the ETag from a cheap version (row version, updated_at or a version counter) and check it before rendering",
-    "Hash only the first 100 bytes of the body",
-    "Use a random ETag each time"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "If the tag comes from stored metadata, the server can answer 304 without doing the 400 ms render. Hashing a partial body risks equal tags for different content; a random tag defeats caching."
+   "q": "Why must servers behind a load balancer produce identical ETags?",
+   "a": "Otherwise a client revalidating against a different server sees a different tag for the same content and gets a full 200. Use a content hash or stored version, not inode numbers or file timestamps that differ per machine."
   },
   {
-   "type": "choice",
-   "q": "Two editors load a document with ETag \"v3\". Editor A saves with `If-Match: \"v3\"` and succeeds, moving the document to \"v4\". Editor B then saves with `If-Match: \"v3\"`. What should the server return?",
-   "options": [
-    "200 OK, applying B's change on top",
-    "412 Precondition Failed, so B must refetch and merge",
-    "304 Not Modified",
-    "404 Not Found"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "If-Match says 'only apply if the current version is still v3'. That is false after A's save, so rejecting B prevents a silent lost update. Accepting would overwrite A's change without B ever seeing it."
+   "q": "How does If-Match prevent lost updates?",
+   "a": "Editor A and B both load version v3. A saves with If-Match v3 and succeeds, moving it to v4. B's save with If-Match v3 now fails with 412, so B must refetch and merge instead of silently overwriting A."
   },
   {
-   "type": "number",
-   "q": "10,000 clients poll a 2 MB JSON resource every 30 seconds. Assume 99% of polls find it unchanged, and that with ETags an unchanged poll costs a 304 whose size you can ignore. How much body data per second does the server send with ETags, in MB/s?",
-   "answer": 6.67,
-   "unit": "MB/s",
-   "tolerance": 0.1,
-   "explain": "Polls per second = 10,000 ÷ 30 ≈ 333.3. Only 1% change: 3.33 full responses/s × 2 MB ≈ 6.67 MB/s. Without ETags every poll returns the body: 333.3 × 2 MB ≈ 667 MB/s, a 100× difference."
+   "q": "How much does ETag polling save? Take 10,000 clients polling a 2 MB resource every 30 s, 99% unchanged.",
+   "a": "Polls are about 333/s. With ETags only 1% return the body: 3.33 x 2 MB, about 6.7 MB/s. Without them every poll returns it: about 667 MB/s, a 100x difference."
   },
   {
-   "type": "recall",
-   "q": "What does an ETag represent, and what are two uses beyond plain caching?",
-   "answer": "It is a version tag for a resource representation (a version number or a content signature). Beyond cache revalidation with If-None-Match → 304, it enables optimistic concurrency (If-Match on writes, 412 on conflict) and it can serve as a cheap change detector for sync or polling."
+   "q": "Strong versus weak ETags?",
+   "a": "A strong tag promises byte-for-byte identity and is needed for range requests. A weak tag (W/\"...\") promises only semantic equivalence, which is enough for page caching when, say, compression or whitespace may differ."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain ETags to an interviewer and describe a conditional GET.",
+   "points": [
+    "A version tag or content signature for a representation",
+    "Server returns it in the ETag header",
+    "Client sends If-None-Match when the copy is stale",
+    "Unchanged: 304 with no body; changed: 200 with new tag"
+   ]
+  },
+  {
+   "q": "Besides caching, how else is an ETag useful?",
+   "points": [
+    "Optimistic concurrency with If-Match and 412",
+    "Prevents silent lost updates",
+    "Cheap change detection for polling or sync",
+    "Needs cheap, consistent tag generation"
+   ]
+  },
+  {
+   "q": "Design ETag generation for a heavy report endpoint behind several servers.",
+   "points": [
+    "Tag from a stored version or updated_at, not from the rendered body",
+    "Check the tag before rendering to answer 304 cheaply",
+    "Same content gives the same tag on every server",
+    "Mention weak vs strong tags"
+   ]
   }
  ]
 }

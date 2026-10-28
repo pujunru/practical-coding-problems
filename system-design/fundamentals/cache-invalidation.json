@@ -1,74 +1,66 @@
 {
  "id": "cache-invalidation",
  "title": "Cache Invalidation",
- "summary": "Caching is easy; knowing **when the cached copy is wrong** is hard. Two postures:\n\n**Eventual consistency (the usual choice): cache-aside.**\n1. Update the data in a DB transaction and **commit**.\n2. **Delete** the cache key (or tag) after the commit.\n3. The next read misses, rebuilds from the DB and refills the cache.\n\nWhy delete rather than update the cache? Two concurrent writers can update the cache in the opposite order to their DB commits and leave a stale value in place indefinitely. Deleting is idempotent and order-insensitive. Why *after* commit? If you delete first, a reader can refill from the not-yet-updated row.\n\nResidual race: a slow reader reads the old row, the writer commits and deletes, then the reader stores the old value. Defences: a **TTL** as a backstop, and **versioned fills** where the cache accepts a write only if its version (row version or [fencing token](#/sd/f/fencing-token)) is not older, a compare-and-set. After deleting a hot key, many readers miss together; use **single-flight** (one rebuild, the rest wait) or stale-while-revalidate.\n\n**Strong consistency:** when stale reads are not acceptable, read through the transaction (the source of truth) or validate the cache entry against a version before using it. You trade latency for correctness.\n\nThe policy decision is [eventual vs strong](#/sd/f/eventual-consistency) per piece of data, not per system.",
- "drills": [
+ "explain": "Caching is easy; knowing when the cached copy is wrong is the hard part. My default is cache-aside with eventual consistency: commit the change in the database, then delete the cache key, and let the next read rebuild it. When stale reads are unacceptable, I read through the transaction instead.",
+ "model": "**Eventual consistency (the usual choice): cache-aside**\n\n```\n1. UPDATE row in a DB transaction, COMMIT\n2. DELETE cache key (or tag) after the commit\n3. next read: miss -> read DB -> fill cache\n```\n\n- **Delete, don't update:** two writers can apply cache updates in the opposite order to their DB commits and leave a stale value; a delete is idempotent and order-insensitive.\n- **After commit, not before:** deleting first lets a reader refill from the not-yet-updated row.\n- **Residual race:** a slow reader fetches the old row, the writer commits and deletes, then the reader stores the old value. Defences: a **TTL** backstop and **versioned fills** (compare-and-set with a row version or [fencing token](#/sd/f/fencing-token)).\n- **Stampede:** after deleting a hot key, many readers miss together; use single-flight or stale-while-revalidate.\n\n**Strong consistency:** read through the transaction (source of truth) or validate the cache entry against a version before use; you trade latency for correctness. Decide [eventual vs strong](#/sd/f/eventual-consistency) per piece of data, not per system.",
+ "details": [
   {
-   "type": "order",
-   "q": "Put the cache-aside write-and-refill flow in order.",
-   "items": [
-    "Update the row inside a DB transaction and commit",
-    "Delete the cache key (or tag)",
-    "A later read misses the cache",
-    "The reader loads the row from the DB",
-    "The reader stores the fresh value in the cache"
-   ],
-   "explain": "Deleting must come after the commit, otherwise a read in between would refill the cache from the old row. The refill is lazy: nothing is written to the cache until someone asks."
+   "q": "Why delete the cache key on write instead of writing the new value?",
+   "a": "Because of ordering. With update-cache, the last cache write wins, which need not be the last DB write when writers race. A delete is idempotent and forces the next read to rebuild from the source of truth."
   },
   {
-   "type": "choice",
-   "q": "Why does cache-aside delete the key on write instead of writing the new value into the cache?",
-   "options": [
-    "Deleting is faster than a cache write",
-    "Two concurrent writers can apply their cache writes in a different order than their DB commits, leaving a stale value indefinitely; a delete is idempotent and order-insensitive",
-    "Caches cannot store updated values",
-    "It saves memory only"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Ordering is the real issue. With 'update cache' the last cache write wins, which need not be the last DB write. A delete just forces the next read to rebuild from the truth."
+   "q": "Why must the delete come after the commit?",
+   "a": "If you delete first, a reader can miss in between, read the still-old row and put the old value back, where it stays until the TTL. Deleting after commit removes that window."
   },
   {
-   "type": "choice",
-   "q": "A developer deletes the cache key first and then commits the DB transaction, 'to be safe'. What can go wrong?",
-   "options": [
-    "Nothing; both orders are equivalent",
-    "A reader can miss in between, read the old row, and put the old value back in the cache after the delete, where it stays until TTL",
-    "The commit will fail",
-    "The cache key will be deleted twice"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Between the delete and the commit the DB still holds the old data, so the refill restores staleness. Deleting after the commit removes that window (but not every race, see the next drill)."
+   "q": "What race remains with delete-after-commit, and how do you bound it?",
+   "a": "A slow reader reads the old row, loses a race with the writer's commit and delete, then stores the old value. Use a TTL as a backstop and fills that carry a version and are rejected if older than what the cache has seen (compare-and-set). Locking the whole cache would kill throughput."
   },
   {
-   "type": "choice",
-   "q": "Even with delete-after-commit, a slow reader can read the old row, lose a race with a writer's commit and delete, and then store the old value. Which combination best bounds the damage?",
-   "options": [
-    "Hope it is rare",
-    "A TTL as a backstop, plus fills that carry a version (row version or fencing token) and are rejected if older than what the cache has seen",
-    "Locking the entire cache during every write",
-    "Making readers sleep a random time before filling"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "A versioned compare-and-set makes the stale fill lose, and the TTL guarantees that anything that still slips through is eventually removed. Locking the cache kills throughput, and sleeping only narrows the window."
+   "q": "What happens when a hot key is deleted?",
+   "a": "Every reader misses at once and hits the database. At 2,000 reads/s and a 50 ms rebuild, about 2,000 x 0.05 = 100 requests pile onto the same row. Single-flight lets one rebuild proceed while the rest wait, and stale-while-revalidate serves the old value meanwhile."
   },
   {
-   "type": "number",
-   "q": "A hot key receives 2,000 reads per second. It is deleted on update, and rebuilding it from the DB takes 50 ms. Without any protection, about how many requests miss and hit the DB during one rebuild?",
-   "answer": 100,
-   "unit": "requests",
-   "tolerance": 0.1,
-   "explain": "Requests arrive at 2,000/s = 2 per ms, and the rebuild window is 50 ms, so about 2 × 50 = 100 requests pile onto the database for the same row. Single-flight lets one rebuild proceed while the other 99 wait for its result."
+   "q": "What is the role of the TTL if you already invalidate explicitly?",
+   "a": "A safety net. Invalidation messages can be lost or raced, so the TTL bounds how long any mistake can live. Pick it by how stale that data may be."
   },
   {
-   "type": "recall",
-   "q": "When is eventual consistency via cache-aside not enough, and what do you do instead?",
-   "answer": "When a reader must never see stale data (for example after a payment or permission change): read through the transaction or source of truth, or validate the cached entry against a version before using it, accepting the extra latency. Typically only the critical fields get this treatment; the rest stays eventually consistent."
+   "q": "When is cache-aside not enough?",
+   "a": "When a reader must never see stale data, such as after a payment or permission change. Read through the transaction or validate the cached entry against a version first, accepting extra latency; usually only the critical fields get this treatment."
+  },
+  {
+   "q": "How does tag-based invalidation help?",
+   "a": "Entries that depend on one entity carry a tag; deleting the tag evicts all of them without enumerating keys. It suits derived values like list pages built from many rows."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain cache-aside invalidation and why each step is ordered the way it is.",
+   "points": [
+    "Commit in the database first",
+    "Delete (not update) the cache key afterwards",
+    "Next read misses and rebuilds from the DB",
+    "Delete avoids writer-ordering problems",
+    "Delete-before-commit lets a reader refill stale data"
+   ]
+  },
+  {
+   "q": "Describe the remaining stale-data race and the layered defences.",
+   "points": [
+    "Slow reader reads old row, writer commits and deletes, reader stores old value",
+    "Versioned compare-and-set fill rejects older versions",
+    "TTL bounds anything that slips through",
+    "Single-flight or stale-while-revalidate for hot-key stampedes"
+   ]
+  },
+  {
+   "q": "A user changes a permission and must lose access immediately. How does your caching change?",
+   "points": [
+    "Eventual consistency is not acceptable for this data",
+    "Read through the transaction or validate a version before using the cache",
+    "Accept the latency cost for these fields only",
+    "Everything else may stay cache-aside"
+   ]
   }
  ]
 }

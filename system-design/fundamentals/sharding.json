@@ -1,76 +1,65 @@
 {
  "id": "sharding",
  "title": "Sharding",
- "summary": "Sharding splits one dataset across several nodes so that **each node owns a disjoint subset of the keys** and only serves that subset. It is how you scale *writes and storage*, which replicas cannot (replicas copy everything). In general, any mapping that shrinks a problem to a piece one node can handle is sharding.\n\nThe decision is the **shard key** and how it maps to a shard:\n\n- **Hash** (`hash(key) % N`, or a ring/slot table): even spread, no range scans.\n- **Key range** (`1–100`, `101–200`): range scans work, but sequential keys pile onto one shard.\n- **Time range**: cheap to expire old data, but today's shard takes all the writes.\n- **Tenant**, **geo**, or a **specific business key**: queries stay on one shard, at the price of uneven sizes.\n\nThree exam points follow every sharding design:\n\n1. **Skew is inevitable.** Fix it by choosing a better key, [salting](#/sd/f/salting) hot keys, or automatically splitting a big or busy shard into sub-shards.\n2. **Scaling out means moving data.** See [token rebalancing](#/sd/f/token-rebalancing) and [consistent hashing](#/sd/f/consistent-hashing).\n3. **Cross-shard transactions are expensive.** Choose a key that keeps data written together on one shard before reaching for two-phase commit.\n\nLogical units versus physical placement is covered in [partitioning](#/sd/f/partitioning).",
- "drills": [
+ "explain": "Sharding splits one dataset across several nodes so that each node owns a disjoint subset of the keys and serves only that subset. It is how I scale writes and storage, which replicas cannot, because replicas copy everything. The real decisions are the shard key and how it maps to a shard.",
+ "model": "```\nkey --(shard key mapping)--> shard 1 | shard 2 | shard 3     (disjoint key sets)\n```\n\nWays to choose the shard:\n\n| Method | Good for | Watch for |\n| --- | --- | --- |\n| **Hash** (`hash(key) % N`, ring, slot table) | even spread | no range scans; resharding moves keys |\n| **Key range** (1-100, 101-200) | range scans | sequential keys pile onto one shard |\n| **Time range** | cheap expiry of old data | today's shard takes all writes |\n| **Tenant** / **geo** / **business key** | queries stay on one shard | uneven sizes, big tenants |\n\nThree points follow every design:\n1. **Skew is inevitable:** change the key, [salt](#/sd/f/salting) hot keys, or auto-split a big or busy shard into sub-shards.\n2. **Scaling out moves data:** see [token rebalancing](#/sd/f/token-rebalancing), [consistent hashing](#/sd/f/consistent-hashing).\n3. **Cross-shard transactions are expensive:** pick a key that keeps data written together on one shard before reaching for 2PC.\n\nLogical units versus physical placement: [partitioning](#/sd/f/partitioning).",
+ "details": [
   {
-   "type": "choice",
-   "q": "An events table is sharded by `created_at` month. A dashboard writes new events continuously and mostly reads the last day. What is the main problem with this shard key?",
-   "options": [
-    "Every write targets the newest shard, so one shard is a hotspot while older shards sit idle",
-    "Time ranges cannot be used as shard keys",
-    "Old data can no longer be deleted cheaply",
-    "Range scans over time become impossible"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Time-range sharding makes retention cheap (drop a whole old shard) and range scans easy, but monotonically increasing keys send all current writes to the last shard. Deleting old data is actually the strength, not the weakness."
+   "q": "Why shard instead of adding replicas?",
+   "a": "Replicas copy the whole dataset, so they scale reads and availability but not writes or storage. Sharding gives each node only a slice, so write throughput and capacity grow with node count."
   },
   {
-   "type": "number",
-   "q": "A cluster uses `hash(key) % N`. It grows from 4 shards to 5. Assume hashes are uniformly distributed. What percentage of keys stay on the same shard?",
-   "answer": 20,
-   "unit": "%",
-   "tolerance": 0,
-   "explain": "A key stays only if `h mod 4 == h mod 5`. Over one cycle of 20 consecutive hash values that holds for h = 0, 1, 2, 3, so 4 of 20 = 20%. 80% of keys move, which is why modulo hashing is a poor fit when the shard count changes."
+   "q": "An events table is sharded by created_at month and mostly written with new data. What is wrong?",
+   "a": "Every write targets the newest shard, so one shard is a hotspot while older ones idle. Time-range sharding makes retention cheap (drop an old shard) and range scans easy, but monotonically increasing keys concentrate current writes."
   },
   {
-   "type": "choice",
-   "q": "One celebrity account makes shard 7 take 60% of all traffic. Which responses address this? Select all that apply.",
-   "options": [
-    "Add a random suffix to the hot key so its load spreads over several shards, and merge on read",
-    "Automatically split shard 7 into sub-shards by size or load",
-    "Add more replicas of shard 7 to absorb the writes",
-    "Choose a shard key that spreads this entity's data"
-   ],
-   "answer": [
-    0,
-    1,
-    3
-   ],
-   "explain": "Salting, splitting and a better key all redistribute the load. Replicas copy the same data, so they help reads but every write still lands on shard 7's primary; they do not fix a write hotspot."
+   "q": "The cluster uses hash(key) % N and grows from 4 to 5 shards. How many keys keep their shard?",
+   "a": "About 20%: a key stays only if h mod 4 equals h mod 5, which holds for 4 of every 20 hash values. So 80% move, which is why modulo hashing suits a fixed shard count; use a ring or fixed bucket table instead."
   },
   {
-   "type": "choice",
-   "q": "An order service shards orders by `order_id` and inventory by `sku`. Placing an order must decrement stock and insert the order atomically. What is the best first design move?",
-   "options": [
-    "Use two-phase commit across shards for every order",
-    "Pick a shard key that keeps data written together on one shard where possible, and only use cross-shard coordination for what remains",
-    "Ignore atomicity and fix inconsistencies in a nightly job",
-    "Move everything to one shard"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Cross-shard transactions are slow and fragile, so shrink their scope first with co-location (for example by tenant or by order-owner). 2PC is the fallback, not the opener. Moving to one shard abandons the reason for sharding."
+   "q": "One celebrity account makes one shard take 60% of traffic. What helps?",
+   "a": "Salt the hot key so its load spreads over several shards and merge on read, auto-split the shard by size or load, or choose a key that spreads that entity. Adding replicas helps reads only; every write still lands on the same primary."
   },
   {
-   "type": "order",
-   "q": "Put the steps of splitting an overloaded shard into two sub-shards in order.",
-   "items": [
-    "Detect that the shard exceeds a size or load threshold",
-    "Create the new sub-shard and copy the upper half of the key range while the old shard keeps serving",
-    "Catch up on writes that arrived during the copy",
-    "Switch routing for that range to the new sub-shard",
-    "Delete the moved range from the old shard"
-   ],
-   "explain": "Routing must flip only after the copy has caught up, otherwise reads for the moved range find nothing. Deleting last keeps the old copy as a fallback until the switch is proven."
+   "q": "Order and placing an order must decrement stock atomically, but orders shard by order_id and inventory by sku. First move?",
+   "a": "Choose shard keys that co-locate data written together, and use cross-shard coordination only for what remains. Cross-shard transactions are slow and fragile; 2PC is the fallback, not the opener."
   },
   {
-   "type": "recall",
-   "q": "Name the six common ways to choose a shard, and for each one the failure mode you would watch for.",
-   "answer": "Hash (no range scans; resharding moves keys), key range (sequential hotspots), time range (latest shard is hot), tenant (a big tenant is a big shard), geo (population skew), and a specific business key (uneven sizes). Fixes: change the key, salt hot keys, auto-split shards."
+   "q": "How do you split an overloaded shard without downtime?",
+   "a": "Detect the threshold, create the sub-shard and copy the upper key range while the old shard still serves, catch up on writes during the copy, switch routing for that range, then delete the moved range from the old shard. Delete last so you keep a fallback."
+  },
+  {
+   "q": "How do you pick a shard key?",
+   "a": "Ask which queries and transactions are most common and keep them on one shard, then check cardinality and skew. A good key spreads load evenly, matches the access pattern, and is hard to change later."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain sharding and how it differs from replication.",
+   "points": [
+    "Each node owns a disjoint subset of keys",
+    "Scales writes and storage",
+    "Replicas copy everything and scale reads and availability",
+    "The shard key and mapping are the key decisions"
+   ]
+  },
+  {
+   "q": "Compare the common ways to choose a shard and the failure mode of each.",
+   "points": [
+    "Hash: even, no range scans, resharding",
+    "Key range: sequential hotspots",
+    "Time range: newest shard is hot but expiry is cheap",
+    "Tenant, geo, business key: locality but uneven sizes"
+   ]
+  },
+  {
+   "q": "Your sharded system has a hot shard and needs to grow. Describe how you handle skew, rebalancing and cross-shard transactions.",
+   "points": [
+    "Skew: change key, salt hot keys, auto-split",
+    "Rebalancing: move data while the old owner still serves, then switch",
+    "Co-locate data written together to avoid 2PC",
+    "Saga or 2PC only for what cannot be co-located"
+   ]
   }
  ]
 }

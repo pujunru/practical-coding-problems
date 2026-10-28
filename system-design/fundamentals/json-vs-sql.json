@@ -1,64 +1,61 @@
 {
  "id": "json-vs-sql",
  "title": "JSON vs SQL",
- "summary": "The user's one-line insight: **a JSONB document has better data locality, because it replaces multiple SQL queries.**\n\nIn a normalized model, an order lives in `orders`, its lines in `order_lines`, product details in `products`: reading \"one order with everything\" means several lookups or joins, each touching different pages. In a document model, the order and its line items sit **together in one row** (in Postgres `jsonb`, usually read in one go), so one primary-key lookup returns the whole thing.\n\n**Embed** (JSONB) when the data is:\n- read together, and the parent **owns** it (order lines, address, settings);\n- **bounded** in size (a few to a few hundred items);\n- rarely updated independently of the parent;\n- allowed to change shape quickly.\n\n**Normalize** (separate tables) when the data is:\n- **shared** across parents (a product referenced by thousands of orders);\n- **unbounded** (all followers of a user, all events of a device);\n- updated independently, or needs constraints, foreign keys, and joins/aggregates (revenue by category).\n\nDenormalized copies have a **cost**: a change to the shared fact must be rewritten wherever it is embedded, and a one-field update rewrites the whole document. Embedding is sometimes *correct* rather than lazy: an order should snapshot the unit price at purchase time instead of pointing to today's price.\n\nThis is [data locality](#/sd/f/data-locality) applied to storage, and an instance of [scalable simplicity](#/sd/f/scalable-simplicity): start with documents, keep the join keys real.",
- "drills": [
+ "explain": "My rule of thumb: a JSONB document has better data locality because it replaces several SQL queries with one lookup. I embed data that is bounded, owned by its parent and read together, and I normalize data that is shared, unbounded or updated independently.",
+ "model": "Normalized order: rows in `orders`, `order_lines`, `products`; reading one order with everything means several lookups or joins touching different pages. Document order: the order and its lines sit together in one row, so one primary-key lookup returns all of it.\n\n| Embed in JSONB when the data is... | Normalize into tables when the data is... |\n| --- | --- |\n| read together with the parent | **shared** across parents (a product in thousands of orders) |\n| **owned** by the parent (order lines, address, settings) | **unbounded** (all followers, all events of a device) |\n| **bounded** in size (a few to a few hundred items) | updated independently |\n| rarely updated alone; shape changes fast | needs constraints, foreign keys, joins, aggregates |\n\n**Costs of embedding:** a change to a shared fact must be rewritten everywhere it is embedded; a one-field update rewrites the whole document; the database cannot enforce foreign keys or NOT NULL inside it; cross-document aggregates are awkward.\n\nEmbedding can be *right*: an order should snapshot the unit price at purchase time. Keep the real join keys (order id, customer id, status) as columns. This is [data locality](#/sd/f/data-locality) applied to storage and an instance of [scalable simplicity](#/sd/f/scalable-simplicity).",
+ "details": [
   {
-   "type": "choice",
-   "q": "An order has 1–20 line items, always shown together with the order, owned by it, and never queried independently. Where should the line items live?",
-   "options": [
-    "In a separate table joined at read time",
-    "Embedded in the order's JSONB document, giving one lookup per order",
-    "In a separate microservice",
-    "In a cache only"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "The items are bounded, owned and read together, so embedding gives better locality with no loss. Keep order id, customer id and status as real columns for querying."
+   "q": "Where should an order's 1 to 20 line items live?",
+   "a": "Embedded in the order's JSONB document. They are bounded, owned and read together, so one lookup per order gives better locality at no loss. Keep order id, customer id and status as real columns for querying."
   },
   {
-   "type": "choice",
-   "q": "A social app stores each user's follower list inside the user's JSONB document. One celebrity has 40 million followers. What is the problem, and what is the fix?",
-   "options": [
-    "None; JSONB scales without limit",
-    "The document grows without bound, so each read and update touches a huge value and nearly every follow rewrites it; model followers as a separate relation (a table of user_id, follower_id)",
-    "JSON cannot hold integers",
-    "The follower list should be put in an HTTP header"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Embedding assumes bounded, parent-owned data. An unbounded relationship is the signature case for normalization (or a dedicated store), and it also needs to be queried from the other side ('who does X follow')."
+   "q": "A user document embeds the follower list and one celebrity has 40 million followers. What breaks?",
+   "a": "The document is unbounded, so every read and nearly every follow rewrites a huge value. Model followers as a separate relation (user_id, follower_id), which also supports the reverse query \"who does X follow\"."
   },
   {
-   "type": "number",
-   "q": "A product name is embedded in 40,000 order documents of about 4 KB each. When the name is corrected, you decide to update every order. Assuming each update rewrites the whole document, how much data is rewritten, in MB (1 MB = 1000 KB)?",
-   "answer": 160,
-   "unit": "MB",
-   "tolerance": 0.1,
-   "explain": "40,000 × 4 KB = 160,000 KB = 160 MB, plus index and WAL overhead. In a normalized model one row in `products` changes. For orders the right answer is usually to keep the old name (a snapshot), which is why embedding historical facts is acceptable but embedding mutable shared facts is costly."
+   "q": "A product name is embedded in 40,000 orders of 4 KB each. What does fixing the name cost?",
+   "a": "Rewriting every document: 40,000 x 4 KB = 160 MB plus index and WAL overhead, versus one row in a normalized `products` table. For historical facts like orders you usually keep the old name as a snapshot, which is why embedding mutable shared facts is the costly case."
   },
   {
-   "type": "choice",
-   "q": "Which are real costs of storing data as JSONB instead of columns? Select all that apply.",
-   "options": [
-    "Fields inside the document cannot have foreign keys or NOT NULL enforced by the database",
-    "A one-field change typically rewrites the whole document value",
-    "Aggregations across documents (e.g. revenue per category) are slower and more awkward than on indexed columns",
-    "A single lookup can no longer return multiple related items"
-   ],
-   "answer": [
-    0,
-    1,
-    2
-   ],
-   "explain": "The last statement is backwards: returning related items in one lookup is the benefit. The other three are the reasons shared, constrained or analysed fields stay relational."
+   "q": "What do you lose by using JSONB instead of columns?",
+   "a": "Database-enforced foreign keys and NOT NULL inside the document, cheap single-field updates (the whole value is typically rewritten), and easy cross-document aggregation such as revenue per category. Those are why shared, constrained or analysed fields stay relational."
   },
   {
-   "type": "recall",
-   "q": "Explain the JSONB-vs-SQL decision in terms of data locality, with one case for each side.",
-   "answer": "Embedding related data in one JSONB document puts everything one read needs in one place (one lookup instead of several queries/joins). Use it for bounded, parent-owned, read-together data like order line items. Use normalized tables for shared, unbounded or independently updated data like products, followers or events, and for anything needing constraints or cross-row aggregation."
+   "q": "Can you still query inside JSONB?",
+   "a": "Yes, with GIN or expression indexes, but you get weaker statistics and constraints than with columns. Promote fields you filter or join on to real columns."
+  },
+  {
+   "q": "How does this relate to a first design for a new product?",
+   "a": "Start with documents for owned, read-together data and keep the join keys real; normalize later where a shared or unbounded relationship appears. That is the scalable-simplicity stance: simple now, with a clear migration path."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain the JSONB versus normalized-tables decision in terms of data locality.",
+   "points": [
+    "One document row replaces multiple queries or joins",
+    "Embed bounded, owned, read-together data",
+    "Normalize shared, unbounded or independently updated data",
+    "One example for each side"
+   ]
+  },
+  {
+   "q": "List the costs of denormalized copies and when embedding is still correct.",
+   "points": [
+    "Shared facts must be rewritten wherever embedded",
+    "One-field updates rewrite the whole document",
+    "No database-level constraints inside the document",
+    "Snapshots like purchase-time price are correct to embed"
+   ]
+  },
+  {
+   "q": "Model a social app's users, posts and followers: say what you embed and what you keep relational.",
+   "points": [
+    "Profile settings and small owned data embedded",
+    "Followers as a relation, since unbounded and queried both ways",
+    "Posts separate if they are many and independently updated",
+    "Real columns for keys used to query and join"
+   ]
   }
  ]
 }
