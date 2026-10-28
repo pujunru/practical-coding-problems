@@ -1,0 +1,156 @@
+{
+ "id": "typeahead",
+ "title": "Design Search Autocomplete",
+ "prompt": "Design the suggestion box that appears as a user types into a search bar. After each keystroke it shows the handful of completions the user is most likely to want, and it should feel instantaneous. Suggestions should reflect what people really search for, including things that became popular in the last hour.\n\nAssume **5 billion searches a day** and a suggestion list of 5–10 entries.",
+ "clarify": [
+  "Are suggestions global, or personalised and localised by language and region?",
+  "How fresh must trending queries be (minutes or a day)?",
+  "What is the latency budget, measured at the client or the server?",
+  "Do we suggest only past queries, or also entities, products and spelling corrections?",
+  "Which suggestions must be blocked (offensive, private, legal)?",
+  "How many characters before we start suggesting?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Given a prefix, return the top k (say 10) completions ranked by usefulness\n- Support multiple languages and regions; optional personalisation from the user's history\n- Remove blocked or unsafe suggestions\n\n**Non-functional**\n- Latency: p99 under ~100 ms end to end, so the server work is a few ms\n- Extremely read-heavy; each search fans out into several prefix requests\n- Freshness: trending queries appear within minutes, the long tail within hours or a day\n- Availability matters more than perfect ranking: serve slightly stale suggestions rather than none",
+  "estimation": "- Searches: 5B/day ≈ 58K/s. With debouncing, a typical query triggers ~6 suggestion requests, so 30B/day ≈ **350K requests/s** average, ~**700K/s** at a 2× peak\n- Data size: keep the most popular ~100M distinct queries × ~25 bytes ≈ **2.5 GB** of raw text; a trie with a precomputed top-10 per node is several times larger, ~10–20 GB, which fits in the memory of one host. The data is small; the **QPS** is the challenge\n- Response: 10 suggestions × ~30 B ≈ 300 B, so ~100 MB/s of egress at peak; trivial\n- Query log: 5B events/day × ~100 B = 500 GB/day to aggregate for ranking",
+  "api": "```\nGET /v1/suggest?q=how%20to&lang=en&region=US&limit=10   → {suggestions:[{text, score}], ttl}\n```\n- `Cache-Control: max-age=…` lets the browser and CDN reuse answers for common prefixes.\n- Client debounces (~50–150 ms), cancels outdated requests, and caches by prefix; if the user types a character that extends the previous prefix, the client can filter its previous response locally.",
+  "data": "- **Serving structure:** a trie (or compressed radix tree/FST) in memory where each node stores the **top-k completions with scores** for that prefix, so lookup is O(prefix length) with no subtree walk.\n- **Aggregates:** `query_counts(query, window, count)` produced by the log pipeline: a daily/hourly batch plus a short sliding window for trending.\n- **Blocklist** and per-locale configuration as small side tables.\n- **Personal history:** per-user KV of recent queries, merged at request time and small enough to keep client-side.",
+  "design": "```\nsearch logs ─▶ stream (Kafka) ─┬─▶ real-time counters (5-min windows) ─┐\n                               └─▶ batch aggregation (hourly/daily) ───┼─▶ trie builder ─▶ snapshot files\n                                                                       │                       │ push\nclient ─▶ CDN/edge cache ─▶ suggest service (in-memory trie replicas by shard) ◀───────────────┘\n                                   └─▶ blocklist filter + personal merge\n```\n- **Read:** edge cache hit for hot prefixes; otherwise route by prefix shard to a replica, walk to the node, merge with trending overlay and personal history, filter, return.\n- **Build:** an offline job aggregates counts, builds a new trie per shard/locale and publishes a versioned snapshot; replicas load it and swap atomically.",
+  "deepdives": "- **Trie vs alternatives and top-k.** A node holding its top-10 makes reads constant time but multiplies memory by the branching; storing only ids of queries (not strings) and compressing with an FST/radix tree shrinks it. Computing top-k at request time by walking the subtree is too slow for short prefixes like \"a\", which have millions of descendants. Cap prefixes (e.g. 1–2 characters answered from a precomputed global table).\n- **Ranking and freshness.** Score = popularity (decayed counts, so old hits fade) × recency boost × locale match, with personalisation as a light re-rank. Two layers: a big hourly-rebuilt trie for the stable head and tail, plus a small real-time overlay of queries whose short-window rate spikes (sliding-window counters with a threshold), merged at read time. Rebuilding the entire trie every minute is unnecessary.\n- **Sharding and latency.** Partition by first 1–2 characters is easy but skewed (\"s\" vs \"x\"); partition by hash of the leading prefix or by ranges of the sorted key space, and replicate hot shards. Cache hot prefixes at the CDN; most traffic is short, common prefixes, so hit rates are high. Roll out snapshots gradually and keep the previous version for rollback.\n- **Safety and spam.** Filter at build time and again at serve time; discount bot traffic and require a minimum distinct-user count before a query can be suggested.",
+  "wrapup": "- Small data, big QPS: precompute top-k per prefix, serve from memory, cache at the edge and on the client.\n- Trade-offs: memory vs lookup time (stored top-k), freshness vs rebuild cost (batch plus overlay), personalisation vs cacheability.\n- Next: typo tolerance, entity suggestions, multi-language tokenisation, A/B ranking experiments."
+ },
+ "rubric": [
+  {
+   "text": "Estimates the multiplied request rate (several prefix requests per search) and shows the trie/data fits in memory while QPS is the challenge",
+   "keywords": [
+    "350k",
+    "qps",
+    "/s",
+    "gb",
+    "fits in memory"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a trie / radix tree / FST for prefix lookup",
+   "keywords": [
+    "trie",
+    "radix",
+    "fst",
+    "prefix tree"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Stores precomputed top-k completions at each node so reads are O(prefix length)",
+   "keywords": [
+    "top-k",
+    "top k",
+    "precomput",
+    "per node"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Ranks by decayed popularity, with recency, locale and optional personalisation",
+   "keywords": [
+    "decay",
+    "popularity",
+    "recency",
+    "personali",
+    "ranking"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Offline pipeline: log → aggregation → trie build → versioned snapshot with atomic swap and rollback",
+   "keywords": [
+    "batch",
+    "snapshot",
+    "aggregat",
+    "atomic",
+    "rollback",
+    "pipeline"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Freshness for trending queries via a real-time overlay (sliding-window counters)",
+   "keywords": [
+    "trending",
+    "overlay",
+    "sliding window",
+    "real-time",
+    "realtime",
+    "stream"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Client-side optimisations: debounce, cancel stale requests, prefix cache, reuse previous response",
+   "keywords": [
+    "debounce",
+    "cancel",
+    "client cache",
+    "prefix cache",
+    "throttle"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Edge/CDN caching for hot short prefixes with short TTLs",
+   "keywords": [
+    "cdn",
+    "edge",
+    "cache",
+    "ttl"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Sharding strategy for the trie handling skew, with replicas for hot shards",
+   "keywords": [
+    "shard",
+    "skew",
+    "replica",
+    "partition",
+    "range"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Safety filters: blocklist, offensive/private queries, minimum distinct users, bot discounting",
+   "keywords": [
+    "blocklist",
+    "offensive",
+    "spam",
+    "bot",
+    "filter",
+    "distinct"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Degrades gracefully: serve stale suggestions rather than fail; latency budget broken down",
+   "keywords": [
+    "stale",
+    "fallback",
+    "graceful",
+    "latency budget",
+    "p99"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "top-k-ranking",
+  "sliding-window-aggregation",
+  "time-bucket-counter",
+  "weighted-event-scoring",
+  "client-side-cache",
+  "cache-invalidation",
+  "sharding",
+  "batching"
+ ]
+}

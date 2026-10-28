@@ -1,0 +1,163 @@
+{
+ "id": "status-search",
+ "title": "Design Facebook Status Search",
+ "prompt": "Design search over the status posts of a large social network. A user types a few words and gets matching posts from people they are connected to, plus public posts, ordered by relevance and recency. Every result must respect the author's audience settings: nobody may ever see a post they are not allowed to see.\n\nAssume **1 billion daily active users** writing about **300 million posts a day**, and about **100 million searches a day**.",
+ "clarify": [
+  "Whose posts are searchable: friends, friends of friends, public posts, groups?",
+  "How soon after posting must a status be searchable (seconds or minutes)?",
+  "Is search over text only, or also names, hashtags, locations, media captions?",
+  "How are results ranked: recency, social closeness, engagement?",
+  "What happens when an author edits, deletes or changes the audience of a post?",
+  "Do we need typo tolerance and multiple languages?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Keyword (and phrase) search over posts the searcher is allowed to see\n- Ranking by relevance, recency and social closeness; pagination\n- New posts become searchable quickly; edits and deletes are reflected\n\n**Non-functional**\n- Privacy is a correctness requirement, not a ranking signal: zero leakage, including through result counts and stale indexes\n- Search latency p99 < 300 ms; index freshness within seconds to a minute\n- Write-heavy index maintenance (thousands of posts/s) with moderate query volume\n- Horizontally scalable index that can lose machines without losing data",
+  "estimation": "- Posts: 300M/day ≈ **3,500/s** average; ~10K/s at peak\n- Raw text: 300M × ~300 B ≈ **90 GB/day**\n- Index: ~20 distinct terms per post → 300M × 20 = **6B postings/day**; at ~8 B per posting entry that is ~**48 GB/day**, or ~**17.5 TB/year** before compression (delta-coded postings compress ~3–4×). Keep recent months in memory/SSD, older data on cheaper tiers\n- Queries: 100M/day ≈ **1,160/s** average, ~3× at peak; each fans out to every index shard that covers the time range\n- Takeaway: indexing writes outnumber queries 3:1, so the system is write-path and fan-out bound",
+  "api": "```\nGET /v1/search/posts?q=weekend+hike&cursor=&limit=20  → {results:[{post_id, author, snippet, ts}], next_cursor}\n```\n- Viewer identity comes from the auth token; the client never passes who it is searching as.\n- Cursor encodes `(score, post_id)` plus the index snapshot so paging is stable.\n- Internal: `index(post_event)` consumed from the post-change stream: create, edit, delete, audience-change.",
+  "data": "- **Source of truth:** the posts store (sharded by author) holding text and the audience policy.\n- **Inverted index:** `term → sorted posting list of post_ids`, with per-posting metadata (author id, time, audience class). Document ids are time-ordered so recent postings are contiguous and cheap to skip.\n- **Forward index / doc store:** `post_id → snippet, author, ts` for rendering.\n- **Social graph:** `friends(user) → ids`, used both for ranking and for filtering.\n- Index shards are partitioned by **time bucket first, then post_id hash** within a bucket.",
+  "design": "```\npost write ─▶ posts DB ─▶ change stream ─▶ tokenizer ─▶ indexer ─▶ index shards (RAM+SSD, replicated)\n\nsearch ─▶ query service (parse, expand) ─▶ scatter to shards ─▶ per-shard top-N (term match ∩ audience)\n              ▲ friends(viewer)                          └─▶ merge ─▶ privacy re-check ─▶ rank ─▶ page\n```\n- **Indexing:** a change event is tokenised and applied to the real-time tier of an index shard within seconds; a periodic merge compacts into immutable segments.\n- **Query:** fan out to all shards for the recent time buckets (older buckets only on demand), each returns its top candidates, the coordinator merges and re-ranks.\n- **Privacy** is enforced twice: inside the index query and again against the authoritative policy.",
+  "deepdives": "- **Privacy filtering.** Option A: index every post with its audience class (public, friends-of-author, custom list) and have the shard intersect the term posting list with a filter derived from the viewer: public ∪ posts whose author is in friends(viewer). With ~hundreds of friends this is a union of author posting lists or a bitmap check, done inside the shard. Option B: ignore privacy in the index and post-filter, which is simple but wastes work when most matches are invisible (overfetch factor, empty pages). Do A for pruning, then always B as the safety net, because an index can lag a privacy change by seconds. Deletes and audience reductions are written first as tombstones/filters so they take effect even before the index catches up.\n- **Freshness vs cost.** A small in-memory real-time segment accepts writes and is searched alongside large immutable segments; merging is background work. Edits are delete+insert. Under backlog, shed ranking work, never privacy checks.\n- **Scatter-gather latency.** Fan-out multiplies tail latency: query only the time buckets needed (most queries want recent results), send hedged requests to replicas, return partial results at a deadline. Pre-compute friend sets in a cache per viewer.\n- **Ranking.** Combine text match, recency decay and closeness (interaction counts with the author); cap candidates per shard before the expensive stage.",
+  "wrapup": "- A time-partitioned inverted index fed by the post change stream, queried with scatter-gather and a viewer-based audience filter.\n- Trade-offs: pre-filtering in the index vs post-filtering, index freshness vs write amplification, recall (older buckets) vs latency.\n- Next: typo tolerance, hashtags and entity search, group posts, per-language analyzers, sub-second indexing."
+ },
+ "rubric": [
+  {
+   "text": "Estimates post rate, index size from postings per post, and query QPS; notes the write-heavy index maintenance",
+   "keywords": [
+    "postings",
+    "tb",
+    "gb/day",
+    "qps",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Builds an inverted index (term to sorted posting lists) with tokenisation/normalisation",
+   "keywords": [
+    "inverted index",
+    "posting",
+    "tokeniz",
+    "tokenis",
+    "analyzer",
+    "stemm"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Feeds the index asynchronously from the post change stream (create, edit, delete, audience change)",
+   "keywords": [
+    "change stream",
+    "kafka",
+    "cdc",
+    "event",
+    "queue",
+    "async"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Partitions the index by time bucket and/or document id hash; scatter-gather across shards with a coordinator merge",
+   "keywords": [
+    "time bucket",
+    "time-partition",
+    "shard",
+    "scatter",
+    "gather",
+    "merge"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Enforces privacy inside the query by intersecting with an audience/friends filter",
+   "keywords": [
+    "audience",
+    "friends",
+    "filter",
+    "acl",
+    "visibility",
+    "intersect"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Re-checks permissions against the authoritative store at serve time because the index can be stale",
+   "keywords": [
+    "authoritative",
+    "re-check",
+    "recheck",
+    "post-filter",
+    "tombstone",
+    "stale"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Real-time segment plus immutable merged segments to get seconds-level freshness",
+   "keywords": [
+    "real-time",
+    "realtime",
+    "segment",
+    "lsm",
+    "merge",
+    "freshness"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Ranking by text relevance, recency and social closeness, with stable cursor pagination",
+   "keywords": [
+    "rank",
+    "recency",
+    "closeness",
+    "cursor",
+    "bm25"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Controls tail latency: hedged requests, deadlines/partial results, limit queried time ranges",
+   "keywords": [
+    "hedge",
+    "tail",
+    "deadline",
+    "partial",
+    "timeout"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles deletes and edits (tombstones, delete+insert) and index replication/recovery",
+   "keywords": [
+    "delete",
+    "edit",
+    "tombstone",
+    "replica",
+    "replicat",
+    "rebuild"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a time-ordered document id so recent postings are contiguous and cheap to skip",
+   "keywords": [
+    "time-ordered",
+    "snowflake",
+    "time ordered",
+    "sorted",
+    "id"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "sharding",
+  "partitioning",
+  "change-feed",
+  "fanout",
+  "eventual-consistency",
+  "cursor",
+  "top-k-ranking",
+  "cache-invalidation"
+ ]
+}

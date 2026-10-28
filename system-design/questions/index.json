@@ -91,6 +91,105 @@
      "companies": [
       "Amazon"
      ]
+    },
+    {
+     "id": "photo-sharing",
+     "title": "Design a Photo-Sharing Platform",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Uber",
+      "Amazon",
+      "DoorDash",
+      "Meta"
+     ]
+    },
+    {
+     "id": "cloud-file-storage",
+     "title": "Design Cloud File Storage (Dropbox)",
+     "difficulty": "Medium",
+     "companies": [
+      "Anthropic",
+      "NVIDIA",
+      "Google",
+      "Meta",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "news-aggregator",
+     "title": "Design a News Aggregator",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "video-sharing",
+     "title": "Design a Video Upload and Sharing App (YouTube)",
+     "difficulty": "Hard",
+     "companies": [
+      "Google",
+      "Uber",
+      "Meta",
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "video-streaming",
+     "title": "Design a Video Streaming Platform (Netflix)",
+     "difficulty": "Hard",
+     "companies": [
+      "Apple",
+      "Meta",
+      "Amazon",
+      "Netflix"
+     ]
+    },
+    {
+     "id": "music-streaming",
+     "title": "Design a Music Streaming Platform (Spotify)",
+     "difficulty": "Hard",
+     "companies": [
+      "Google"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Search, discovery & ranking",
+   "questions": [
+    {
+     "id": "typeahead",
+     "title": "Design Search Autocomplete",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Meta",
+      "Amazon",
+      "Apple"
+     ]
+    },
+    {
+     "id": "status-search",
+     "title": "Design Facebook Status Search",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta"
+     ]
+    },
+    {
+     "id": "web-crawler",
+     "title": "Design a Web Crawler",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI",
+      "Amazon",
+      "Google",
+      "Meta",
+      "Stripe"
+     ]
     }
    ]
   },

@@ -1,0 +1,158 @@
+{
+ "id": "video-streaming",
+ "title": "Design a Video Streaming Platform (Netflix)",
+ "prompt": "Design the playback side of a subscription video service like Netflix. Subscribers on TVs, phones and browsers press play on a title from a catalogue of licensed and original content and expect quick start, no buffering, and quality that adapts to their connection.\n\nAssume **200 million subscribers**, up to **50 million concurrent streams** at the evening peak, and a catalogue of about 20,000 titles.",
+ "clarify": [
+  "Is the catalogue fixed and licensed (so we know what to pre-position), or user-generated?",
+  "What devices and DRM systems must be supported?",
+  "What is the target startup time and acceptable rebuffer rate?",
+  "Is live content in scope, or on-demand only?",
+  "How many regions, and are there regional catalogues and licence windows?",
+  "Can we place our own caching hardware inside ISP networks?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Browse, pick a title, start playback, pause, seek, resume on another device\n- Adaptive quality, subtitles, multiple audio tracks\n- DRM-protected, region-restricted playback\n\n**Non-functional**\n- Start in ~2 s; rebuffering ratio well under 1%\n- Availability higher than any single component (CDN, license server, control plane)\n- Egress is the cost and the constraint: keep bytes close to viewers\n- Graceful degradation: a control-plane outage must not stop streams already in progress",
+  "estimation": "- Peak egress: 50M streams × 5 Mbps average ≈ **250 Tbps**\n- Catalogue size: a 2-hour title across the bitrate ladder (sum ≈ 20 Mbps) is 20 Mbit/s × 7,200 s ÷ 8 ≈ **18 GB**; × 20,000 titles ≈ **360 TB**, perhaps ~1 PB with several codecs, audio and subtitle tracks. The whole catalogue is small enough to replicate to every large edge site\n- Edge hardware: at 100 Gbps per appliance, 250 Tbps needs ≥ **2,500 appliances** at full load, so several thousand with headroom, spread across ISPs\n- Control plane: 50M sessions sending a heartbeat about once a minute is ~830K requests/s, tiny, cheap requests next to the 250 Tbps of media; the data plane dominates by far",
+  "api": "```\nPOST /v1/playback/start {title_id, device, capabilities} → {manifest_url, license_url, resume_pos}\nGET  {cdn}/t/{title}/{profile}/manifest.mpd or .m3u8\nGET  {cdn}/t/{title}/{profile}/seg-{n}.m4s\nPOST {license_url} {challenge} → DRM license (short-lived)\nPOST /v1/playback/heartbeat {session, pos, bitrate, rebuffers}\n```\n- The control plane authorises and picks a CDN endpoint; the data plane (segments) never touches it.\n- Heartbeats every ~30–60 s persist the resume position and feed quality telemetry.",
+  "data": "- Catalogue & licensing: `titles`, `availability(title, region, window_start, window_end)`, `assets(title, profile, codec, bitrate, manifest_ref)`, in a relational or document store, heavily cached.\n- Viewing state: `watch_position(user, title, pos, device, ts)` in a KV store partitioned by user.\n- Media objects: immutable segment files in object storage, **content-addressed by title/profile/segment**, ideal for caching forever.\n- Operational data: CDN fill status per site, session telemetry in a stream pipeline.",
+  "design": "```\nclient ─▶ control plane (auth, entitlement, steering) ─▶ manifest + license\n   │\n   └─▶ nearest edge appliance (in ISP / IXP) ─ miss ─▶ regional cache ─ miss ─▶ origin (object store)\n\nencoding pipeline ─▶ origin ─ overnight fill ─▶ edge sites (popular first)\n```\n- **Play:** control plane checks subscription, region and licence window, picks edge endpoints from health and proximity, returns a manifest and DRM licence.\n- **Stream:** the player pulls ~2–6 s segments, measuring throughput each time and switching renditions.\n- **Fill:** caches are pre-populated off-peak by predicted demand rather than filled on miss at peak.",
+  "deepdives": "- **Adaptive bitrate.** Per-title encoding ladders (a cartoon needs fewer bits than a car chase) with segments aligned on keyframes so the player can switch at any boundary. The player uses throughput estimates plus buffer level: start low for fast startup, ramp up, drop quickly when the buffer is below a threshold. Shorter segments react faster but add request overhead and lower compression efficiency.\n- **CDN and edge strategy.** Owning appliances inside ISPs removes transit cost and keeps traffic off the internet backbone. Popularity is a steep power law and predictable (new releases), so push content to edges overnight instead of pull-through during peak; a two-tier hierarchy (edge, regional) protects origin from misses. Steering uses health, load and measured latency, with several fallback endpoints in the manifest.\n- **Playback reliability.** Manifests list multiple CDNs; the player fails over mid-stream on errors. Prefetch the first segments when a user hovers a title. DRM licence calls are on the critical start path, so licence servers are regional and cached credentials are short-lived.\n- **Degraded mode.** If the catalogue or personalisation is down, serve a cached static row and keep playing.",
+  "wrapup": "- The data plane (edge caches) carries essentially all the load; the control plane is small but must be highly available.\n- Trade-offs: push (predictive fill) vs pull, segment length, ladder size vs storage/encoding cost, one CDN vs multi-CDN.\n- Next: live events, offline downloads, ad insertion, per-title encoding research."
+ },
+ "rubric": [
+  {
+   "text": "Estimates peak concurrent streams, aggregate egress (hundreds of Tbps) and catalogue size, and concludes the data plane dominates",
+   "keywords": [
+    "tbps",
+    "egress",
+    "concurrent",
+    "pb",
+    "tb"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Separates control plane (auth, entitlement, steering, licence) from data plane (segment delivery)",
+   "keywords": [
+    "control plane",
+    "data plane",
+    "steering",
+    "entitle"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Adaptive bitrate streaming: segmented HLS/DASH, manifest, bitrate ladder, client-side switching on throughput and buffer",
+   "keywords": [
+    "abr",
+    "adaptive",
+    "hls",
+    "dash",
+    "manifest",
+    "segment",
+    "ladder"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Per-title encoding and keyframe-aligned segments to allow seamless switching",
+   "keywords": [
+    "per-title",
+    "keyframe",
+    "gop",
+    "aligned"
+   ],
+   "points": 1
+  },
+  {
+   "text": "CDN/edge strategy: appliances inside ISPs, tiered cache hierarchy, origin shield",
+   "keywords": [
+    "open connect",
+    "isp",
+    "edge",
+    "tier",
+    "origin shield",
+    "appliance"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Pre-positioning/predictive fill of popular content off-peak rather than pull-on-miss at peak",
+   "keywords": [
+    "pre-position",
+    "prepopulat",
+    "predictive",
+    "off-peak",
+    "fill",
+    "push"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Fast startup: low initial bitrate, prefetch, short segments, regional licence servers",
+   "keywords": [
+    "startup",
+    "prefetch",
+    "time to first",
+    "initial bitrate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "DRM and licence flow, plus regional catalogue and licence-window enforcement",
+   "keywords": [
+    "drm",
+    "widevine",
+    "fairplay",
+    "licen",
+    "region",
+    "window"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Resilience: multi-CDN or multiple endpoints in the manifest, mid-stream failover, graceful degradation of control plane",
+   "keywords": [
+    "failover",
+    "multi-cdn",
+    "fallback",
+    "degrad",
+    "multiple cdn"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Resume position and telemetry (heartbeats) stored in a partitioned KV; QoE metrics (startup, rebuffer)",
+   "keywords": [
+    "heartbeat",
+    "resume",
+    "telemetry",
+    "rebuffer",
+    "qoe",
+    "kv"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Immutable segment objects cached with long TTLs; no per-user data on the media path",
+   "keywords": [
+    "immutable",
+    "ttl",
+    "cache-control",
+    "content-addressed"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "anycast",
+  "load-balancing",
+  "data-locality",
+  "multi-region",
+  "client-side-cache",
+  "cache-invalidation",
+  "tcp-connection",
+  "sli-slo-sla"
+ ]
+}

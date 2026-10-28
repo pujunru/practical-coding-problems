@@ -1,0 +1,168 @@
+{
+ "id": "video-sharing",
+ "title": "Design a Video Upload and Sharing App (YouTube)",
+ "prompt": "Design the upload-and-publish side of a video-sharing site like YouTube. Creators upload large video files from browsers and phones; the system must process them into formats that play well on any device, then make them watchable and shareable. Playback delivery is covered elsewhere, so concentrate on ingestion, processing and publishing.\n\nAssume **1 million uploads a day**, averaging 5 minutes and about 200 MB, and around **1 billion video views a day**.",
+ "clarify": [
+  "What is the largest upload (size and duration), and which input formats and codecs?",
+  "How quickly must a video be watchable after upload; is a low-quality version first acceptable?",
+  "Do we need live streaming, or only uploaded files?",
+  "Do we run content moderation and copyright (fingerprint) checks before publishing?",
+  "Can creators edit, replace or delete a video after publication?",
+  "Which playback devices and quality levels must be supported?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Upload large video files, with title, description, visibility, thumbnail\n- Process into multiple resolutions and formats; generate thumbnails\n- Publish, share by link, edit metadata, delete\n- Watch (playback via CDN, assumed to exist)\n\n**Non-functional**\n- Uploads survive network drops (resumable)\n- Processing is asynchronous, scalable and retry-safe; every video eventually ready\n- Fast time-to-first-watchable (lowest rendition within minutes)\n- Durable originals; moderation and copyright checks before wide exposure",
+  "estimation": "- Uploads: 1M/day ≈ **12/s** average\n- Original bytes: 1M × 200 MB = **200 TB/day**; renditions add roughly 50–100% more, so ~**300–400 TB/day** total, i.e. well over 100 PB/year\n- Transcoding: 1M × 5 min = 5M video-minutes/day. Assume six renditions, each encoded at about real time per core: 5M × 6 = 30M core-minutes = 500K core-hours/day ≈ **21K cores** busy around the clock, more at peak. Encoding is the dominant cost\n- Views: 1B/day ≈ **11.6K/s** of metadata/manifest requests, with the bytes served by CDN\n- Upload ingress: 12/s × 200 MB ≈ 2.4 GB/s ≈ 19 Gbps average",
+  "api": "```\nPOST /v1/videos {title, size, content_type} → {video_id, upload_url, chunk_size}\nPUT  {upload_url}  Content-Range: bytes a-b/total   (resumable; 308 until complete)\nPOST /v1/videos/{id}/publish {visibility}           → 202\nGET  /v1/videos/{id}                                → metadata + status + manifest URL\n```\n- Resumable protocol: the client can ask \"how many bytes do you have?\" and continue.\n- `video_id` is issued once, so a retried create does not make duplicates; chunk PUTs are idempotent by offset.",
+  "data": "- `videos(video_id, owner_id, state, title, visibility, duration, original_ref, created_at)` in sharded SQL or Spanner-like store\n- `renditions(video_id, profile, codec, bitrate, manifest_ref, state)`\n- Object store: `raw/{id}`, `segments/{id}/{profile}/…`, `thumbs/{id}/…`\n- `jobs(job_id, video_id, dag_node, state, attempts)` in a workflow store\n- State machine: `uploading → uploaded → processing → ready | rejected`; publishing is a separate visibility flag.",
+  "design": "```\nclient ─chunks─▶ upload service ─▶ object store (raw)\n                      │ complete event\n                      ▼\n               workflow orchestrator ─▶ probe/validate ─▶ split into GOPs\n                                              ┌──────────┼───────────┐\n                                         encode 240p  encode 720p …  audio, thumbs\n                                              └──────────┼───────────┘\n                           stitch/package (HLS/DASH) ─▶ moderation ─▶ state=ready ─▶ CDN origin\n```\n- Each stage is a DAG node on a queue with retries; segment encodes are independent tasks.\n- The orchestrator records node state in a durable store so a crashed worker's task is simply re-run.",
+  "deepdives": "- **Resumable uploads at scale.** Chunk size (e.g. 8 MB) balances request overhead against re-sending on failure. Upload servers are stateless: the offset lives in the object store's multipart session or a small session table. Reassemble server-side and verify a checksum; expire abandoned sessions and delete their parts.\n- **Transcoding as a DAG.** Split the source at keyframe boundaries into 10–30 s chunks, encode chunks and renditions in parallel (a 1-hour film finishes in minutes instead of hours), then package into HLS/DASH segments. Make tasks idempotent and writes keyed by (video, profile, chunk) so retries and speculative duplicates are harmless. Do the cheap 360p first so the video is watchable early, and queue by priority (new, popular channels first) with preemptible spot instances for the bulk work.\n- **Publish gate.** Moderation, copyright fingerprinting and metadata checks run in parallel with encoding; `ready` requires all to pass. Failures route to a dead-letter queue and notify the creator.\n- **Thumbnails and storage.** Sample frames, score them, let the creator pick. Originals are kept (re-encode for new codecs later) but tiered to cold storage after the ladder is built.",
+  "wrapup": "- Bytes go straight to object storage; compute-heavy work is a retry-safe DAG of idempotent tasks.\n- Trade-offs: eager vs lazy renditions (cost vs first-view latency), per-chunk parallelism vs stitching complexity, early partial publish vs consistency.\n- Next: live ingest, subtitles, re-encoding the back catalogue, creator analytics."
+ },
+ "rubric": [
+  {
+   "text": "Resumable, chunked uploads straight to object storage with offset tracking and checksum verification",
+   "keywords": [
+    "resumable",
+    "chunk",
+    "multipart",
+    "offset",
+    "checksum"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Estimates upload volume, daily storage (hundreds of TB) and transcoding compute",
+   "keywords": [
+    "tb/day",
+    "pb",
+    "core",
+    "cores",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Processing is asynchronous: upload-complete event, queue/workflow orchestrator, state machine",
+   "keywords": [
+    "queue",
+    "workflow",
+    "orchestrat",
+    "state machine",
+    "event"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models transcoding as a DAG: probe, split into segments/GOPs, parallel encode per rendition, package",
+   "keywords": [
+    "dag",
+    "gop",
+    "segment",
+    "split",
+    "parallel",
+    "package"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Defines a rendition ladder and codecs/containers (HLS/DASH, H.264/VP9/AV1)",
+   "keywords": [
+    "ladder",
+    "rendition",
+    "hls",
+    "dash",
+    "h.264",
+    "av1",
+    "codec"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Makes tasks idempotent with retries, dead-letter handling and safe duplicate execution",
+   "keywords": [
+    "idempoten",
+    "retry",
+    "dead-letter",
+    "dead letter",
+    "speculative"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Makes the video watchable early (lowest rendition first) and prioritises the encode queue",
+   "keywords": [
+    "priority",
+    "first",
+    "lowest",
+    "240p",
+    "360p",
+    "early"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Publish gate with moderation and copyright fingerprinting before wide exposure",
+   "keywords": [
+    "moderation",
+    "copyright",
+    "fingerprint",
+    "content id",
+    "gate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Separates metadata store from blob store; metadata sharded and CDN used for delivery",
+   "keywords": [
+    "metadata",
+    "object store",
+    "cdn",
+    "shard"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Thumbnail generation and selection",
+   "keywords": [
+    "thumbnail",
+    "frame",
+    "poster"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Cost controls: spot/preemptible workers, cold-tiering originals, re-encode later",
+   "keywords": [
+    "spot",
+    "preemptible",
+    "cold",
+    "tier",
+    "cost"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles abandoned uploads, deletes and orphaned parts/segments (cleanup)",
+   "keywords": [
+    "abandon",
+    "expire",
+    "orphan",
+    "cleanup",
+    "delete"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "queue-first-vs-db-first",
+  "idempotency",
+  "retry",
+  "dispatcher",
+  "prioritized-scheduling",
+  "batching",
+  "backoff-jitter",
+  "sharding"
+ ]
+}

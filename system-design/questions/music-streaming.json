@@ -1,0 +1,157 @@
+{
+ "id": "music-streaming",
+ "title": "Design a Music Streaming Platform (Spotify)",
+ "prompt": "Design a music streaming service like Spotify. Listeners search a huge catalogue, play tracks instantly, build and share playlists, and download music to listen offline. Labels license tracks per country, so what a user may play depends on where they are.\n\nAssume **100 million daily active users**, about **60 million listening at the same time at peak**, and a catalogue of **100 million tracks**.",
+ "clarify": [
+  "Which content: music only, or also podcasts and video?",
+  "Are licensing and availability different per country, and how fast must changes apply?",
+  "Do offline downloads need DRM and expiry?",
+  "Are playlists collaborative, and how large can they get?",
+  "Do we pay royalties per stream, and what counts as a stream (e.g. 30 seconds)?",
+  "Do we need gapless playback, crossfade and multi-device handoff?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Search and browse the catalogue (artists, albums, tracks)\n- Play a track with low start latency; queue, shuffle, skip, seek\n- Create, edit and share playlists (including collaborative ones); library of saved items\n- Offline downloads; cross-device continue-listening\n- Honour per-territory licensing\n\n**Non-functional**\n- Track starts in well under a second; skips are instant (prefetch)\n- Availability high; playback of the current queue works through brief backend outages\n- Accurate, auditable play counts for royalties\n- Playlist edits from several devices converge without losing changes",
+  "estimation": "- Egress: 60M concurrent × 160 kbps ≈ **9.6 Tbps**, an order of magnitude below video, but still CDN territory\n- Storage: 3 bitrates (96/160/320 kbps, sum 576 kbps) for a 3.5-minute track = 576 kbps × 210 s ÷ 8 ≈ **15 MB**; × 100M tracks ≈ **1.5 PB** (plus cover art). Small enough to replicate widely; the tail is cold\n- Play events: 100M DAU × 30 plays = 3B/day ≈ **35K events/s** into the logging pipeline\n- Skewed popularity: a small fraction of tracks gets most plays, so edge caches hold the head and the tail comes from regional or origin storage\n- Metadata is tiny (tens of GB); playlists are a few hundred million to billions of rows",
+  "api": "```\nGET  /v1/search?q=&type=track,artist                  → results\nPOST /v1/play {track_id, device, ctx}  → {stream_url (signed), key, next_hint[]}  | 403 not available in region\nGET  {cdn}/a/{track_id}/{bitrate}/{chunk}              → encrypted audio chunks\nPATCH /v1/playlists/{id} {base_version, ops[]}         → {version}  | 409 rebase\nPOST /v1/offline/{playlist_id}                         → licence for download, expiry\nPOST /v1/events/stream {track, ms_played, ...}         → 202\n```\n- Playback returns a short-lived signed URL; encryption keys are scoped per user/device.\n- Playlist edits are operations against a base version.",
+  "data": "- Catalogue: `tracks`, `albums`, `artists` in a replicated document/relational store, read-mostly, aggressively cached.\n- Rights: `availability(track_id, territory, start, end, license_type)` plus the user's **account country** (not just current IP) for decisions.\n- Playlists: `playlist(id, owner, version)` and an ordered `items` list with stable item ids and fractional or linked ordering keys; partitioned by `playlist_id`.\n- Library and listening history: KV partitioned by user.\n- Audio: immutable encrypted chunk objects in object storage + CDN.",
+  "design": "```\napp ─▶ API gateway ─▶ catalogue/search ─▶ search index\n  │             ├────▶ rights service ─▶ availability cache\n  │             ├────▶ playlist service ─▶ playlist store\n  │             └────▶ events ─▶ stream log ─▶ royalties + recommendations\n  └─ audio chunks ◀─ CDN ◀─ origin (object store)\n```\n- **Play:** check entitlement (subscription tier) and rights for the user's territory, return a signed URL and prefetch hints for the next queue items.\n- **Prefetch:** the client downloads the next track's first chunks while the current one plays, making skips instant.\n- **Ingest:** labels deliver audio and metadata; pipeline normalises loudness, transcodes the three bitrates, fingerprints, stores and indexes.",
+  "deepdives": "- **Licensing and region rules.** Rights are per (track, territory, time window) and change daily. Store them as a compact bitmap/set of territories per track, cached at the edge of the playback API; a catalogue read joins it so unavailable tracks are greyed out. Changes publish through an event stream that invalidates caches. Decide on the account's home country plus travel allowances rather than raw IP. A takedown must stop new plays within minutes, so signed URLs stay short-lived.\n- **Offline mode.** Downloads are encrypted chunk files plus a licence that carries an expiry; the app must go online every ~30 days to revalidate, so cancelled subscriptions and withdrawn tracks lose access. Keys are device-bound. Offline plays are logged locally and uploaded later with timestamps for royalties.\n- **Playlists.** Many devices edit concurrently. Single-owner playlists use optimistic versioning with rebase on conflict; collaborative ones apply operations (insert after item X, remove item) against a server-ordered op log so concurrent edits converge without a CRDT. Large playlists are paged. Playlists are heavily read and cached; writes are rare.\n- **Counting plays.** A stream counts after 30 s; events are idempotent by (user, session, track, start time), validated against fraud, and aggregated in batch for royalties.",
+  "wrapup": "- Small objects and a skewed catalogue make caching very effective; the interesting problems are rights, offline state and concurrent playlist edits.\n- Trade-offs: IP vs account-based region checks, strict vs relaxed offline expiry, op log vs CRDT for playlists.\n- Next: recommendations and radio, podcasts, social listening, lossless tier."
+ },
+ "rubric": [
+  {
+   "text": "Estimates concurrent egress (~10 Tbps), catalogue storage (~1.5 PB for three bitrates) and play-event rate",
+   "keywords": [
+    "tbps",
+    "pb",
+    "events/s",
+    "/s",
+    "bitrate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Streams encrypted audio chunks via CDN with signed, short-lived URLs; head of catalogue cached at edge",
+   "keywords": [
+    "cdn",
+    "signed",
+    "chunk",
+    "edge",
+    "cache"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prefetches the next tracks so skips and starts are instant; considers gapless playback",
+   "keywords": [
+    "prefetch",
+    "gapless",
+    "next track",
+    "buffer"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Per-territory licensing: rights table by (track, territory, window), cached, with event-driven updates and takedowns",
+   "keywords": [
+    "territory",
+    "region",
+    "licens",
+    "rights",
+    "availability",
+    "takedown"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Chooses an account/home-country based check with travel rules rather than only IP geolocation",
+   "keywords": [
+    "home country",
+    "account country",
+    "ip",
+    "geo"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Offline downloads: encrypted files, device-bound keys, licence expiry and periodic revalidation",
+   "keywords": [
+    "offline",
+    "drm",
+    "expiry",
+    "revalidat",
+    "device-bound"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Playlists: versioned operations, stable item ids and ordering keys; handles concurrent/collaborative edits",
+   "keywords": [
+    "playlist",
+    "version",
+    "op log",
+    "operation",
+    "fractional",
+    "conflict",
+    "crdt"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Accurate play counting for royalties: threshold (e.g. 30 s), idempotent events, batch aggregation, fraud filtering",
+   "keywords": [
+    "royalt",
+    "30 s",
+    "idempoten",
+    "dedup",
+    "fraud",
+    "event"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Separates catalogue metadata (read-mostly store + search index) from audio blobs",
+   "keywords": [
+    "search index",
+    "metadata",
+    "catalogue",
+    "object store"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Ingestion pipeline: transcode into several bitrates, loudness normalisation, fingerprinting",
+   "keywords": [
+    "transcod",
+    "ingest",
+    "normali",
+    "fingerprint",
+    "bitrate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Cross-device state: continue-listening/handoff via per-user KV and session sync",
+   "keywords": [
+    "handoff",
+    "connect",
+    "resume",
+    "device",
+    "session"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "cache-invalidation",
+  "client-side-cache",
+  "multi-region",
+  "change-feed",
+  "idempotency",
+  "eventual-consistency",
+  "batching",
+  "partitioning"
+ ]
+}

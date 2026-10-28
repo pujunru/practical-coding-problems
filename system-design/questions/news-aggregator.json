@@ -1,0 +1,153 @@
+{
+ "id": "news-aggregator",
+ "title": "Design a News Aggregator",
+ "prompt": "Design a service like Google News or Apple News that collects articles from tens of thousands of publishers, groups articles about the same story, and shows each reader a ranked, up-to-date list. Readers can browse by topic, search, and follow sources.\n\nAssume **50,000 publisher feeds**, about **2 million new articles a day** and **20 million daily readers** opening the app around 20 times a day.",
+ "clarify": [
+  "Do we host the article text or link out to the publisher with a snippet?",
+  "Which sources: RSS/Atom feeds only, or also crawling sites and partner push APIs?",
+  "How fast must a breaking story show up?",
+  "Is the feed personalised, or the same for everyone per topic and region?",
+  "Do we cluster articles about the same event into one story?",
+  "Are there publisher licensing or paywall rules to respect?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Ingest articles from many publishers\n- Deduplicate and group articles about the same story\n- Serve topic, local and personalised feeds; search; follow sources\n\n**Non-functional**\n- Freshness: breaking news within a few minutes; ordinary articles within ~15 minutes\n- Read path is fast (p99 < 200 ms for a feed page) and highly available\n- Be a polite consumer of publisher servers\n- Quality: no duplicate stories, no spam or low-quality sources dominating",
+  "estimation": "- Polling: 50,000 feeds polled about every 5 minutes ≈ **170 fetches/s** (adaptive: hot feeds more often, quiet ones hourly)\n- Articles: 2M/day ≈ **23/s**; at ~20 KB of extracted text each ≈ **40 GB/day** ≈ **15 TB/year**\n- Reads: 20M readers × 20 opens = 400M feed requests/day ≈ **4,600/s**, ~3× at peak\n- Conclusion: ingestion volume is small; the hard parts are freshness, dedup/clustering and ranking, not raw scale. Feed responses are cacheable per (topic, region, language).",
+  "api": "```\nGET /v1/feed?topic=&region=&cursor=     → {stories[], next_cursor}   (personalised if signed in)\nGET /v1/stories/{id}                    → cluster: lead article + related\nGET /v1/search?q=&since=                → ranked stories\nPOST /v1/follows {source_id|topic}      → 204\n```\n- Cursor pagination on a stable `(score, story_id)` or time key, so new stories do not shift pages.\n- Partner publishers may also `POST /v1/publish` a webhook for instant ingestion.",
+  "data": "- `sources(source_id, feed_url, etag, last_modified, poll_interval, quality_score)`\n- `articles(article_id, source_id, canonical_url, title, published_at, text_ref, simhash, lang)` with the text in object storage\n- `stories(story_id, lead_article_id, topic, first_seen, article_count)` and `story_articles`\n- `feed_cache` keyed by (topic, region, language) as sorted sets in Redis\n- A search index (inverted) over title and body, updated from the article stream",
+  "design": "```\nscheduler ─▶ fetchers ─▶ raw store ─▶ parser/normaliser ─▶ dedup+cluster ─▶ articles DB\n  ▲ (adaptive poll)                                   │\n  └── publisher push (webhook)                        ├─▶ search index\n                                                      └─▶ ranker ─▶ feed cache ─▶ API ◀─ readers\n```\n- **Ingest:** a scheduler picks due feeds; fetchers use `ETag`/`If-Modified-Since` so unchanged feeds cost a 304; parsed items go on a queue.\n- **Process:** canonicalise the URL, extract text, detect language, compute a simhash, assign to a story cluster, push to the search index.\n- **Serve:** rankers refresh per-topic candidate lists; the API merges them with personal signals and returns a page.",
+  "deepdives": "- **Adaptive polling.** Track each feed's observed publish rate and set its next poll to about half the typical inter-arrival gap, within bounds. Prioritise high-authority sources, honour `Cache-Control` and `robots`, and accept webhooks or WebSub where offered. This turns 170/s into the right 170/s.\n- **Dedup and clustering.** Exact duplicates collapse on canonical URL or content hash. Syndicated and rewritten copies need near-duplicate detection (simhash/minhash with banding) then clustering by entity and title embeddings within a recency window (~48 h). Tradeoff: loose thresholds merge distinct stories, strict ones show five copies of the same wire story.\n- **Ranking and freshness.** Score = relevance × source quality × recency decay × engagement, plus diversity so one publisher does not fill the page. Recompute breaking-topic lists every minute and others every few minutes; personalisation re-ranks only a few hundred candidates at request time.\n- **Quality and abuse.** Source reputation, spam and SEO-farm filters, and takedown handling.",
+  "wrapup": "- Scale is modest; correctness of freshness, dedup and ranking is the interview.\n- Trade-offs: poll vs push, aggressive vs conservative clustering, precomputed vs request-time personalisation.\n- Next: breaking-news alerts, local news, paywalled content, per-publisher analytics."
+ },
+ "rubric": [
+  {
+   "text": "Estimates polling rate, article volume/storage and feed read QPS, and concludes ingestion is small while freshness and quality are hard",
+   "keywords": [
+    "qps",
+    "/s",
+    "gb/day",
+    "tb",
+    "poll"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Ingests via scheduled feed polling with conditional requests (ETag / If-Modified-Since) and respects robots/cache headers",
+   "keywords": [
+    "etag",
+    "if-modified-since",
+    "304",
+    "robots",
+    "conditional"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Adaptive polling frequency per source based on observed publish rate, plus push (webhook/WebSub) where available",
+   "keywords": [
+    "adaptive",
+    "poll interval",
+    "websub",
+    "webhook",
+    "push"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Normalises articles: canonical URL, text extraction, language detection",
+   "keywords": [
+    "canonical",
+    "extract",
+    "normali",
+    "language"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Deduplicates exact and near-duplicate content with hashing and simhash/minhash",
+   "keywords": [
+    "simhash",
+    "minhash",
+    "near-duplicate",
+    "near duplicate",
+    "hash"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Clusters articles into stories within a recency window and picks a lead article",
+   "keywords": [
+    "cluster",
+    "story",
+    "lead",
+    "embedding"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Ranking combines relevance, source quality, recency decay and diversity; some personalisation",
+   "keywords": [
+    "rank",
+    "recency",
+    "decay",
+    "diversity",
+    "personali"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Serves feeds from precomputed, cached candidate lists (per topic/region/language) with cursor pagination",
+   "keywords": [
+    "cache",
+    "precomput",
+    "cursor",
+    "redis",
+    "pagination"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Search over articles through an inverted index updated from the ingest stream",
+   "keywords": [
+    "inverted index",
+    "search",
+    "elasticsearch",
+    "lucene"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Decouples stages with queues and handles failures: retries, dead-letter, per-publisher rate limits",
+   "keywords": [
+    "queue",
+    "kafka",
+    "dead-letter",
+    "retry",
+    "backoff"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses source quality, spam and licensing/takedown concerns",
+   "keywords": [
+    "spam",
+    "quality",
+    "license",
+    "takedown",
+    "reputation"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "polling",
+  "adaptive-polling",
+  "fanout",
+  "cache-invalidation",
+  "cursor",
+  "top-k-ranking",
+  "batching",
+  "similarity"
+ ]
+}

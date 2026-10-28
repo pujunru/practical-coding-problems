@@ -1,0 +1,167 @@
+{
+ "id": "cloud-file-storage",
+ "title": "Design Cloud File Storage (Dropbox)",
+ "prompt": "Design a service like Dropbox. A user installs a client, drops files into a folder, and they appear on all of the user's other devices within seconds. Users can also share folders with others, restore earlier versions and keep working offline.\n\nAssume **50 million daily active users**, two devices each, around 10 changed files per user per day, and files ranging from a few KB to several GB.",
+ "clarify": [
+  "How large can a single file be, and are small edits to large files common?",
+  "Do we need shared folders with multiple writers, and how real-time must they be?",
+  "How long is version history kept?",
+  "What should happen when two devices edit the same file offline?",
+  "Is end-to-end encryption required (which would constrain dedup)?",
+  "Is real-time co-editing of document contents in scope, or only whole-file sync?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Upload, download and sync files and folders across a user's devices\n- Share files or folders with read or write permission\n- Version history and undelete for a retention window\n- Offline edits that reconcile when the device reconnects\n\n**Non-functional**\n- Durability (11 nines): never lose a user's file\n- Sync latency: a saved file visible on another device in a few seconds (p95)\n- Bandwidth efficiency: a small edit to a large file must not re-upload the whole file\n- Metadata is strongly consistent per user; bulk data is eventually replicated",
+  "estimation": "- Changes: 50M DAU × 10 = **500M commits/day** ≈ **5,800/s** average, ~29K/s at 5× peak\n- Bytes: average ~1 MB changed per commit → **500 TB/day** raw; block-level dedup and compression of ~2× → ~**250 TB/day** stored\n- Blocks: 100 PB stored ÷ 4 MB ≈ **25B blocks**; at ~100 B of metadata each (hash, size, location, refcount) ≈ **2.5 TB** of block index, so it must be sharded\n- Idle connections: 50M × 2 devices = **100M** open notification connections; at ~500K per gateway that is ~200 gateways\n- Insight: metadata and notification traffic is driven by idle clients, byte traffic only by real edits; they scale differently",
+  "api": "```\nPOST /v1/blocks/missing  {hashes[]}                  → {missing[]}\nPUT  /v1/blocks/{sha256}  (bytes, ≤4 MB)             → 201\nPOST /v1/files/commit    {namespace, path, manifest[], parent_rev} → 200 {rev} | 409 conflict\nPOST /v1/sync/list_delta {namespace, cursor}         → {changes[], cursor}\nWS   /v1/sync/listen     → server pushes {namespace, latest_seq}\nGET  /v1/blocks/{sha256}                             → bytes (CDN-cacheable)\n```\n- Upload asks which blocks are missing, sends only those, then commits a manifest.\n- The push channel carries a cursor, never file bytes; the client then pulls the delta.",
+  "data": "- `files(namespace_id, path, current_rev)` and `revisions(rev_id, file_id, size, manifest[block hashes], parent_rev, device_id, ts)` in **sharded SQL keyed by namespace**, so a commit is a single-shard transaction.\n- `changelog(namespace_id, seq, op, path, rev)`: monotonic per-namespace sequence that drives sync cursors.\n- `blocks(hash → location, size, refcount)` in a KV store; bytes in a content-addressed object store.\n- `shares(namespace, principal, permission)`.\n- A shared folder is its own namespace so all members read one log.",
+  "design": "```\nclient (watcher, chunker, local DB)\n  ├─ missing/PUT ─▶ block service ─▶ block store (content-addressed) ◀─ CDN\n  ├─ commit ──────▶ metadata service ─▶ SQL shards + changelog\n  │                       └─ new seq ─▶ pub/sub ─▶ notification gateways ─ws─▶ other devices\n  └─ list_delta ──▶ metadata service\n```\n- **Write:** split into ~4 MB blocks, SHA-256 each, ask which are missing, PUT those in parallel, then commit with the parent revision.\n- **Sync:** the commit appends to the changelog and publishes the new seq; other devices call `list_delta` from their cursor and fetch only blocks they lack.\n- **Share:** one share row; existing blocks are already referenced, so no bytes move.",
+  "deepdives": "- **Chunking and dedup.** Fixed 4 MB blocks are simple but an insert at the start shifts every block; content-defined chunking (rolling hash) keeps unchanged blocks stable at the cost of CPU and variable sizes. Small blocks dedup better but bloat metadata. Cross-user dedup saves space but opens a confirmation oracle (probing `missing` reveals who has a file); mitigate with proof of possession or per-tenant dedup.\n- **Conflicts.** Every commit carries `parent_rev`; if it is stale the server rejects it, and the loser saves its version as a conflicted copy (`report (Alice's conflicted copy).docx`) that syncs like any file. Files are opaque bytes, so CRDT or OT merging is the wrong tool; that belongs to a collaborative editor.\n- **Block GC.** A block lives while any revision references it. Refcount updates are batched and asynchronous, deletes use a grace period, and a periodic recount from manifests is the source of truth. Wrong refcounts are how data gets lost.\n- **Notification scale.** 100M idle sockets; fall back to client polling on gateway failure.",
+  "wrapup": "- Three ideas carry the design: content-addressed blocks, metadata and bytes scaled apart, and push of cursors rather than data.\n- Trade-offs: fixed vs content-defined chunks, global vs scoped dedup, last-writer-wins plus conflicted copy vs merging.\n- Next: LAN sync, selective sync, end-to-end encryption, large shared-folder fan-out limits."
+ },
+ "rubric": [
+  {
+   "text": "Splits files into content-addressed blocks (e.g. ~4 MB, SHA-256) so unchanged blocks are not re-uploaded",
+   "keywords": [
+    "block",
+    "chunk",
+    "content-addressed",
+    "sha-256",
+    "sha256",
+    "4 mb"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Upload protocol: check missing blocks, upload only those in parallel, then commit a manifest",
+   "keywords": [
+    "missing",
+    "manifest",
+    "commit",
+    "parallel"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Separates the metadata plane (sharded SQL, per-namespace) from the block plane (object store) and sizes both",
+   "keywords": [
+    "metadata",
+    "namespace",
+    "block store",
+    "object store",
+    "shard"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Estimates commits/s, daily bytes with a dedup factor, block count and notification connections",
+   "keywords": [
+    "qps",
+    "/s",
+    "pb",
+    "tb",
+    "connections"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Sync via per-namespace monotonic change log, cursors and list_delta",
+   "keywords": [
+    "cursor",
+    "changelog",
+    "change log",
+    "delta",
+    "sequence",
+    "seq"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Pushes notifications (WebSocket/long-poll) that carry a cursor, not data, with polling fallback",
+   "keywords": [
+    "websocket",
+    "long poll",
+    "push",
+    "notification"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Conflict resolution: optimistic concurrency on parent revision plus conflicted copies; explains why not CRDT/OT for opaque files",
+   "keywords": [
+    "parent",
+    "conflicted copy",
+    "optimistic",
+    "last writer",
+    "crdt"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Discusses fixed vs content-defined chunking and block-size trade-offs",
+   "keywords": [
+    "content-defined",
+    "rolling hash",
+    "rabin",
+    "fixed-size",
+    "block size"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles dedup scope and its security side channel",
+   "keywords": [
+    "cross-user",
+    "oracle",
+    "proof of possession",
+    "side channel",
+    "convergent"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Block garbage collection: refcounts, grace period, periodic recount from manifests",
+   "keywords": [
+    "refcount",
+    "garbage",
+    "gc",
+    "grace",
+    "recount"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Sharing is cheap: a share/namespace row, no data copy; versions and undelete",
+   "keywords": [
+    "share",
+    "version",
+    "restore",
+    "retention"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Durability design: erasure coding, multi-AZ replication, checksums and scrubbing",
+   "keywords": [
+    "erasure",
+    "checksum",
+    "scrub",
+    "11 nines",
+    "multi-az",
+    "durab"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "sharding",
+  "change-feed",
+  "cursor",
+  "websocket-patterns",
+  "idempotency",
+  "eventual-consistency",
+  "fanout",
+  "backfill"
+ ]
+}

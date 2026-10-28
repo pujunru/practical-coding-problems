@@ -1,0 +1,150 @@
+{
+ "id": "photo-sharing",
+ "title": "Design a Photo-Sharing Platform",
+ "prompt": "Design the media backbone of a photo-sharing service. Users upload photos from phones, add a caption, and share them; other people view them in albums, profile pages and feeds on every kind of device. Focus on how a photo gets in, is stored, is resized and reaches viewers, rather than on how feeds are ranked.\n\nAssume **200 million daily active users**, about one upload per ten users per day, and roughly 50 photo views per user per day.",
+ "clarify": [
+  "Are videos in scope, or photos only?",
+  "What are the maximum file size and accepted formats (HEIC, RAW)?",
+  "Can photos be edited or replaced after upload, and can they be deleted for real (privacy/GDPR)?",
+  "Are photos public, friends-only or private, and can that change later?",
+  "How soon after upload must the photo be visible to the author and to others?",
+  "Which devices and network qualities matter (flaky mobile uploads)?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Upload one or many photos with caption, tags, location\n- View a photo, an album or a profile grid at a size suited to the device\n- Delete a photo, change its visibility\n\n**Non-functional**\n- Durability of originals is non-negotiable (a lost photo is a lost memory)\n- Views are the hot path: first byte from the edge in well under 100 ms, high availability\n- Upload works on bad mobile networks and survives app restarts\n- Upload to \"visible to the author\" within seconds; other renditions may lag briefly\n- Deleted or private photos must stop being served promptly",
+  "estimation": "- Uploads: 200M DAU × 0.1 = **20M photos/day** ≈ **230/s** average, ~1,200/s at a 5× peak\n- Storage: original ~3 MB × 20M = **60 TB/day**; renditions (thumbnail, small, medium, large ≈ 350 KB total) add ~7 TB/day. About **24 PB/year**, so a blob store is mandatory and tiering cold originals matters\n- Views: 200M × 50 = 10B/day ≈ **115K views/s**\n- Egress: at ~300 KB per served view that is ~35 GB/s ≈ **280 Gbps**, which only a CDN can carry; the origin should see a small fraction of it\n- Metadata is tiny by comparison: ~1 KB × 20M = 20 GB/day",
+  "api": "```\nPOST /v1/photos/uploads        {size, content_type, sha256} → 201 {photo_id, upload_url, upload_id}\nPUT  {upload_url}               (bytes, resumable / multipart straight to object store)\nPOST /v1/photos/{id}/complete  {caption, visibility, album_id} → 202 {status: processing}\nGET  /v1/photos/{id}           → metadata + signed URLs per rendition\nGET  cdn/p/{id}/{size}.webp    → image bytes\nDELETE /v1/photos/{id}         → 204\n```\n- Clients upload bytes **directly to the object store with a presigned URL**, so API servers never proxy gigabytes.\n- `photo_id` is client-generated or server-issued once, making retries idempotent.",
+  "data": "**Metadata** (relational or wide-column, sharded by owner): `photos(photo_id, owner_id, state, visibility, width, height, blob_key, created_at, ...)` and `albums`.\n\n**Blobs** (object store): `originals/{photo_id}` and `renditions/{photo_id}/{size}.{format}`, immutable once written.\n\n- Keep the split strict: small hot rows in the DB, large immutable bytes in object storage, each scaled on its own curve.\n- State machine `uploading → processing → ready → deleted` lives in the metadata row.\n- Write the blob first, then the metadata reference; an orphan blob is cheap garbage, a dangling reference is a broken photo.",
+  "design": "```\nphone ─▶ API ─▶ metadata DB\n  │ presigned PUT\n  ▼\nobject store (originals) ─event─▶ queue ─▶ image workers ─▶ object store (renditions)\n                                                    └─▶ metadata DB: state=ready\nviewer ─▶ CDN ─▶ origin shield ─▶ object store\n```\n- **Upload:** client asks for an upload session, sends bytes (chunked, resumable) to the object store, then calls `complete`.\n- **Processing:** the store's completion event feeds a queue; workers validate magic bytes, strip or normalise EXIF, scan for abuse, generate renditions, then flip the row to `ready`.\n- **Read:** URLs point at CDN; a miss goes to an origin shield, then the store. Photo ids are not guessable and URLs are signed for non-public photos.",
+  "deepdives": "- **Renditions: eager vs lazy.** Eagerly generating 4–5 sizes costs ~7 TB/day but makes reads trivial; generating on first request (resizing proxy behind the CDN) saves storage and supports new device sizes later, at the cost of a slow first view and a thundering herd on viral photos. Common answer: eagerly make thumbnail and one display size, resize the rest lazily and cache.\n- **Mobile upload reliability.** Chunked, resumable uploads keyed by `upload_id`, a content hash to skip duplicates, and a queue that survives app restarts. Show the photo to the author from the local copy immediately.\n- **CDN and privacy.** Immutable keys (`photo_id` + version) allow year-long TTLs. Private photos need signed, short-lived URLs, which lowers hit rate; delete and visibility changes need purge or version-bump so stale edge copies stop being served.\n- **Dedup and cost.** Same-user duplicates can be dropped by hash; cross-user dedup saves little and leaks existence. Move originals untouched for 90 days to infrequent-access tiers.",
+  "wrapup": "- Metadata and bytes scale separately; the CDN, not the origin, serves nearly all views.\n- Trade-offs: eager vs lazy renditions, signed URLs vs cacheability, direct-to-store upload vs server-side validation.\n- Next: video, face/object tagging, geo-replication of originals, GDPR-grade deletion across backups."
+ },
+ "rubric": [
+  {
+   "text": "Uploads bytes directly to object storage via presigned URLs instead of proxying through API servers",
+   "keywords": [
+    "presigned",
+    "signed url",
+    "direct upload",
+    "multipart"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Separates small hot metadata (DB) from large immutable blobs (object store) and scales them independently",
+   "keywords": [
+    "metadata",
+    "blob",
+    "object store",
+    "s3"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Estimates upload rate, daily/yearly storage in the tens of PB and view egress in the hundreds of Gbps",
+   "keywords": [
+    "pb",
+    "tb/day",
+    "gbps",
+    "qps",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Makes uploads resumable/chunked and idempotent for flaky mobile networks",
+   "keywords": [
+    "resum",
+    "chunk",
+    "idempoten",
+    "retry"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Processes images asynchronously (queue + workers) with a state machine uploading→processing→ready",
+   "keywords": [
+    "queue",
+    "worker",
+    "async",
+    "state"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Generates thumbnails/renditions and weighs eager vs lazy (on-demand) resizing",
+   "keywords": [
+    "thumbnail",
+    "rendition",
+    "resize",
+    "lazy",
+    "eager"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Serves reads through a CDN with an origin shield and long TTLs on immutable keys",
+   "keywords": [
+    "cdn",
+    "origin shield",
+    "immutable",
+    "ttl"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles private photos and deletion: signed URLs, purge or version bump for edge copies",
+   "keywords": [
+    "signed",
+    "purge",
+    "invalidat",
+    "private",
+    "delet"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Writes the blob before the metadata reference and cleans up orphaned blobs",
+   "keywords": [
+    "orphan",
+    "garbage",
+    "gc",
+    "before"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Validates and sanitises uploads: content type by magic bytes, EXIF stripping, abuse/malware scan",
+   "keywords": [
+    "exif",
+    "virus",
+    "malware",
+    "moderation",
+    "validat",
+    "magic"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses storage cost: tiering cold originals, dedup by hash where it helps",
+   "keywords": [
+    "tier",
+    "cold",
+    "infrequent",
+    "dedup",
+    "hash"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "batching",
+  "cache-invalidation",
+  "client-side-cache",
+  "idempotency",
+  "sharding",
+  "queue-first-vs-db-first",
+  "retry"
+ ]
+}

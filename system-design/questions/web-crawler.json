@@ -1,0 +1,163 @@
+{
+ "id": "web-crawler",
+ "title": "Design a Web Crawler",
+ "prompt": "Design a distributed crawler that discovers and downloads web pages to feed a search index or a training corpus. It starts from a set of seed URLs, fetches pages, extracts links, and keeps going, while being a good citizen of the sites it visits and avoiding wasted work on duplicates and traps. JavaScript rendering is out of scope.\n\nAssume a corpus of **10 billion pages** that each need refreshing roughly every 30 days.",
+ "clarify": [
+  "Is it a one-time crawl or continuous, with recrawl of changed pages?",
+  "Do we need to render JavaScript, or is raw HTML enough?",
+  "Which content types are in scope (HTML only, PDF, images)?",
+  "How strictly must we honour robots.txt and per-site rate limits?",
+  "How fresh must important pages be compared with the long tail?",
+  "Do we need to detect near-duplicate content, not just identical URLs?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Start from seeds, fetch pages, extract and normalise links, feed new URLs back\n- Recrawl on a schedule, prioritising important or frequently changing pages\n- Store content (and metadata) for downstream indexing\n\n**Non-functional**\n- Politeness: obey robots.txt and never overload a host\n- Scalable and fault tolerant: a dead worker loses no work\n- Robust to hostile web: traps, huge pages, slow servers, redirect loops\n- Efficient: avoid refetching duplicates; use conditional requests on recrawl",
+  "estimation": "- Rate: 10B pages ÷ 30 days ÷ 86,400 s ≈ **3,860 pages/s** on average\n- Bandwidth: at ~100 KB per page, ≈ **390 MB/s** ≈ **3.1 Gbps**; that is ~**33 TB/day** fetched, ~**1 PB** of raw content per full pass (compress to ~250 TB)\n- Concurrency: with ~1 s average fetch time (DNS, connect, download), ~3,900 requests are in flight; a node holding 500 connections means about 8 fetcher nodes at this rate\n- Seen-set: 10B URLs in a Bloom filter at 10 bits/URL (≈1% false positives) is 10B × 10 ÷ 8 ≈ **12.5 GB**\n- Stress case, full recrawl in 24 h: 10B ÷ 86,400 ≈ **116K pages/s** ≈ **11.6 GB/s** ≈ **93 Gbps**, and DNS becomes a bottleneck",
+  "api": "Mostly internal interfaces:\n```\nfrontier.next(host_shard, n) → [url, due_time]        # lease a batch of due URLs\nfrontier.add(urls[], priority)                          # discovered links\nfetcher: GET url (conditional: If-None-Match / If-Modified-Since) → status, headers, body\nstore.put(url, content_hash, body_ref, fetched_at, etag)\n```\n- Leases have a timeout so a crashed fetcher's URLs reappear.\n- External ops API: submit seeds, pause a domain, inspect a host's queue.",
+  "data": "- **Frontier:** priority and per-host queues, persisted. Per URL: `url_hash, host, priority, next_fetch_time, retry_count, depth`.\n- **Host state:** `robots.txt` rules and expiry, crawl-delay, last fetch time, error rate, owner node.\n- **URL-seen:** Bloom filter plus an exact store for important hosts.\n- **Content store:** compressed pages in object storage (WARC-like batches), indexed by `url → content_hash, etag, last_modified, fetch_time`.\n- **Fingerprints:** exact content hash and a simhash for near-duplicate lookup.",
+  "design": "```\nseeds ─▶ frontier (front queues by priority ─▶ back queues per host)\n                          │ lease due URLs (one host per back queue, spaced by delay)\n                          ▼\n   DNS cache ─▶ fetchers ─▶ robots check ─▶ HTTP GET ─▶ parser ─▶ link extractor\n                                  │                          │          │ normalise, filter\n                                  ▼                          ▼          ▼\n                           content store ◀─ dedup (hash/simhash)     URL-seen ─▶ frontier\n```\n- **Loop:** frontier → fetcher → parser → dedup → store, with new links filtered by URL-seen and re-enqueued.\n- **Ownership:** URLs are routed to crawler nodes by **consistent hashing of the host**, so one node owns a host's queue, robots cache and politeness timer.\n- **Recrawl:** each URL gets a `next_fetch_time` from its observed change rate and importance.",
+  "deepdives": "- **The frontier is a scheduler, not a FIFO.** Two objectives collide: priority (important pages first) and politeness (one request per host every few seconds). Use the classic two-level structure: front queues ordered by priority feed back queues, one per host, each with a ready-time; a heap of ready back queues picks the next fetch. A giant site cannot starve small ones, and a host with 100M URLs drains at its allowed rate, not ours. Persist it with checkpoints so a node failure only replays recent leases, and hand its hosts to neighbours on the ring.\n- **Dedup at three levels.** URLs: normalise (lowercase host, strip fragments and tracking parameters, sort query keys, resolve relative paths), then Bloom filter. A false positive silently skips a page, so choose the error budget deliberately and use an exact store for high-value hosts. Content: exact hash for identical bodies at different URLs, simhash for near-duplicates. Traps (calendars, session ids, infinite paths): cap depth and URLs per host, detect repeating path patterns, and downweight low-value hosts.\n- **Politeness, robots and scale limits.** Cache `robots.txt` per scheme/host/port with an expiry and a defined behaviour on fetch failure (4xx = allow, 5xx = back off). Adapt delay to server latency and error rate; a circuit breaker pauses hosts that are failing. For the 24 h recrawl, bandwidth (~93 Gbps) and DNS (~116K lookups/s) dominate: run a local caching resolver and use conditional GETs (ETag/Last-Modified), which return 304 for unchanged pages and save most of the bytes.\n- **Failures:** timeouts, exponential backoff with jitter on transient errors, a dead-letter list for permanent ones, and a size cap per response.",
+  "wrapup": "- Correctness is politeness and dedup; scale comes from partitioning by host and an efficient frontier.\n- Trade-offs: Bloom filter space vs skipped pages, host-pinned ownership (simple, but rebalancing is slow) vs URL-level sharding, depth-first freshness vs breadth coverage.\n- Next: JavaScript rendering, PageRank-driven priorities, focused crawling, change-rate prediction."
+ },
+ "rubric": [
+  {
+   "text": "Estimates pages/s, bandwidth and storage from corpus size and recrawl period; identifies bandwidth and DNS as limits for fast full recrawls",
+   "keywords": [
+    "pages/s",
+    "gbps",
+    "bandwidth",
+    "dns",
+    "tb",
+    "/s"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes the crawl loop: frontier, fetcher, parser, dedup, store, with extracted links fed back",
+   "keywords": [
+    "frontier",
+    "fetch",
+    "parse",
+    "extract",
+    "loop"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Frontier is a priority-plus-politeness scheduler: front queues by priority, back queues per host with ready times",
+   "keywords": [
+    "back queue",
+    "front queue",
+    "priority",
+    "per-host",
+    "per host",
+    "heap"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Politeness: honours robots.txt (cached with expiry and failure policy), crawl-delay and per-host rate limits",
+   "keywords": [
+    "robots",
+    "crawl-delay",
+    "politeness",
+    "rate limit",
+    "polite"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Partitions work by consistent hashing of the host so one node owns a host's queue and politeness state; handles node failure",
+   "keywords": [
+    "consistent hash",
+    "host",
+    "ownership",
+    "rebalanc",
+    "shard"
+   ],
+   "points": 2
+  },
+  {
+   "text": "URL normalisation and URL-seen check (Bloom filter) with a stated false-positive budget and exact fallback",
+   "keywords": [
+    "bloom",
+    "normali",
+    "canonical",
+    "seen",
+    "false positive"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Content dedup: exact hash and near-duplicate detection (simhash)",
+   "keywords": [
+    "simhash",
+    "checksum",
+    "content hash",
+    "near-duplicate",
+    "near duplicate",
+    "minhash"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Crawler traps: depth and per-host caps, pattern detection, URL length limits",
+   "keywords": [
+    "trap",
+    "depth",
+    "calendar",
+    "infinite",
+    "cap"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Recrawl scheduling by change rate/importance using conditional GETs (ETag, Last-Modified)",
+   "keywords": [
+    "etag",
+    "last-modified",
+    "if-modified",
+    "conditional",
+    "recrawl",
+    "change rate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Failure handling: leases/timeouts, exponential backoff with jitter, circuit breaker, dead-letter, persisted frontier checkpoints",
+   "keywords": [
+    "backoff",
+    "jitter",
+    "circuit",
+    "dead-letter",
+    "dead letter",
+    "lease",
+    "checkpoint"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Fetch performance: async I/O, DNS caching, connection reuse, response size and time limits",
+   "keywords": [
+    "dns",
+    "async",
+    "connection",
+    "keep-alive",
+    "timeout",
+    "size limit"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "bloom-filter",
+  "consistent-hashing",
+  "rate-limiter",
+  "backoff-jitter",
+  "circuit-breaker",
+  "etag",
+  "retry",
+  "timeout"
+ ]
+}
