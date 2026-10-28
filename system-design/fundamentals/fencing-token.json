@@ -1,0 +1,68 @@
+{
+ "id": "fencing-token",
+ "title": "Fencing Token",
+ "summary": "A fencing token protects a resource from a holder whose lease has **already expired** but who does not know it yet.\n\n1. Every time the lock service grants a lock, it issues a **monotonically increasing** token.\n2. The client sends the token with every write to the resource.\n3. The resource stores `lastAcceptedToken` and, **in one atomic step**, accepts a write only if `token > lastAcceptedToken`, then records it.\n\nSo if client A (token 41) pauses, its lease expires, and client B gets token 42 and writes, A's late write with 41 is rejected. **The lease gives liveness; the fencing token gives safety.** The resource never trusts a client's claim that it holds the lock.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Client A holds token 41 and pauses for a long GC. Its lease expires; client B gets token 42 and writes. A wakes up and writes with token 41. What should the resource do?",
+   "options": [
+    "Accept it: A's write arrived after B's",
+    "Reject it, because 41 ≤ lastAcceptedToken (42)",
+    "Accept it if A's lease is renewed first",
+    "Ask the lock service whether A still holds the lock"
+   ],
+   "answer": [
+    1
+   ],
+   "explain": "The check is purely `token > lastAcceptedToken`. Asking the lock service is racy — the answer can be stale by the time the write lands."
+  },
+  {
+   "type": "choice",
+   "q": "Which of these are required for fencing tokens to be safe?",
+   "options": [
+    "Tokens increase monotonically across grants",
+    "The resource checks and records the token in the same atomic operation",
+    "Client clocks are synchronized",
+    "The resource persists lastAcceptedToken",
+    "The lock service is told when a write succeeds"
+   ],
+   "answer": [
+    0,
+    1,
+    3
+   ],
+   "explain": "Monotonic tokens, an atomic compare-and-set, and a durable high-water mark. Clocks don't matter — that is the point of using a counter instead of time."
+  },
+  {
+   "type": "order",
+   "q": "Order the steps of a fenced write.",
+   "items": [
+    "Client acquires the lock and receives token N",
+    "Client sends the write with token N",
+    "Resource atomically compares N with lastAcceptedToken",
+    "Resource applies the write and sets lastAcceptedToken = N"
+   ],
+   "explain": "The compare and the update of lastAcceptedToken must be one atomic step, or two writers can both pass the check."
+  },
+  {
+   "type": "choice",
+   "q": "Why can't the resource just check \"does this client's lease look valid by my clock\"?",
+   "options": [
+    "Because leases are only valid on the lock service's clock, and clocks drift and pauses happen between check and write",
+    "Because the resource has no clock",
+    "Because leases never expire",
+    "Because it would be too slow"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Time-based checks break under clock skew and process pauses. A token is a logical clock: ordering is decided by the counter, not by wall time."
+  },
+  {
+   "type": "recall",
+   "q": "In one sentence each: what does the lease give you, and what does the fencing token give you?",
+   "answer": "The lease gives **liveness** — a dead holder's ownership expires so work can move on. The fencing token gives **safety** — a stale holder's writes are rejected by the resource itself."
+  }
+ ]
+}

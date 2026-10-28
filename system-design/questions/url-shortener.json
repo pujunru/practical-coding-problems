@@ -1,0 +1,129 @@
+{
+ "id": "url-shortener",
+ "title": "Design a URL Shortener",
+ "prompt": "Design a service like Bit.ly or TinyURL. A user submits a long URL and gets back a short link such as `https://sho.rt/aZ3kQ9`. Anyone who opens the short link is redirected to the original URL.\n\nAssume a public service with about **100 million new links a month** and links that, once created, are read far more often than they are written.",
+ "clarify": [
+  "Can users choose a custom alias?",
+  "Do links expire, and can a link be deleted or edited?",
+  "Do we need click analytics, and how fresh must they be?",
+  "Is a 301 (cacheable) or 302 redirect expected?",
+  "How short must the key be, and may keys be guessable?"
+ ],
+ "reference": {
+  "requirements": "**Functional**\n- `shorten(long_url, [alias], [expiry]) → short_url`\n- `GET /{key}` redirects to the long URL\n- Optional: custom aliases, expiry, basic click counts\n\n**Non-functional**\n- Redirects are the hot path: low latency (p99 < 50 ms at the edge), very high availability\n- A short key, once issued, never points elsewhere (durability, no collisions)\n- Read-heavy: ~100:1 reads to writes\n- Keys should not be trivially enumerable if links can be private",
+  "estimation": "- Writes: 100M/month ≈ **40 writes/s** average, a few hundred at peak\n- Reads at 100:1 ≈ **4,000 redirects/s** average, ~10× at peak\n- Storage: ~500 B per mapping × 100M/month × 12 × 5 years ≈ **3 TB** — fits a sharded KV store comfortably\n- Key space: base62 with 7 characters = 62⁷ ≈ **3.5 × 10¹²** keys, far more than 6 × 10⁹ links over 5 years\n- Hot set: a small fraction of links gets most clicks, so a cache of a few GB absorbs most reads",
+  "api": "```\nPOST /v1/links            {long_url, alias?, expires_at?}  → 201 {key, short_url}\nGET  /{key}               → 302 Location: long_url   (404 / 410 if missing / expired)\nDELETE /v1/links/{key}    → 204   (owner only)\n```\n- `POST` takes an `Idempotency-Key` header so client retries do not mint two keys.\n- **302** keeps every click reaching us (analytics, deletion takes effect); **301** lets browsers cache and cuts load but loses both. Say which and why.",
+  "data": "`links(key PK, long_url, owner_id, created_at, expires_at)`\n\n- Access pattern is a point lookup by `key` → a KV store or a table partitioned by `key` (DynamoDB / Cassandra / sharded MySQL).\n- No joins on the hot path. A secondary index by `owner_id` only for \"my links\" pages, which can be eventually consistent.\n- Click counts live elsewhere (a counter store or analytics pipeline), never in the same row the redirect reads.",
+  "design": "```\nclient ─▶ CDN/edge ─▶ redirect service ─▶ cache (Redis) ─▶ links store\n                                     └─▶ click events ─▶ queue ─▶ analytics\nclient ─▶ API service ─▶ key generator ─▶ links store\n```\n- **Write path:** API validates the URL, gets a key, writes `key → long_url` with a conditional put (fail if the key exists).\n- **Read path:** edge → redirect service → cache → store on miss; respond 302; emit a click event asynchronously.\n- **Key generation** options: (1) a counter handed out in **blocks** to each API server (e.g. 1,000 IDs at a time from a coordinator) encoded in base62; (2) a random 7-char key with a conditional insert and retry on collision. Hashing the URL gives the same key for the same URL, which is only sometimes desired.",
+  "deepdives": "- **Unique keys without a hot counter:** range allocation (each server leases a block of IDs) removes the single counter from the hot path; if a server dies, its unused block is just skipped. Shuffle or encrypt the counter if keys must not be guessable.\n- **Read scaling:** cache-aside with a long TTL (mappings rarely change); put popular redirects at the edge; replicate the store across regions and read locally.\n- **Hot keys:** a viral link concentrates on one cache shard — replicate hot keys or cache them in the redirect service's memory.\n- **Expiry and deletion:** store `expires_at`, check on read, sweep lazily; delete must also invalidate the cache (and is why 302 matters).\n- **Abuse:** rate-limit creation per user/IP, scan destinations against malware lists.",
+  "wrapup": "- Bottleneck is the read path, solved with caching and edge serving; writes are tiny.\n- Trade-offs: counter blocks (short, dense keys, needs a coordinator) vs random keys (no coordination, collision retries); 301 (cheap) vs 302 (control and analytics).\n- Next: analytics pipeline, custom domains, multi-region writes for alias uniqueness."
+ },
+ "rubric": [
+  {
+   "text": "Separates the read (redirect) path from the write (shorten) path and states it is read-heavy",
+   "keywords": [
+    "read-heavy",
+    "read heavy",
+    "100:1",
+    "reads"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Estimates write and read QPS and total storage to the right order of magnitude",
+   "keywords": [
+    "qps",
+    "/s",
+    "tb",
+    "storage"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Sizes the key space (e.g. base62 with ~7 characters)",
+   "keywords": [
+    "base62",
+    "62^",
+    "62⁷",
+    "7 char"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Generates unique keys safely: counter with block/range allocation, or random keys with a conditional insert",
+   "keywords": [
+    "range",
+    "block",
+    "counter",
+    "collision",
+    "conditional"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Stores the mapping in a KV store / partitioned table keyed by the short key",
+   "keywords": [
+    "key-value",
+    "kv",
+    "partition",
+    "dynamo",
+    "cassandra"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Caches hot mappings (cache-aside, long TTL) and/or serves redirects at the edge",
+   "keywords": [
+    "cache",
+    "redis",
+    "cdn",
+    "edge"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Discusses 301 vs 302 and its effect on analytics and deletion",
+   "keywords": [
+    "301",
+    "302"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles expiry/deletion including cache invalidation",
+   "keywords": [
+    "expir",
+    "ttl",
+    "delete",
+    "invalidat"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Makes link creation idempotent or otherwise handles retries",
+   "keywords": [
+    "idempoten",
+    "retry"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Mentions abuse controls: rate limiting creation and/or malicious-URL checks",
+   "keywords": [
+    "rate limit",
+    "abuse",
+    "spam",
+    "malware"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "consistent-hashing",
+  "cache-invalidation",
+  "idempotency",
+  "rate-limiter",
+  "sharding",
+  "rw-replicas"
+ ]
+}

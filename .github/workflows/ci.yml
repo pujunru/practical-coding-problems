@@ -20,5 +20,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - name: Check problems
+      - name: Check coding problems
         run: python3 tools/check.py app/runner/harness.py
+      - name: Check system design content
+        run: python3 tools/sd.py check

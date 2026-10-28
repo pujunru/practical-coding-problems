@@ -1,0 +1,74 @@
+{
+ "id": "consistent-hashing",
+ "title": "Consistent Hashing",
+ "summary": "Place nodes and keys on the same hash ring (`0 … 2^m − 1`). A key belongs to the **first node token clockwise** from its hash. Adding a node takes over only the arc next to it; every other key stays put.\n\n```\nA(10) ---- B(40) ---- C(80) ---- wrap        keys in (10,40] → B\nA(10) - D(25) - B(40) ---- C(80) ---- wrap   keys in (10,25] → D, the rest unchanged\n```\n\n**Scaling out** differs by what the node holds:\n- **Cache:** no migration. Moved keys just miss and refill.\n- **Database:** must migrate. New node joins as *joining* → the key range is copied while traffic still goes to the old node → once caught up, switch traffic → the old node deletes its copy.\n\n**Use it** when you want key affinity (the same key almost always lands on the same shard: caches, KV stores) and when the node count changes freely, because rebalancing moves the minimum. **Don't** use it to route to stateful backends that own sessions or in-flight work; route those explicitly. In practice each node gets many virtual tokens so load evens out.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "With N nodes on a hash ring and one node added, roughly what fraction of keys move?",
+   "options": [
+    "About 1/(N+1)",
+    "About half",
+    "All of them",
+    "About N/(N+1)"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Only the arc the new node claims moves. With `hash(key) % N`, adding a node remaps almost every key — the problem consistent hashing solves."
+  },
+  {
+   "type": "choice",
+   "q": "Ring: A at 10, B at 40, C at 80; a key belongs to the first token clockwise. D joins at 25. Which keys change owner?",
+   "options": [
+    "Keys hashing into (10, 25], moving from B to D",
+    "Keys hashing into (10, 25], moving from A to D",
+    "Keys hashing into (25, 40], moving from B to D",
+    "Every key owned by A"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Before D, (10, 40] belonged to B. D now owns (10, 25]. A and C are untouched. (Some systems use the opposite convention — say which one you use.)"
+  },
+  {
+   "type": "order",
+   "q": "Order the steps for adding a node to a consistent-hashed **database**.",
+   "items": [
+    "New node joins the ring marked as joining",
+    "Its key range is copied from the old owner while reads and writes still go to the old owner",
+    "Once it has caught up, traffic for the range switches to the new node",
+    "The old owner deletes its copy of the range"
+   ],
+   "explain": "A cache can skip the copy (misses refill it); a database cannot, or reads would return nothing."
+  },
+  {
+   "type": "choice",
+   "q": "Where is consistent hashing a good fit?",
+   "options": [
+    "A distributed cache whose node count changes with load",
+    "A KV store that wants each key on a stable shard",
+    "Routing requests to the server that holds a user's live WebSocket session",
+    "Balancing stateless HTTP requests evenly across identical servers"
+   ],
+   "answer": [
+    0,
+    1
+   ],
+   "explain": "It shines for key affinity with a changing node set. Stateful routing needs an explicit owner lookup (a ring rebalance would silently move sessions), and stateless requests just need round-robin or least-loaded."
+  },
+  {
+   "type": "number",
+   "q": "A cache cluster grows from 9 to 10 nodes with consistent hashing (many virtual nodes each). About what percentage of keys miss because they moved?",
+   "answer": 10,
+   "unit": "%",
+   "tolerance": 0.3,
+   "explain": "About 1/10 of the ring is handed to the new node, so ≈ 10% of keys move. With `% N` it would be ≈ 90%."
+  },
+  {
+   "type": "recall",
+   "q": "Why do real systems give each node many virtual tokens instead of one?",
+   "answer": "With one token per node, arcs are uneven, so load is uneven, and a leaving node dumps its whole arc onto a single neighbour. Many virtual tokens per node make each node's share close to 1/N and spread a departing node's load across many nodes. Weights are easy too: more tokens for bigger machines."
+  }
+ ]
+}

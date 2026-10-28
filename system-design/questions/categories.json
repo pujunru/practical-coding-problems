@@ -1,0 +1,562 @@
+{
+ "categories": [
+  {
+   "title": "Social & real-time communication",
+   "questions": [
+    {
+     "id": "twitter",
+     "title": "Design X / Twitter",
+     "difficulty": "Easy",
+     "companies": [
+      "Meta",
+      "Uber"
+     ]
+    },
+    {
+     "id": "instagram",
+     "title": "Design Instagram",
+     "difficulty": "Easy",
+     "companies": [
+      "Meta",
+      "Amazon",
+      "Microsoft",
+      "X"
+     ]
+    },
+    {
+     "id": "messaging-app",
+     "title": "Design a Messaging App",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta",
+      "Uber",
+      "TikTok",
+      "Amazon",
+      "Google",
+      "LinkedIn"
+     ]
+    },
+    {
+     "id": "news-feed",
+     "title": "Design the Facebook News Feed",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta"
+     ]
+    },
+    {
+     "id": "slack",
+     "title": "Design Slack",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "live-comments",
+     "title": "Design a Live Commenting System",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta"
+     ]
+    },
+    {
+     "id": "nearby-friends",
+     "title": "Design Nearby Friends",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon",
+      "Meta",
+      "Google",
+      "Uber"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Media, content & storage",
+   "questions": [
+    {
+     "id": "review-aggregator",
+     "title": "Design a Book Review Aggregator",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "prime-video-home",
+     "title": "Design the Prime Video Home Page",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "photo-sharing",
+     "title": "Design a Photo-Sharing Platform",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Uber",
+      "Amazon",
+      "DoorDash",
+      "Meta"
+     ]
+    },
+    {
+     "id": "cloud-file-storage",
+     "title": "Design Cloud File Storage (Dropbox)",
+     "difficulty": "Medium",
+     "companies": [
+      "Anthropic",
+      "NVIDIA",
+      "Google",
+      "Meta",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "news-aggregator",
+     "title": "Design a News Aggregator",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "video-sharing",
+     "title": "Design a Video Upload and Sharing App (YouTube)",
+     "difficulty": "Hard",
+     "companies": [
+      "Google",
+      "Uber",
+      "Meta",
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "video-streaming",
+     "title": "Design a Video Streaming Platform (Netflix)",
+     "difficulty": "Hard",
+     "companies": [
+      "Apple",
+      "Meta",
+      "Amazon",
+      "Netflix"
+     ]
+    },
+    {
+     "id": "music-streaming",
+     "title": "Design a Music Streaming Platform (Spotify)",
+     "difficulty": "Hard",
+     "companies": [
+      "Google"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Search, discovery & ranking",
+   "questions": [
+    {
+     "id": "typeahead",
+     "title": "Design Search Autocomplete",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Meta",
+      "Amazon",
+      "Apple"
+     ]
+    },
+    {
+     "id": "status-search",
+     "title": "Design Facebook Status Search",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta"
+     ]
+    },
+    {
+     "id": "web-crawler",
+     "title": "Design a Web Crawler",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI",
+      "Amazon",
+      "Google",
+      "Meta",
+      "Stripe"
+     ]
+    },
+    {
+     "id": "proximity-service",
+     "title": "Design a Proximity Service (Yelp)",
+     "difficulty": "Hard",
+     "companies": [
+      "NVIDIA",
+      "Uber"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Commerce, marketplace & finance",
+   "questions": [
+    {
+     "id": "shopping-cart",
+     "title": "Design a Shopping Cart",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Microsoft"
+     ]
+    },
+    {
+     "id": "parking-payment",
+     "title": "Design a Parking Payment System",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "online-store",
+     "title": "Design an Online Store",
+     "difficulty": "Medium",
+     "companies": [
+      "Microsoft"
+     ]
+    },
+    {
+     "id": "order-events",
+     "title": "Design Order Event Processing",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "inventory",
+     "title": "Design an Inventory System",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "pickup-lockers",
+     "title": "Design Amazon Pickup Lockers",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "warehouse",
+     "title": "Design a Warehouse Management System",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Mobility, mapping & logistics",
+   "questions": [
+    {
+     "id": "driver-heatmap",
+     "title": "Design a Heat Map for Ride-Hailing Drivers",
+     "difficulty": "Medium",
+     "companies": [
+      "Uber"
+     ]
+    },
+    {
+     "id": "google-maps",
+     "title": "Design Google Maps",
+     "difficulty": "Hard",
+     "companies": [
+      "Google"
+     ]
+    },
+    {
+     "id": "ride-matching",
+     "title": "Design Rider\u2013Driver Matching",
+     "difficulty": "Hard",
+     "companies": [
+      "NVIDIA",
+      "Google"
+     ]
+    },
+    {
+     "id": "food-delivery",
+     "title": "Design a Global Food Delivery System",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Scheduling, booking & allocation",
+   "questions": [
+    {
+     "id": "restaurant-booking",
+     "title": "Design a Restaurant Booking System",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "ticketing",
+     "title": "Design a Ticketing Platform",
+     "difficulty": "Hard",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "hotel-booking",
+     "title": "Design a Hotel Booking System",
+     "difficulty": "Hard",
+     "companies": [
+      "Meta",
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Enterprise & workflow",
+   "questions": [
+    {
+     "id": "gpu-job-manager",
+     "title": "Design a GPU Job Manager",
+     "difficulty": "Easy",
+     "companies": [
+      "NVIDIA",
+      "Google",
+      "Amazon",
+      "Microsoft",
+      "Netflix"
+     ]
+    },
+    {
+     "id": "webhook-system",
+     "title": "Design a Webhook System",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "interview-platform",
+     "title": "Design a Candidate Interview Platform",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "github-actions",
+     "title": "Design GitHub Actions",
+     "difficulty": "Hard",
+     "companies": [
+      "OpenAI"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "AI & LLM systems",
+   "questions": [
+    {
+     "id": "ai-chat",
+     "title": "Design an AI Chat System (ChatGPT / Claude)",
+     "difficulty": "Hard",
+     "companies": [
+      "OpenAI",
+      "NVIDIA",
+      "Anthropic"
+     ]
+    },
+    {
+     "id": "enterprise-llm-search",
+     "title": "Design LLM-Powered Enterprise Search",
+     "difficulty": "Hard",
+     "companies": [
+      "OpenAI",
+      "NVIDIA"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Distributed infrastructure",
+   "questions": [
+    {
+     "id": "url-shortener",
+     "title": "Design a URL Shortener",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Google",
+      "Meta",
+      "Microsoft",
+      "Stripe"
+     ]
+    },
+    {
+     "id": "distributed-cache",
+     "title": "Design a Distributed Cache",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon"
+     ]
+    },
+    {
+     "id": "in-memory-database",
+     "title": "Design an In-Memory Database",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "memcache-load-balancing",
+     "title": "Load-Balance Memcache Servers",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta",
+      "Apple",
+      "Google"
+     ]
+    },
+    {
+     "id": "botnet",
+     "title": "Design a Distributed Command-and-Control Fleet",
+     "difficulty": "Hard",
+     "companies": [
+      "Meta"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Data platform & analytics",
+   "questions": [
+    {
+     "id": "web-analytics",
+     "title": "Design Google Analytics",
+     "difficulty": "Hard",
+     "companies": [
+      "Google",
+      "Microsoft",
+      "Meta"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Low-level design",
+   "questions": [
+    {
+     "id": "board-game",
+     "title": "Design a Board Game (Chess / Tic-Tac-Toe)",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Google",
+      "Meta"
+     ]
+    },
+    {
+     "id": "parking-lot",
+     "title": "Design a Parking Lot",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "card-game",
+     "title": "Design a Card Game (Poker / Blackjack)",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Apple"
+     ]
+    },
+    {
+     "id": "elevator",
+     "title": "Design an Elevator System",
+     "difficulty": "Medium",
+     "companies": [
+      "Google",
+      "Amazon",
+      "Apple"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Security, identity & access",
+   "questions": [
+    {
+     "id": "user-preferences",
+     "title": "Design a User Preferences Service",
+     "difficulty": "Easy",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "ai-model-api",
+     "title": "Design an API for AI Model Access",
+     "difficulty": "Hard",
+     "companies": [
+      "Anthropic"
+     ]
+    },
+    {
+     "id": "e-voting",
+     "title": "Design an Electronic Voting System",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Observability & reliability",
+   "questions": [
+    {
+     "id": "sensor-temperature",
+     "title": "Design a Temperature Monitoring System for Distributed Sensors",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "cluster-redundancy",
+     "title": "Design Redundancy for a Compute Cluster",
+     "difficulty": "Medium",
+     "companies": [
+      "NVIDIA"
+     ]
+    }
+   ]
+  }
+ ]
+}

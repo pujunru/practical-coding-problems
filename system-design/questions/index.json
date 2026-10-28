@@ -1,0 +1,21 @@
+{
+ "categories": [
+  {
+   "title": "Distributed infrastructure",
+   "questions": [
+    {
+     "id": "url-shortener",
+     "title": "Design a URL Shortener",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Google",
+      "Meta",
+      "Microsoft",
+      "Stripe"
+     ]
+    }
+   ]
+  }
+ ]
+}

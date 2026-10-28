@@ -1,0 +1,31 @@
+{
+ "categories": [
+  {
+   "id": "sharding",
+   "title": "Sharding & Partitioning",
+   "concepts": [
+    {
+     "id": "consistent-hashing",
+     "title": "Consistent Hashing",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "leases-locks",
+   "title": "Leases & Locks",
+   "concepts": [
+    {
+     "id": "lease",
+     "title": "Lease",
+     "drills": 6
+    },
+    {
+     "id": "fencing-token",
+     "title": "Fencing Token",
+     "drills": 5
+    }
+   ]
+  }
+ ]
+}
