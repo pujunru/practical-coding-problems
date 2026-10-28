@@ -1,83 +1,79 @@
 {
  "id": "websocket-patterns",
  "title": "WebSocket Design Patterns",
- "summary": "A **WebSocket gateway (WS GW) pattern** for pushing messages to millions of connected users.\n\n**Connections.** An **L4 load balancer** (TCP passthrough, least-connections) pins each long-lived connection to **one GW node** (about 50k each). Two mappings exist: a global **registry** in Redis, `user_id -> {gw_node, conn_id, epoch}`, with a TTL renewed by heartbeat (the Router uses it to pick a node), and an in-memory `conn_id -> socket` on each node. GW nodes hold no durable state: they scale out, and when one is killed its entries expire and users reconnect elsewhere.\n\n**Send path:**\n1. A service writes its state **and an outbox row in one transaction**.\n2. A relay (poll or CDC) publishes to Kafka with `key = user_id` and marks the row sent.\n3. A Router consumes, looks up the registry, and delivers to that GW node (gRPC, or a pub/sub channel such as `ch:gw-3`) with `conn_id` and `epoch`.\n4. The GW finds the socket and pushes `{seq, payload}`.\n\n**Offline or stale:** no registry entry, or the node answers `NOT_OWNER`: the message goes to the user's inbox plus a mobile push. On reconnect (any node) the epoch increments, the client sends `last_seq`, and the inbox replays what it missed.\n\n**Guarantees.** `conn_id` and `epoch` act as a [fencing token](#/sd/f/fencing-token): an old node cannot push to a user who moved. The pipeline is at-least-once ([outbox](#/sd/f/change-feed)), so the client **dedupes by `seq` and detects gaps**, acking progress. An alternative is per-user pub/sub channels, which skip the lookup but cost one subscription per online user.",
- "drills": [
+ "explain": "To push messages to millions of connected users, I put a fleet of stateless WebSocket gateway nodes behind an L4 load balancer, keep a registry of which node holds which user's connection, and deliver through an outbox, Kafka and a router that looks the user up and sends to that exact node. Offline users go to an inbox and catch up by sequence number on reconnect.",
+ "model": "```\nUser -> L4 LB (TCP passthrough) -> GW node (conn pinned there, ~50k each)\n                                       |  conn_id -> socket (in memory)\n                                       v\n                    Registry (Redis): user_id -> {gw_node, conn_id, epoch}, TTL by heartbeat\n\nService --(state + outbox row, one txn)--> DB --> Relay (poll/CDC) --> Kafka (key = user_id)\n   --> Delivery Router --lookup--> GW node --> socket     (offline/stale -> Inbox + mobile push)\n```\n\n**Two mappings:** the global `user -> gw_node` in Redis (the Router picks a node) and the local `conn_id -> socket` in node memory (the node finds the socket).\n\n**Send path.**\n\n1. Service writes state **and** an outbox row in one transaction.\n2. Relay publishes to Kafka with `key = user_id` (per-user order), marks sent.\n3. Router consumes, looks up `carol -> gw-3 / c31 / epoch 5`.\n4. Router sends to gw-3 (gRPC or pub/sub `ch:gw-3`) with `conn_id` and `epoch`.\n5. gw-3 pushes `{seq, payload}` on that socket.\n\n**Offline or stale:** no entry, or the node answers `NOT_OWNER`: store in the **inbox** plus mobile push. The user reconnects to any node, the epoch increments, the client sends `last_seq`, and the inbox replays the rest.\n\nGW nodes hold no durable state, so they scale out and can be killed; their TTLs expire and users reconnect elsewhere.",
+ "details": [
   {
-   "type": "order",
-   "q": "Put the path of a message to an online user in order.",
-   "items": [
-    "A service writes its state and an outbox row in one transaction",
-    "A relay publishes the outbox row to Kafka, keyed by user_id",
-    "The Router consumes it and looks up the user's gw_node, conn_id and epoch in the registry",
-    "The Router sends it to that GW node with conn_id and epoch",
-    "The GW finds the socket in memory and pushes {seq, payload}"
-   ],
-   "explain": "Two-level routing: the registry says which node, the node's local table says which socket. The outbox keeps the state change and the message atomic; keying by user_id preserves per-user order."
+   "q": "Why an L4 load balancer, and what does that imply for routing?",
+   "a": "WebSocket connections are long-lived TCP, so the LB just passes bytes through (least-connections) and each connection stays pinned to one GW node for its lifetime. You therefore cannot reach a user through any node: you must know which node holds the connection, which is what the registry is for."
   },
   {
-   "type": "choice",
-   "q": "Carol was on gw-3 (epoch 5) and reconnected through the load balancer to gw-1 (epoch 6). A Router with a stale lookup sends a message to gw-3 for epoch 5. What does the epoch protect against?",
-   "options": [
-    "Duplicate messages in Kafka",
-    "Pushing to a dead or superseded connection: gw-3 answers NOT_OWNER and the message is rerouted to the current owner or the inbox",
-    "Eavesdropping on the WebSocket",
-    "Slow consumers"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "The epoch is a fencing token for connection ownership. A stale route cannot silently deliver to, or be lost in, an old connection; it gets a refusal and the Router re-resolves."
+   "q": "Why two levels of mapping?",
+   "a": "The registry is global (`user_id -> gw_node, conn_id, epoch`, with a TTL renewed by heartbeat) so the Router can choose a node. The `conn_id -> socket` table is local to the node because a socket object cannot be shared. Keeping sockets out of the registry also keeps the registry small and cheap to update."
   },
   {
-   "type": "choice",
-   "q": "Dave is offline: his registry entry has expired. A message for Dave arrives at the Router. What should happen?",
-   "options": [
-    "Drop it; Dave will ask again",
-    "Retry the lookup forever until he connects",
-    "Store it in Dave's inbox (and send a mobile push if appropriate); when he reconnects he sends last_seq and the missed messages are replayed",
-    "Broadcast it to every GW node"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "The inbox makes offline delivery durable, and the sequence number turns reconnect into a catch-up from a known position."
+   "q": "What do `conn_id` and `epoch` protect against?",
+   "a": "They act as a [fencing token](#/sd/f/fencing-token) for connection ownership. Carol moves from gw-3 (epoch 5) to gw-1 (epoch 6); a Router with a stale lookup sends to gw-3 with epoch 5, and gw-3 answers `NOT_OWNER` instead of pushing to a dead or superseded connection. The Router re-resolves or falls back to the inbox."
   },
   {
-   "type": "choice",
-   "q": "A client has processed seq 41 and receives seq 43. What should it do, and what about a later duplicate seq 42?",
-   "options": [
-    "Detect the gap and request a resend from last_seq 41 (or replay from the inbox); drop a duplicate 42 once it has been applied",
-    "Process 43 and ignore the gap",
-    "Disconnect permanently",
-    "Ack 43 immediately so the server stops resending"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "At-least-once delivery means duplicates and reordering are normal. Sequence numbers give the client both tools: dedupe what it has applied and notice what is missing before acking."
+   "q": "Why write an outbox row instead of publishing to Kafka directly from the service?",
+   "a": "Publishing after the commit can lose the message on a crash; publishing before can announce state that never committed. The outbox puts the state change and its message in one transaction, and a relay (poll or CDC, see [change feed](#/sd/f/change-feed)) publishes it later. The pipeline is then at-least-once."
   },
   {
-   "type": "number",
-   "q": "10,000,000 users must be connected at peak. Each GW node handles at most 50,000 connections, and you plan to run nodes at no more than 70% of that. How many nodes (round up)?",
-   "answer": 286,
-   "unit": "nodes",
-   "tolerance": 0.02,
-   "explain": "At 70%, a node carries 35,000 connections. 10,000,000 / 35,000 = 285.7, so 286 nodes. The headroom absorbs reconnect storms and the loss of a node."
+   "q": "The pipeline is at-least-once. What does the client do?",
+   "a": "Every message carries a per-user `seq`. The client dedupes by seq and detects gaps: after processing 41 it receives 43, so it requests a resend from 41 (or replays from the inbox) before acking, and drops a late duplicate 42 once applied. Acking 43 blindly would hide the loss."
   },
   {
-   "type": "choice",
-   "q": "Instead of a registry lookup per message, each GW node subscribes to a per-user pub/sub channel for every user connected to it. What is the trade-off?",
-   "options": [
-    "It is strictly better in every way",
-    "It makes delivery exactly-once",
-    "It removes the registry lookup at send time, but the pub/sub layer now holds one subscription per online user (here 10 million) and must move subscriptions on reconnect",
-    "It removes the need for an inbox"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Routing state does not disappear; it moves into the subscription table. The lookup in the registry costs one read per message, while per-user subscriptions cost memory and churn proportional to online users."
+   "q": "Dave is offline. What happens to a message for him, and what happens when he comes back?",
+   "a": "His registry entry has expired, so the Router writes the message to his inbox (and sends APNs/FCM if appropriate). When he reconnects, possibly to a different node, that node writes a new registry entry with epoch + 1, the client sends `last_seq`, and the inbox replays what it missed."
+  },
+  {
+   "q": "How many gateway nodes for 10 million concurrent users if a node handles at most 50,000 connections and you run at 70%?",
+   "a": "At 70% a node carries 35,000, so 10,000,000 / 35,000 = 285.7, round up to 286 nodes. The headroom absorbs reconnect storms and the loss of a node."
+  },
+  {
+   "q": "Alternative: each node subscribes to a per-user pub/sub channel for its connected users. Trade-off?",
+   "a": "It removes the registry lookup at send time, but routing state does not disappear: it moves into the subscription table, with one subscription per online user (here 10 M) that must move on every reconnect. Lookup costs a read per message; subscriptions cost memory and churn proportional to online users."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Walk through the path of a message to an online user, end to end.",
+   "points": [
+    "State and outbox row in one transaction",
+    "Relay to Kafka keyed by user_id for per-user order",
+    "Router looks up user in the registry",
+    "Targeted delivery to that GW node with conn_id and epoch",
+    "GW finds the socket in memory and pushes {seq, payload}"
+   ]
+  },
+  {
+   "q": "What happens when the user is offline, or has just moved to another node?",
+   "points": [
+    "Expired or missing registry entry goes to inbox plus mobile push",
+    "Stale route gets NOT_OWNER thanks to epoch fencing",
+    "Reconnect to any node bumps epoch and rewrites the registry",
+    "Client sends last_seq and the inbox replays the gap"
+   ]
+  },
+  {
+   "q": "What delivery guarantee does the system give and how does the client cope?",
+   "points": [
+    "At-least-once end to end via outbox",
+    "Per-user seq numbers",
+    "Client dedupes and detects gaps before acking",
+    "Order preserved per user by Kafka key"
+   ]
+  },
+  {
+   "q": "Compare registry lookup per message with per-user pub/sub channels, and size the gateway fleet for 10 M users.",
+   "points": [
+    "Registry: one read per message, small routing state",
+    "Pub/sub: no lookup, but one subscription per online user to maintain",
+    "Nodes are stateless and scale out; killed nodes expire by TTL",
+    "10 M / (50k x 70%) is about 286 nodes, with headroom for reconnect storms"
+   ]
   }
  ]
 }

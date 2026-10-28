@@ -1,77 +1,70 @@
 {
  "id": "batching",
  "title": "Batching",
- "summary": "Batching merges many independent work items into **one more efficient downstream operation**. It pays off whenever an operation has a **fixed cost per call**, such as a network round trip, request headers, a syscall, an `fsync` or a transaction commit, that a bigger payload amortises. With 5 ms overhead and 0.1 ms per item, 100 single calls take about 510 ms; one batch of 100 takes 15 ms.\n\nWhere does the batch come from?\n1. **There is already a staging area** (a queue, a table of pending rows): take up to N items at once and send them together.\n2. **There is none** (a client producing events): buffer in memory and flush when the buffer reaches **N items or K milliseconds**, whichever comes first. The timeout is mandatory; without it a quiet period leaves items stuck.\n\nOn the client it mostly cuts per-message overhead (Kafka producer `batch.size` and `linger.ms`, bulk inserts).\n\nCosts to design for:\n- **Latency:** an item can wait up to K ms; interactive paths use a tiny K.\n- **Partial failure:** one bad item must not poison 99 good ones. Return per-item results, retry only the failures, and make processing [idempotent](#/sd/f/idempotency), since a retried batch may have partly succeeded.\n- **Size caps** by count and bytes bound memory and timeouts.\n- **Loss on crash:** an unflushed in-memory buffer disappears; buffer durably if items matter.\n- **Ordering** within and across batches must be defined.\n\nBatching also tames hot-key writes ([time bucket counter](#/sd/f/time-bucket-counter)) and makes [fanout](#/sd/f/fanout) affordable.",
- "drills": [
+ "explain": "Batching merges many independent work items into one more efficient downstream operation. It pays off whenever a call has a fixed cost, such as a round trip, headers, an fsync or a commit, that a bigger payload spreads out. The price is latency and more complicated failure handling, so I always say how the batch is formed and what bounds the wait.",
+ "model": "**Where does the batch come from?**\n\n1. **There is already a staging area** (a queue, a table of pending rows): take N items from it and send them together.\n2. **There is no staging area** (a client producing events): buffer in memory and flush at **N items or K ms, whichever comes first**.\n\n```\nitem -> [ buffer ] --(N items or K ms)--> one downstream call --> per-item results\n```\n\n**Why it works:** an operation costs `fixed + per_item * n`. The fixed part is paid once per batch, not once per item. On the client this mainly cuts per-message overhead (Kafka producer `batch.size` and `linger.ms`, bulk inserts).\n\n**What you pay for:** waiting latency (up to K), partial failure (return per-item results, retry only the failures, keep processing [idempotent](#/sd/f/idempotency)), size caps by count and bytes, loss of an unflushed buffer on a crash, and ordering rules within and across batches.",
+ "details": [
   {
-   "type": "number",
-   "q": "Each call to a service has 5 ms of fixed overhead plus 0.1 ms per item. Items are sent sequentially, one call at a time. How many milliseconds does it take to send 1,000 items in batches of 100?",
-   "answer": 150,
-   "unit": "ms",
-   "tolerance": 0,
-   "explain": "10 calls x (5 + 100 x 0.1) = 10 x 15 = 150 ms. One item per call would be 1,000 x 5.1 = 5,100 ms. The saving comes from paying the 5 ms overhead 10 times instead of 1,000."
+   "q": "Show me the benefit with numbers. A call costs 5 ms fixed plus 0.1 ms per item; send 1,000 items one call at a time.",
+   "a": "One item per call: 1,000 x 5.1 = 5,100 ms. Batches of 100: 10 x (5 + 10) = 150 ms. The saving comes from paying the 5 ms overhead 10 times instead of 1,000. Bigger batches give diminishing returns because the per-item part never shrinks."
   },
   {
-   "type": "number",
-   "q": "A client buffers events and flushes when it has 50 events or 100 ms have passed since the first buffered event, whichever is first. Events arrive evenly at 400 per second. How many events does a typical flushed batch contain?",
-   "answer": 40,
-   "unit": "events",
-   "tolerance": 0,
-   "explain": "Filling 50 events would take 50 / 400 = 125 ms, which is longer than the 100 ms linger, so the timeout wins: 400 x 0.1 = 40 events. At higher rates the size cap triggers the flush instead."
+   "q": "Why must a client-side buffer have a time trigger, not only a size trigger?",
+   "a": "At low traffic a size-only trigger starves: with 2 events per second and N = 100, an event can wait about 50 s. 'N items or K ms' bounds the added latency to K regardless of load."
   },
   {
-   "type": "choice",
-   "q": "A batcher flushes only when it has 100 events. During the night the service sees 2 events per second. What goes wrong, and what is the fix?",
-   "options": [
-    "Nothing, batching always improves things",
-    "Events are dropped; use a larger buffer",
-    "Events can wait about 50 seconds for a full batch; add a time-based flush so the buffer is sent after K milliseconds even if it is small",
-    "The downstream rejects small batches; always pad the batch"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Size-only triggers starve at low traffic. 'Size or timeout' bounds latency to K regardless of load."
+   "q": "Events arrive at 400/s; the batcher flushes at 50 events or 100 ms since the first buffered event. What does a typical batch look like?",
+   "a": "Filling 50 takes 50 / 400 = 125 ms, longer than the 100 ms linger, so the timer fires first: about 400 x 0.1 = 40 events. At higher rates the size cap wins instead. Tuning is deciding which trigger you want to be the usual one."
   },
   {
-   "type": "choice",
-   "q": "A bulk write of 100 items returns an error for 3 items and success for 97. What is the right client behaviour?",
-   "options": [
-    "Read the per-item results, retry only the 3 failures (or park the permanently invalid ones), and keep processing idempotent in case the retry repeats work",
-    "Retry the whole batch of 100 until it passes",
-    "Drop the batch and alert",
-    "Split into 100 single calls forever"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Retrying everything duplicates the 97 successes unless writes are idempotent; dropping loses them. Per-item results let you retry precisely and isolate poison items."
+   "q": "A bulk write of 100 items returns success for 97 and an error for 3. What does the caller do?",
+   "a": "Read per-item results, retry only the 3 (or park the permanently invalid ones in a dead-letter place), and acknowledge the 97 individually. Retrying the whole batch duplicates the successes unless writes are idempotent; dropping the batch loses them. One bad item must not poison 99 good ones."
   },
   {
-   "type": "order",
-   "q": "Put the life of a client-side batcher in order.",
-   "items": [
-    "An event is added to the in-memory buffer; the linger timer starts if the buffer was empty",
-    "The buffer reaches N items or the timer fires",
-    "The buffer is swapped out and sent as one call downstream",
-    "Per-item results come back",
-    "Failed items are retried or dead-lettered; successes are acknowledged to their callers"
-   ],
-   "explain": "Swap the buffer out so new events can accumulate while the call is in flight. Acknowledge each item individually; a batch result is really many results."
+   "q": "Someone wants a 500 ms linger on card authorisation to save calls to the processor. Your p99 target is 200 ms.",
+   "a": "No. The linger is added to every request, so the budget is blown before the call starts. Batch background and throughput-oriented work; on an interactive path use a tiny linger that fits the budget or no batching at all."
   },
   {
-   "type": "choice",
-   "q": "Checkout authorises a card payment on a path with a p99 target of 200 ms. Someone proposes batching authorisations with a 500 ms linger to save calls to the processor. What do you say?",
-   "options": [
-    "Good idea: fewer calls is always better",
-    "Yes, but only if the batch size is above 1,000",
-    "No: the linger alone exceeds the latency budget; batch only background work, or use a tiny linger that fits within the budget",
-    "Yes, since the processor charges per call"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Batching trades latency for throughput. On an interactive, latency-budgeted path the linger time is added to every request; use it where waiting is acceptable."
+   "q": "What happens to the buffer if the process crashes?",
+   "a": "An in-memory buffer is lost. If items matter, buffer durably (write-ahead file, local queue) or accept the loss window of up to K ms and N items. This is the same trade-off as an `fsync` interval."
+  },
+  {
+   "q": "What can go wrong with ordering?",
+   "a": "Items in a batch may be applied in an order the caller did not intend, and a retried batch can overtake a later one. Define the order (per key, per batch, none) up front, and keep one in-flight batch per key if order matters."
+  },
+  {
+   "q": "Where else does batching show up in a design?",
+   "a": "It tames hot-key writes (aggregate locally before touching the counter, see [time bucket counter](#/sd/f/time-bucket-counter)), makes [fanout](#/sd/f/fanout) to many downstreams affordable, and cuts per-request overhead in logging, metrics and DB inserts."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain batching and when it is worth it.",
+   "points": [
+    "Merge many items into one downstream operation",
+    "Pays when there is a fixed cost per call",
+    "A numeric example (overhead 5 ms, per-item 0.1 ms)",
+    "Costs: latency, partial failure, loss on crash"
+   ]
+  },
+  {
+   "q": "Design a client-side event batcher.",
+   "points": [
+    "In-memory buffer flushed at N items or K ms, whichever first",
+    "Swap the buffer out so new events keep accumulating during the call",
+    "Per-item results; retry only failures; idempotent processing",
+    "Size caps by count and bytes",
+    "Durability and ordering choices stated"
+   ]
+  },
+  {
+   "q": "When would you refuse to batch, or keep the linger tiny?",
+   "points": [
+    "Latency-budgeted interactive paths",
+    "Linger adds directly to every request",
+    "Batch background or throughput work instead",
+    "Items that cannot be lost need a durable buffer"
+   ]
   }
  ]
 }

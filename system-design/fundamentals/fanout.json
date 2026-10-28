@@ -1,83 +1,66 @@
 {
  "id": "fanout",
  "title": "Fanout",
- "summary": "Fanout is one input becoming many outputs. Two different problems share the name.\n\n**Delivery model: who gets this change?** When user U posts and F people follow U:\n- **Fanout-on-write (push):** at post time, copy a reference into each follower's inbox. Reads are one cheap lookup, but a write costs F writes plus storage per follower.\n- **Fanout-on-read (pull):** store the post once; each reader merges the posts of everyone they follow at read time. Writes are cheap; a read costs one lookup per followee.\n\nChoose by read/write ratio and fan degree. Push suits ordinary accounts and read-heavy feeds. For a celebrity with 20 M followers, push is a write storm, so use a **hybrid**: push for ordinary authors, and pull celebrity posts at read time and merge them in.\n\n**Request model: one request calls many downstreams.** First ask whether the fanout can be avoided, then bound what remains:\n- **100 vendors:** manageable. [Batch](#/sd/f/batching) the calls and use per-host [connection pools](#/sd/f/connection-pooling).\n- **100 k vendors:** don't call them all. Filter, match, rank or precompute which ones matter.\n- **1 job becomes 1 M tasks that must all run:** expand **lazily**. Like a generator, turn the job into tasks one page at a time. Push tasks to the queue only while it is below a high watermark and load the next page when it drains, so reads, writes and queue memory never spike.\n\nThird-party fanout also needs the checks in [caller diligence](#/sd/f/caller-diligence).",
- "drills": [
+ "explain": "Fanout is one input turning into many outputs, and the name covers two different problems. In the delivery model the question is who gets a change: copy it to every follower when it is written, or merge at read time. In the request model one request calls many downstreams, and I first ask if the fanout can be avoided, then bound what is left.",
+ "model": "**Delivery model: who gets this change?** Hand one change to many people.\n\n- **Fanout-on-write (push):** at post time, write a reference into each follower's inbox. Reads are one lookup; a write costs F writes and storage.\n- **Fanout-on-read (pull):** store the post once; each reader merges the posts of everyone they follow. Writes are cheap; a read costs one lookup per followee.\n- **Hybrid:** push for ordinary authors; for a celebrity, switch to fanout-on-read and merge their posts in at read time.\n\n**Request model: fanout to downstreams.** First make it *not* a fanout; if it cannot be avoided, shape it by size:\n\n| Fan degree | Approach |\n|---|---|\n| ~100 vendors | batch, per-host connection pools |\n| ~100k vendors | filter / match / ML / precompute who matters |\n| 1 job to 1M tasks that all must run | lazy loading + batching: a page at a time, like a generator |\n\n**Lazy expansion:** turn the job into tasks page by page; push to the queue only while below a watermark; load the next page when it drains. Reads, writes and queue size never spike.",
+ "details": [
   {
-   "type": "number",
-   "q": "A celebrity with 20,000,000 followers posts once. Under pure fanout-on-write, each follower's inbox gets one write, and the inbox store sustains 50,000 writes per second for this job. How many seconds does the fanout take?",
-   "answer": 400,
-   "unit": "s",
-   "tolerance": 0,
-   "explain": "20,000,000 / 50,000 = 400 s, nearly seven minutes during which followers see the post at wildly different times, and the store is saturated for everything else. This is why celebrities are pulled at read time instead."
+   "q": "When do you pick fanout-on-write and when fanout-on-read?",
+   "a": "Do the work where it is rarer. An ordinary user with 200 followers who posts once a day, read by followers 50 times a day: 200 writes per post against 10,000 reads, so push. A celebrity with 20 M followers is the opposite: push is a write storm, so pull."
   },
   {
-   "type": "choice",
-   "q": "An ordinary user has 200 followers and posts about once a day, while each follower opens their feed 50 times a day. Which delivery model fits, and why?",
-   "options": [
-    "Fanout-on-write: 200 writes per post are cheap compared with 200 x 50 = 10,000 reads per day, each of which becomes a single lookup",
-    "Fanout-on-read: reads are frequent so merging per read is fine",
-    "Neither; use polling",
-    "Fanout-on-read because storage is cheaper"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Amortise the work where it is rarer. Here writes are rare and bounded (200), reads are frequent, so doing the work at write time is cheaper in total."
+   "q": "Make the celebrity problem concrete.",
+   "a": "20,000,000 inbox writes at a sustained 50,000 per second take 400 s, nearly seven minutes during which followers see the post at wildly different times and the inbox store is saturated for everyone else. Hence the hybrid: skip the push for celebrities."
   },
   {
-   "type": "choice",
-   "q": "In a hybrid feed, what does a read of Alice's timeline do?",
-   "options": [
-    "Reads only her precomputed inbox",
-    "Queries every followee's posts and merges them",
-    "Reads her precomputed inbox, fetches recent posts from the celebrities she follows, and merges them by time",
-    "Asks every celebrity to push to her again"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Push covers the many ordinary authors cheaply; the few celebrities are pulled and merged at read time, which bounds both the write amplification and the read cost."
+   "q": "What does a hybrid feed read actually do?",
+   "a": "Read the precomputed inbox (pushed posts from ordinary authors), fetch recent posts from the few celebrities this user follows, and merge by time. Push covers the many cheaply; pull is bounded because the set of celebrities per user is small."
   },
   {
-   "type": "choice",
-   "q": "One job must create 1,000,000 tasks, and each task must run. The first design inserts all 1,000,000 task rows and queue entries in one go. What is the problem, and what is the alternative?",
-   "options": [
-    "It causes a spike of reads and writes and a huge queue backlog; instead materialise tasks page by page, enqueueing only while below a high watermark and loading the next page as the queue drains",
-    "It's fine: databases handle one million inserts instantly",
-    "It needs one thread per task",
-    "It only works with fanout-on-read"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The work is unavoidable but its shape is not. Lazy expansion with a watermark smooths the load end to end and keeps memory bounded, like a generator."
+   "q": "A job must create 1,000,000 tasks and every one must run. Why not insert them all at once?",
+   "a": "It causes a read/write spike and a huge queue backlog. The work is unavoidable but its shape is not: keep the job as a compact description plus a [cursor](#/sd/f/cursor), create a page of tasks, enqueue while below the high watermark, and create the next page when the queue drains."
   },
   {
-   "type": "order",
-   "q": "Put the lazy materialisation of a large job in order.",
-   "items": [
-    "The job is stored as a compact description (inputs and ranges)",
-    "A page of tasks is created from the description",
-    "Tasks are pushed to the queue while it is below the high watermark",
-    "The queue drains below the low watermark",
-    "The next page of tasks is created"
-   ],
-   "explain": "The job holds only a cursor into its own expansion, so memory and load stay flat regardless of the total number of tasks. See [cursor](#/sd/f/cursor)."
+   "q": "A new job should notify matching vendors out of 100,000 registered. The first design calls everyone and lets them filter. Better?",
+   "a": "Match first (region, category, capacity, a precomputed index or a model) and call only those that qualify. Above about a hundred targets brute force is a cost and a risk; shrinking the set beats making each call faster."
   },
   {
-   "type": "choice",
-   "q": "A new job must notify matching vendors out of 100,000 registered. The first design sends a request to every vendor and lets the vendors filter. What is a better approach?",
-   "options": [
-    "Keep it: simple and robust",
-    "Pool connections better so that 100,000 calls are faster",
-    "Send to a random 10%",
-    "Match first (region, category, capacity, a precomputed index) and call only the vendors that qualify"
-   ],
-   "answer": [
-    3
-   ],
-   "explain": "Beyond about a hundred targets, brute-force fanout is a cost and a risk. Reduce the set before you call: filtering or precomputation makes the fanout small."
+   "q": "When fanout to about 100 vendors cannot be avoided, what do you do?",
+   "a": "Batch where the vendor allows it, use per-host [connection pools](#/sd/f/connection-pooling) so you do not open 100 connections per request, bound concurrency, and give each call its own timeout. Then apply the [caller diligence](#/sd/f/caller-diligence) checks to each leg."
+  },
+  {
+   "q": "What does fanout-on-write cost besides the write count?",
+   "a": "Storage per follower, work for new followers (backfill their inbox), and unfollow/delete handling. Fanout-on-read costs merge latency and repeated work per read, which caching can reduce."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Compare fanout-on-write and fanout-on-read, and say when you pick each.",
+   "points": [
+    "Push: copy into each inbox at write, cheap reads",
+    "Pull: store once, merge at read, cheap writes",
+    "Decide by read/write ratio and fan degree",
+    "Celebrity breaks push: hybrid"
+   ]
+  },
+  {
+   "q": "Design a news feed that handles celebrities.",
+   "points": [
+    "Push for ordinary authors into per-user inboxes",
+    "Celebrities pulled at read time and merged by time",
+    "Numbers: 20 M followers at 50k writes/s is 400 s",
+    "Inbox as references, not copies"
+   ]
+  },
+  {
+   "q": "One job fans out to 1M tasks. How do you keep load flat?",
+   "points": [
+    "Store the job as a description with a cursor",
+    "Materialise tasks a page at a time, like a generator",
+    "Enqueue only below a high watermark; refill on drain",
+    "Batch and bound the downstream calls",
+    "Ask first whether all tasks are needed (filter or match)"
+   ]
   }
  ]
 }

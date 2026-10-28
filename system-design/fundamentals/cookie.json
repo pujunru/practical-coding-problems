@@ -1,64 +1,66 @@
 {
  "id": "cookie",
  "title": "Cookie",
- "summary": "A cookie is **one `name=value` string** that the server asks the browser to keep (via `Set-Cookie`) and that the browser then attaches **automatically** to every matching request: `Cookie: session_id=abc123; theme=dark`. A request can carry several cookies, each its own pair. It is the one browser storage the **server sees on every request**, which is why it carries session IDs and why it is a poor place for bulk data.\n\n**Identity** is the triple (name, Domain, Path). Two cookies coexist if they differ in name or path:\n\n```http\nSet-Cookie: session=abc; Domain=example.com; Path=/\nSet-Cookie: session=xyz; Domain=example.com; Path=/admin\n```\n\nA request to `/admin/users` sends both; one to `/home` sends only the first.\n\nAttributes that matter:\n- `Domain` and `Path`: scope. With no `Domain` the cookie is host-only; with `Domain=example.com` it is also sent to subdomains.\n- `Expires` or `Max-Age`: a persistent cookie. Without them it is a **session cookie**, dropped when the browser session ends.\n- `Secure`: HTTPS only. `HttpOnly`: invisible to JavaScript, blunting XSS theft. `SameSite=Lax|Strict|None`: limits cross-site sending, the main CSRF defence.\n\nLimits: about 4 KB per cookie, and every byte rides on every request in scope, including images. Use cookies for small identifiers (an opaque session ID or a signed token); keep everything else on the server or in [localStorage](#/sd/f/local-storage).",
- "drills": [
+ "explain": "A cookie is one name=value string that the server asks the browser to keep with Set-Cookie, and that the browser then attaches automatically to every matching request. It is the only browser storage the server sees on every request, which is why it carries session IDs and why it is a poor place for bulk data.",
+ "model": "A cookie is **one** `name=value` string. A request can carry several: `Cookie: session_id=abc123; theme=dark`.\n\n**Identity is the triple (name, Domain, Path).** Two cookies coexist if they share a domain but differ in name or path:\n\n```http\nSet-Cookie: session=abc; Domain=example.com; Path=/\nSet-Cookie: session=xyz; Domain=example.com; Path=/admin\n```\n\nA request to `/admin/users` sends both; `/home` sends only the first.\n\n| Attribute | Effect |\n|---|---|\n| `Domain`, `Path` | scope; with no `Domain` the cookie is host-only |\n| `Expires` / `Max-Age` | persistent; without them a **session cookie**, dropped when the browser session ends |\n| `Secure` | HTTPS only |\n| `HttpOnly` | invisible to JavaScript, blunts XSS theft |\n| `SameSite=Lax/Strict/None` | limits cross-site sending, the main CSRF defence |\n\nLimits: about 4 KB each, and every byte rides on every in-scope request. Use cookies for small identifiers (an opaque session ID, a signed token); keep the rest on the server or in [localStorage](#/sd/f/local-storage).",
+ "details": [
   {
-   "type": "choice",
-   "q": "The browser holds `session=abc; Domain=example.com; Path=/` and `session=xyz; Domain=example.com; Path=/admin`. It requests `https://example.com/admin/users`. What does the `Cookie` header contain?",
-   "options": [
-    "Only `session=abc`",
-    "Only `session=xyz`",
-    "Both `session=xyz` and `session=abc`, since both scopes match (the server should not rely on their order)",
-    "Neither: duplicate names are rejected"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Name, domain and path make two distinct cookies. Both path scopes match `/admin/users`, so both are sent (more specific path first by convention). Request `/home` and only `session=abc` goes along."
+   "q": "The browser holds `session=abc; Path=/` and `session=xyz; Path=/admin` for example.com and requests `/admin/users`. What does the Cookie header contain?",
+   "a": "Both, since both path scopes match; by convention the more specific path comes first, but the server should not depend on the order. A request to `/home` carries only `session=abc`. Name, domain and path make them distinct cookies."
   },
   {
-   "type": "choice",
-   "q": "Select all measures that are appropriate for the session cookie of a banking site.",
-   "options": [
-    "`Secure`, so it is never sent over plain HTTP",
-    "`Domain=example.com`, so every subdomain shares it",
-    "`HttpOnly`, so injected scripts cannot read it",
-    "`SameSite=Lax` (or Strict), to limit cross-site requests carrying it"
-   ],
-   "answer": [
-    0,
-    2,
-    3
-   ],
-   "explain": "Setting `Domain` widens exposure to every subdomain (including a neglected one); leave the cookie host-only unless you need sharing."
+   "q": "Which attributes do you set on a banking session cookie?",
+   "a": "`Secure` (never over plain HTTP), `HttpOnly` (injected scripts cannot read it), and `SameSite=Lax` or `Strict` (limits cross-site requests carrying it). Leave `Domain` unset so it stays host-only; setting `Domain=example.com` shares it with every subdomain, including a neglected one."
   },
   {
-   "type": "number",
-   "q": "A page makes 60 requests to the same domain, including images and scripts. The browser attaches 8 cookies totalling 3 KB to each of them. How many KB of cookie data are uploaded for that page load?",
-   "answer": 180,
-   "unit": "KB",
-   "tolerance": 0,
-   "explain": "3 KB x 60 = 180 KB upload, none of it useful for static assets. Serve static files from a cookieless domain, or keep cookie payloads tiny."
+   "q": "Why not put a lot of data in cookies?",
+   "a": "Every byte is uploaded on every matching request, including images and scripts. A page that makes 60 requests with 3 KB of cookies uploads 180 KB, none of it useful for static assets. Serve static files from a cookieless domain or keep cookies tiny."
   },
   {
-   "type": "choice",
-   "q": "A server-rendered app needs to know who the user is on the very first request of every page. Where should the session identifier live?",
-   "options": [
-    "A cookie, because the browser sends it automatically even on the first navigation request, before any script has run",
-    "localStorage, read by script and added as a header",
-    "sessionStorage",
-    "A URL query parameter"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Only cookies travel with navigations by themselves. localStorage is invisible to the server until JavaScript copies it. Query parameters leak into logs and referrers."
+   "q": "Where should the session ID live for a server-rendered app that must know the user on the first navigation?",
+   "a": "In a cookie: only cookies travel with navigations by themselves, before any script has run. localStorage is invisible to the server until JavaScript copies it; query parameters leak into logs and referrers."
   },
   {
-   "type": "recall",
-   "q": "Compare cookies with localStorage on three axes: who can see them, when they are sent, and how much they hold.",
-   "answer": "**Cookies** are sent by the browser to the server on every matching request, are readable by the server (and by scripts unless `HttpOnly`), and hold about 4 KB each. **localStorage** is never sent anywhere, is readable by scripts on the same origin only, and holds roughly 5 MB. Use cookies for small server-visible identifiers such as a session ID, and localStorage for client-only preferences or caches."
+   "q": "Compare cookie and localStorage.",
+   "a": "Cookies are sent to the server on every matching request, readable by the server (and by scripts unless `HttpOnly`), about 4 KB each. localStorage is never sent, readable only by same-origin scripts, about 5 MB. Cookie for small server-visible identifiers; localStorage for client-only preferences and caches."
+  },
+  {
+   "q": "What is the trade-off between a cookie and a token in localStorage for authentication?",
+   "a": "A token in localStorage can be read by any script on the page (XSS). An `HttpOnly` cookie cannot, but because the browser attaches it automatically you must defend against CSRF with `SameSite` and tokens. Pick the risk you can control better."
+  },
+  {
+   "q": "Session cookie vs persistent cookie?",
+   "a": "A session cookie has no `Expires`/`Max-Age` and is dropped when the browser session ends (browsers that restore sessions may keep it). A persistent cookie lives until its expiry; use it for remember-me with a revocable token on the server side."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain what a cookie is and what makes it different from other browser storage.",
+   "points": [
+    "One name=value string set via Set-Cookie",
+    "Attached automatically to matching requests",
+    "The only storage the server sees on every request",
+    "Small: about 4 KB, each byte on every request"
+   ]
+  },
+  {
+   "q": "How is a cookie identified, and what happens with two cookies of the same name?",
+   "points": [
+    "Identity is name, Domain and Path",
+    "Different path means two cookies coexist",
+    "Both sent when both scopes match",
+    "Do not rely on order"
+   ]
+  },
+  {
+   "q": "Secure a session cookie and say what each attribute defends against.",
+   "points": [
+    "Secure: plain HTTP",
+    "HttpOnly: script theft via XSS",
+    "SameSite: CSRF",
+    "Host-only scope: subdomain exposure",
+    "Opaque ID or signed token, short lifetime"
+   ]
   }
  ]
 }

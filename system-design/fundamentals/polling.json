@@ -1,82 +1,65 @@
 {
  "id": "polling",
  "title": "Polling",
- "summary": "Polling means a worker repeatedly asks a third-party API \"is it done yet?\" until the task completes, fails or times out. The question is how to wait for thousands of orders at once.\n\n**Naive: one coroutine per order** (`while True: check; sleep(delay)`). N unfinished orders mean N sleeping tasks whose state lives in one machine's memory: lost on restart, hard to move.\n\n**Mental model: the task is data, the worker is a temporary executor.** An order is a row `{order_id, status, next_poll_at, attempts}`. A scheduler finds due rows; a fixed pool of K workers claims them, calls the API, and either finishes the order or writes a later `next_poll_at`. N orders cost N small records, but at most K calls run at once: the waiting is centralised in the scheduler.\n\n**Version 1, in process:** a min-heap on `next_poll_at`, a ready queue, K workers. Lost on a crash.\n\n**Version 2, production:** a Redis ZSet as a shared delay queue (`score = next_poll_at`) and a ZSet of leases (`score = lease_expires_at`).\n- A worker **atomically** claims a due item and writes a lease (Lua script or transaction), or two workers poll the same order.\n- On a final status it updates the DB; otherwise it reschedules with backoff and `attempts + 1`. Either way it removes the lease.\n- A reclaimer returns expired leases to pending, so a crashed worker's orders are retried.\n\nWorkers can die after calling the API, so processing is **at-least-once**: make updates idempotent. See [adaptive polling](#/sd/f/adaptive-polling) and [lease](#/sd/f/lease).",
- "drills": [
+ "explain": "Polling means a worker repeatedly asks a third-party API whether something is done, until it completes, fails or times out. The question is how to wait for thousands of orders at once. The answer is to treat each pending order as a row with a next-poll time, and let a small fixed pool of workers claim whatever is due. The task is data, the worker is a temporary executor.",
+ "model": "**The naive way:** one coroutine per order (`while True: check; sleep(delay)`). With N unfinished orders you have N sleeping tasks whose state lives in one machine's memory: lost on restart, hard to move, scheduler state per order.\n\n**The mental model: the task is data, the worker is a temporary executor.** An order is a record `{order_id, status, next_poll_at, attempts}`. A scheduler finds due records; K workers claim them, call the API, and either finish the order or write a later `next_poll_at`. N orders cost N small records, but at most K calls run at once. The waiting is centralised in the scheduler, not scattered across coroutines.\n\n**Version 1, in process:** a min-heap ordered by `next_poll_at` (\"whom to check next\"), a ready queue, K workers. Good for intuition; lost on a crash.\n\n**Version 2, production:** a Redis ZSet as a shared delay queue.\n\n```\nPENDING  ZSet: member = order_id, score = next_poll_at\nLEASED   ZSet: member = order_id, score = lease_expires_at\n\nclaim (atomic Lua/MULTI): take a due order from PENDING, write a lease in LEASED\npoll vendor -> final?  update DB, drop lease\n            -> else    attempts+1, re-add to PENDING at now + backoff, drop lease\nreclaimer: expired leases go back to PENDING\n```\n\nProcessing is **at-least-once**; make updates idempotent. Add max attempts, exponential backoff with jitter.",
+ "details": [
   {
-   "type": "number",
-   "q": "100,000 orders are waiting on a vendor that allows 500 requests per second in total, and each poll is one request. If all of the budget is spent evenly on these orders, what is the shortest average interval between polls of one order, in seconds?",
-   "answer": 200,
-   "unit": "s",
-   "tolerance": 0,
-   "explain": "100,000 / 500 = 200 s: each second the budget covers 500 orders, so the whole set takes 200 s to cycle. Polling more often is impossible without a bigger quota, which is why adaptive intervals and priorities matter."
+   "q": "Why is a coroutine per pending order a poor production design?",
+   "a": "The waiting state lives in one process's memory: it is lost on restart, hard to rebalance across machines, and costs scheduler state per order. A durable row with `next_poll_at` and a few workers moves the wait into a scheduler and bounds concurrent API calls to the worker count K."
   },
   {
-   "type": "choice",
-   "q": "Why is 'one coroutine per pending order that sleeps between checks' a poor production design?",
-   "options": [
-    "The waiting state lives in one process's memory: it is lost on restart, hard to rebalance across machines, and costs scheduler state per order. A row with next_poll_at plus a few workers fixes it",
-    "Coroutines cannot call HTTP APIs",
-    "Sleep is not allowed in async code",
-    "It polls too slowly"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The issue is where the state lives. Making each order a durable record shifts the wait to a scheduler and bounds concurrent calls to the worker count K."
+   "q": "The vendor allows 500 requests/s in total and you have 100,000 pending orders. How often can each order be polled?",
+   "a": "At best every 100,000 / 500 = 200 s on average if the whole budget goes to polling. Polling more often is impossible without a bigger quota, which is why adaptive intervals, priorities and webhooks matter. See [adaptive polling](#/sd/f/adaptive-polling)."
   },
   {
-   "type": "choice",
-   "q": "Two workers each read the due set with ZRANGEBYSCORE and then remove the first order with ZREM, as two separate commands. What can happen?",
-   "options": [
-    "Nothing; Redis serialises everything",
-    "The order is polled once but updated twice",
-    "Redis rejects the second ZREM and crashes the worker",
-    "Both can see and poll the same order before either removes it; the claim must be atomic (Lua script or MULTI) and should write a lease at the same time"
-   ],
-   "answer": [
-    3
-   ],
-   "explain": "Each command is atomic, a read-then-remove pair is not. 'Take the due item and write the lease' must be one step."
+   "q": "Two workers each read the due set with ZRANGEBYSCORE and then ZREM the first order as two commands. What can happen?",
+   "a": "Both can see and poll the same order before either removes it. Each command is atomic, a read-then-remove pair is not. Make the claim one atomic step (Lua script or MULTI) that takes the due order and writes the lease at the same time."
   },
   {
-   "type": "order",
-   "q": "Put one pass of a production polling worker in order.",
-   "items": [
-    "Atomically claim a due order and write a lease",
-    "Call the vendor's status API",
-    "Save the final status, or bump attempts and set a later next_poll_at",
-    "Release the lease"
-   ],
-   "explain": "Claim and lease first, so no one else polls the same order. The lease is released only after the result is recorded; if the worker dies earlier, a reclaimer returns the order to pending when the lease expires."
+   "q": "A worker polls the vendor successfully, then dies before writing the result. What happens?",
+   "a": "The lease expires, the reclaimer returns the order to pending, and another worker polls again: at-least-once. A status read is naturally idempotent so the repeat is harmless; side effects triggered by the result (emails, fulfilment) need their own idempotency guard. See [lease](#/sd/f/lease)."
   },
   {
-   "type": "choice",
-   "q": "A worker polls the vendor successfully but dies before it writes the result. What is the outcome, and what must hold for that to be safe?",
-   "options": [
-    "The result is lost forever",
-    "The lease expires, the order returns to pending, and another worker polls again. This is at-least-once, so the status check and the update must be idempotent",
-    "The vendor retries the poll",
-    "Exactly once, handled by Redis"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "A status read is naturally idempotent, so a repeat is harmless. Side effects triggered by the result (emails, fulfilment) need their own idempotency guard."
+   "q": "Walk through one pass of a production worker.",
+   "a": "Atomically claim a due order and write a lease; call the vendor's status API; either save the final status or bump `attempts` and set a later `next_poll_at`; release the lease only after the result is recorded. If the worker dies earlier, expiry of the lease hands the order to someone else."
   },
   {
-   "type": "choice",
-   "q": "The vendor offers webhooks. Is polling still useful?",
-   "options": [
-    "No: webhooks always arrive",
-    "Yes, but only at 1 poll per second per order",
-    "Yes, as a slow safety net: webhooks can be lost, delayed or fail verification, so a low-rate poll for stale pending orders reconciles the gaps",
-    "No, but you must poll the webhook endpoint"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Push is the fast path, pull is the repair path. See the reconciliation advice in [what to consider with a third party](#/sd/f/third-party-checklist)."
+   "q": "The vendor offers webhooks. Do you still poll?",
+   "a": "Yes, slowly. Webhooks can be lost, delayed or fail verification, so a low-rate poll of stale pending orders reconciles the gaps. Push is the fast path, pull is the repair path (see [what to consider with a third party](#/sd/f/third-party-checklist))."
+  },
+  {
+   "q": "Where does the delay queue live if not Redis?",
+   "a": "Anything that supports 'give me due items, atomically mark them taken': a DB table with an index on `next_poll_at` and `SELECT ... FOR UPDATE SKIP LOCKED`, a managed delay queue, or a timer wheel in memory backed by a table. Redis ZSet is the usual choice for speed."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain why polling should be modelled as data rather than sleeping tasks.",
+   "points": [
+    "Per-order coroutine keeps state in one process's memory",
+    "Order as a record with next_poll_at and attempts",
+    "Scheduler finds due records; K workers do the calls",
+    "Concurrency bounded by K, not by N"
+   ]
+  },
+  {
+   "q": "Design a polling system for 100k pending orders against a rate-limited vendor.",
+   "points": [
+    "Pending ZSet by next_poll_at, leased ZSet by expiry",
+    "Atomic claim plus lease; reclaimer for expired leases",
+    "Backoff with jitter and max attempts",
+    "At-least-once, so idempotent updates",
+    "Budget arithmetic: 100k / 500 per second = 200 s per cycle"
+   ]
+  },
+  {
+   "q": "What happens if a worker crashes mid-poll, and how do webhooks fit in?",
+   "points": [
+    "Lease expires and the order is polled again",
+    "Idempotent status check and update",
+    "Webhook is the fast path, slow poll the safety net"
+   ]
   }
  ]
 }

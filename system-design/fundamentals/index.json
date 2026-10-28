@@ -518,7 +518,7 @@
     {
      "id": "time-bucket-counter",
      "title": "Time Bucket Counter",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -529,7 +529,7 @@
     {
      "id": "batching",
      "title": "Batching",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -540,7 +540,7 @@
     {
      "id": "fanout",
      "title": "Fanout",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -551,7 +551,7 @@
     {
      "id": "change-feed",
      "title": "Change Feed",
-     "prompts": 0
+     "prompts": 4
     }
    ]
   },
@@ -562,12 +562,12 @@
     {
      "id": "cursor",
      "title": "Cursor",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "server-log",
      "title": "Server Log",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -578,7 +578,7 @@
     {
      "id": "websocket-patterns",
      "title": "WebSocket Design Patterns",
-     "prompts": 0
+     "prompts": 4
     }
    ]
   },
@@ -589,22 +589,22 @@
     {
      "id": "third-party-checklist",
      "title": "What to Consider with a Third Party",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "caller-diligence",
      "title": "Caller Diligence",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "polling",
      "title": "Polling",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "adaptive-polling",
      "title": "Adaptive & Priority Polling",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -615,12 +615,12 @@
     {
      "id": "idp",
      "title": "Identity Provider (IdP)",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "token-minting",
      "title": "Token Minting",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -631,22 +631,22 @@
     {
      "id": "cookie",
      "title": "Cookie",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "local-storage",
      "title": "localStorage",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "session-storage",
      "title": "sessionStorage",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "indexeddb",
      "title": "IndexedDB",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -657,12 +657,12 @@
     {
      "id": "common-hashing",
      "title": "Common Hashing",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "bloom-filter",
      "title": "Bloom Filter",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },

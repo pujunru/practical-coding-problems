@@ -1,79 +1,64 @@
 {
-  "id": "common-hashing",
-  "title": "Common Hashing",
-  "summary": "Common hashing is the simplest way to spread keys over a **fixed number of nodes**: `shard = hash(key) mod N`. The hash turns the key into a big integer, the modulo squeezes it into `0 … N-1`, and that number indexes the node list. With 3 nodes A, B, C the result 0, 1 or 2 means A, B or C.\n\n**Why it is attractive:** routing is one multiplication-free line, needs no lookup table or coordinator, and while `N` is unchanged a key always lands on the same node.\n\n**Why it hurts:** the divisor is part of every key's address. When `N` goes from 3 to 4, a key stays put only if `hash mod 3 == hash mod 4`; for uniform hashes that is just 1 key in 4. In general, going from `N` to `N+1` moves a fraction `N/(N+1)` of the keys. For a cache that is a sudden miss storm; for a database it is a mass migration.\n\nAlso remember:\n- The hash must be **stable across processes and languages**. Python's built-in `hash(str)` is salted per process, so two services would disagree.\n- It balances *keys*, not *load*: a hot key still overloads one node (see [salting](#/sd/f/salting)).\n\nUse it when the node count is fixed or changes rarely (e.g. a pre-split number of partitions, see [hash bucketing](#/sd/f/hash-bucketing)). When nodes come and go, use [consistent hashing](#/sd/f/consistent-hashing).",
-  "drills": [
-    {
-      "type": "choice",
-      "q": "A cache cluster of 4 nodes routes with `hash(key) mod 4`. You add a fifth node and switch to `mod 5`. Hashes are uniform. Roughly what happens to hit rate right after the switch?",
-      "options": [
-        "Nearly unchanged, only the keys that belong to the new node miss (about 20%)",
-        "It drops by about 20% because one node in five is cold, then the old nodes keep serving their keys",
-        "It drops sharply: about 80% of keys now route to a node that does not hold them",
-        "Nothing changes, because the hash function is the same"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "The key's node depends on the divisor, not only on the hash. A key keeps its node only if `h mod 4 == h mod 5`, which holds for 4 residues out of every 20, i.e. 20% of keys. The tempting 'only the new node's share moves' answer describes consistent hashing, not modulo."
-    },
-    {
-      "type": "number",
-      "q": "Uniform hashes. A cache of 8 nodes (numbered 0-7) was fully warm. Node 7 dies and the router switches from `mod 8` to `mod 7`, with the surviving nodes keeping their numbers 0-6. Immediately afterwards, what percentage of keys still route to the node that holds them?",
-      "answer": 12.5,
-      "unit": "%",
-      "tolerance": 0,
-      "explain": "A key still maps to its old node only if `h mod 8 == h mod 7`, which happens for 7 of every 56 residues, i.e. 1/8 = 12.5%. The ideal (consistent hashing) would keep 87.5%, because only the dead node's 12.5% of keys has to move."
-    },
-    {
-      "type": "number",
-      "q": "Twelve keys have hash values 0, 1, 2, …, 11. They are placed with `hash mod 3`. The cluster grows to 4 nodes and uses `hash mod 4`. How many of the 12 keys keep the same node number?",
-      "answer": 3,
-      "unit": "keys",
-      "tolerance": 0,
-      "explain": "Hash 0, 1 and 2 give the same result under both divisors (0, 1, 2). From 3 onward the two residues differ until the pattern repeats at 12. So 3 keys stay and 9 move (75%), matching `N/(N+1) = 3/4`."
-    },
-    {
-      "type": "choice",
-      "q": "Service A (Python) and service B (Go) both route requests with `hash(key) mod 16`, A using the built-in `hash()` on a string and B using FNV-1a. Requests for the same key sometimes reach different shards. What is the root cause?",
-      "options": [
-        "The hash function is not the same stable function in both places (and Python's string hash is salted per process), so equal keys get different integers",
-        "Modulo is not deterministic across processes",
-        "Hash functions are not guaranteed to be uniform",
-        "16 is not a prime number, so shards are unevenly loaded"
-      ],
-      "answer": [
-        0
-      ],
-      "explain": "Routing needs one agreed, stable hash over the key's bytes (e.g. Murmur3 or xxHash on UTF-8) in every client. Modulo itself is deterministic; a non-prime `N` affects distribution only if the hash is poor."
-    },
-    {
-      "type": "choice",
-      "q": "Which problems does plain `hash(key) mod N` NOT solve by itself? Select all that apply.",
-      "options": [
-        "Resizing the cluster without moving most keys",
-        "A single very popular key overloading its node",
-        "Nodes with different capacities receiving proportional shares",
-        "Sending the same key to the same node while N is constant"
-      ],
-      "answer": [
-        0,
-        1,
-        2
-      ],
-      "explain": "It only guarantees stable placement for a fixed N and roughly even key counts. Resizing needs [consistent hashing](#/sd/f/consistent-hashing) or pre-split buckets; hot keys need [salting](#/sd/f/salting) or replication; weighted capacity needs weights or virtual nodes."
-    },
-    {
-      "type": "order",
-      "q": "Put the steps of routing one request with common hashing in order.",
-      "items": [
-        "Serialize the key to bytes",
-        "Hash the bytes with a stable hash function",
-        "Take the result modulo the current node count N",
-        "Index the node list with that number",
-        "Send the request to that node"
-      ],
-      "explain": "The modulo must use the same N and the same node ordering in every router, otherwise two routers will send the key to different nodes."
-    }
-  ]
+ "id": "common-hashing",
+ "title": "Common Hashing",
+ "explain": "Common hashing is the simplest way to spread keys over a fixed number of nodes: shard equals hash of the key modulo N. It is stable while N stays the same, but when N changes most keys move to a different node, which is a cache miss storm or a mass migration. So I use it only when the node count is fixed, and consistent hashing otherwise.",
+ "model": "`shard = hash(key) mod N`, with `N` the current node count.\n\n1. Serialize the key to bytes.\n2. Hash the bytes with a **stable** hash function (Murmur3, xxHash, FNV; not a per-process salted one).\n3. Take the result modulo `N`: `0 ... N-1`.\n4. Index the node list; send the request there.\n\nWith nodes A, B, C: `hash mod 3` is 0, 1 or 2, routing to A, B or C.\n\n**Upside:** one line, no lookup table or coordinator; same key, same node while `N` is constant.\n\n**Downside:** the divisor is part of every key's address. Going from `N` to `N+1`, a key stays put only if `hash mod N == hash mod (N+1)`; for uniform hashes only `1/(N+1)` of keys stay and **`N/(N+1)` move**. 3 to 4 nodes: 75% move.\n\n```\nhash:      0 1 2 3 4 5 6 7 8 9 10 11\nmod 3:     0 1 2 0 1 2 0 1 2 0  1  2\nmod 4:     0 1 2 3 0 1 2 3 0 1  2  3     <- only 0, 1, 2 keep their node\n```\n\nIt balances **keys, not load**: a hot key still overloads one node ([salting](#/sd/f/salting)). When nodes come and go use [consistent hashing](#/sd/f/consistent-hashing); with a pre-split fixed number of slots see [hash bucketing](#/sd/f/hash-bucketing).",
+ "details": [
+  {
+   "q": "A cache of 4 nodes routes with `hash mod 4`; you add a fifth and switch to `mod 5`. What happens to hit rate?",
+   "a": "It drops sharply: a key keeps its node only if `h mod 4 == h mod 5`, which is 4 residues out of every 20, so only 20% stay and about 80% route to a node that does not hold them. The 'only the new node's share moves' answer describes consistent hashing, not modulo."
+  },
+  {
+   "q": "Cache of 8 nodes, node 7 dies and the router switches from `mod 8` to `mod 7` keeping the survivors' numbers. What fraction still hits the node that holds it?",
+   "a": "`h mod 8 == h mod 7` holds for 7 of every 56 residues: 1/8 = 12.5%. The ideal (consistent hashing) keeps 87.5%, because only the dead node's 12.5% of keys has to move."
+  },
+  {
+   "q": "Twelve keys with hash values 0 to 11 go from `mod 3` to `mod 4`. How many keep the same node number?",
+   "a": "Hash values 0, 1, 2: 3 keys. The other 9 move, i.e. 75% = N/(N+1) for N = 3."
+  },
+  {
+   "q": "Service A (Python, built-in `hash()` on strings) and service B (Go, FNV-1a) both do `hash mod 16`; the same key sometimes reaches different shards. Root cause?",
+   "a": "They are not using the same stable hash: Python's string hash is salted per process, so even two Python processes disagree. Agree on one hash over the key's bytes (Murmur3 or xxHash on UTF-8) in every client. Modulo itself is deterministic."
+  },
+  {
+   "q": "What does plain `hash mod N` not solve?",
+   "a": "Resizing without moving most keys (use [consistent hashing](#/sd/f/consistent-hashing) or pre-split buckets), a single hot key overloading its node ([salting](#/sd/f/salting) or replication), and nodes of different capacity getting proportional shares (weights or virtual nodes). It only guarantees stable placement for a fixed N and roughly even key counts."
+  },
+  {
+   "q": "Is modulo by a prime N better?",
+   "a": "Only if the hash is poor and has patterns related to N. With a good hash the distribution is uniform for any N. Choose a good hash rather than numerology."
+  },
+  {
+   "q": "When is common hashing still the right choice?",
+   "a": "When the node count is fixed or changes rarely, or when you route to a fixed number of logical partitions (say 1,024 buckets) and move the buckets between nodes in a table. Then the modulo is over the constant bucket count and rebalancing changes the bucket-to-node map instead."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain common hashing and its main trade-off.",
+   "points": [
+    "shard = hash(key) mod N",
+    "Simple and stable while N is fixed",
+    "Changing N remaps most keys: N/(N+1)",
+    "Cache miss storm or mass migration"
+   ]
+  },
+  {
+   "q": "Quantify what happens when you go from 3 to 4 nodes, and say what you would use instead.",
+   "points": [
+    "Key stays only if hash mod 3 equals hash mod 4",
+    "About 75% of keys move",
+    "Consistent hashing moves about 1/(N+1)",
+    "Or fixed hash buckets with a bucket-to-node table"
+   ]
+  },
+  {
+   "q": "What must be true for routers to agree?",
+   "points": [
+    "The same stable hash function over the key's bytes",
+    "The same N and the same node ordering",
+    "Not a salted per-process hash"
+   ]
+  }
+ ]
 }

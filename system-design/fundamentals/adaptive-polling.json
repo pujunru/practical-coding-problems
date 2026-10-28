@@ -1,76 +1,65 @@
 {
  "id": "adaptive-polling",
  "title": "Adaptive & Priority Polling",
- "summary": "Fixed-interval polling wastes calls while nothing changes and reacts slowly when something does. **Adaptive polling** makes the interval depend on the order's state; **priority polling** decides who gets polled first when the vendor's rate budget is limited. Both build on the record model in [polling](#/sd/f/polling), where each order has its own `next_poll_at`.\n\n**Adapt the interval:**\n- **Back off while unchanged:** start short (say 5 s), double after each poll that shows no change, up to a cap (60 s). Reset to short when the status changes.\n- **Use what you know:** if the vendor says a job takes about 10 minutes, skip the first 8 and poll tightly near the expected completion.\n- **Obey hints:** honour `Retry-After` and rate-limit headers. A `429` means slow down, never retry harder.\n- **Add jitter** so thousands of orders created together do not poll in lockstep.\n- **Make unchanged polls cheap:** `If-None-Match` ([ETag](#/sd/f/etag)), `updated_since` cursors, or a batch status endpoint (one call for 100 orders).\n\n**Prioritise:** the vendor limit is one shared budget. Decide who spends it: orders a user is watching, near a deadline, or with money at stake first; background reconciliation gets the rest. Use tiers with a guaranteed minimum share, or aging ([prioritized scheduling](#/sd/f/prioritized-scheduling), [weighted scheduling](#/sd/f/weighted-scheduling)); without that, low priority starves. Keep a hard global cap with a [rate limiter](#/sd/f/rate-limiter).\n\nPrefer a webhook when the vendor offers one, with a slow poll as the safety net.",
- "drills": [
+ "explain": "Fixed-interval polling wastes calls while nothing changes and reacts slowly when something does. Adaptive polling lets each order's interval depend on its state, and priority polling decides who is polled first when the vendor's rate budget is a shared, limited resource. It builds on polling as data: every order carries its own next-poll time.",
+ "model": "Builds on [polling](#/sd/f/polling): each order has its own `next_poll_at`, so each can have its own rhythm.\n\n**Adapt the interval:**\n\n- **Back off while unchanged:** start short (5 s), double after each poll that shows no change, cap at 60 s; reset to short when the status changes.\n- **Use what you know:** a job that takes about 10 minutes should not be polled for the first 8; poll tightly near the expected completion.\n- **Obey hints:** honour `Retry-After` and rate-limit headers; 429 means slow down, never retry harder.\n- **Add jitter** so thousands of orders created together do not poll in lockstep.\n- **Make unchanged polls cheap:** `If-None-Match` ([ETag](#/sd/f/etag)), `updated_since` cursors, a batch status endpoint (100 orders per call).\n\n**Prioritise.** The vendor limit is one shared budget; decide who spends it:\n\n1. Orders a user is watching, near a deadline, or with money at stake first.\n2. Background reconciliation gets the rest.\n3. Use tiers with a guaranteed minimum share, or aging ([prioritized scheduling](#/sd/f/prioritized-scheduling), [weighted scheduling](#/sd/f/weighted-scheduling)); otherwise low priority starves.\n4. Keep a hard global cap with a [rate limiter](#/sd/f/rate-limiter).\n\nPrefer a webhook when the vendor offers one, with a slow poll as the safety net.",
+ "details": [
   {
-   "type": "number",
-   "q": "An order is polled at t = 0 s. After every poll that shows no change, the delay to the next poll doubles, starting at 5 s and capped at 60 s (delays 5, 10, 20, 40, 60, 60, ...). Nothing ever changes. How many polls happen between t = 0 s and t = 100 s inclusive? A fixed 5 s interval would give 21.",
-   "answer": 5,
-   "unit": "polls",
-   "tolerance": 0,
-   "explain": "Poll times: 0, 5, 15, 35, 75, then 135 which is beyond 100. That is 5 polls against 21 with a fixed interval, with the cost of up to 60 s of extra detection delay once the order is in the slow phase."
+   "q": "Quantify the benefit: delays double from 5 s up to a cap of 60 s, and nothing ever changes. Polls between t = 0 and t = 100 s?",
+   "a": "Polls at 0, 5, 15, 35, 75 (the next, 135, is past 100): 5 polls, against 21 with a fixed 5 s interval. The price is up to 60 s of extra detection delay once an order is in the slow phase."
   },
   {
-   "type": "choice",
-   "q": "An order's status has been unchanged for ten polls, so its interval has grown to 60 s. The vendor then reports a status change. What should the next interval be?",
-   "options": [
-    "Keep 60 s: the cap protects the vendor",
-    "Double it again",
-    "Reset to the short interval: a change means more is likely coming soon",
-    "Stop polling"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Backoff encodes 'nothing is happening'. A change is evidence that the order has become active, so poll closely again until it settles."
+   "q": "An order has been quiet for ten polls and sits at 60 s. The vendor then reports a change. What interval next?",
+   "a": "Reset to the short interval. Backoff encodes 'nothing is happening'; a change is evidence the order has become active, so poll closely again until it settles."
   },
   {
-   "type": "choice",
-   "q": "Your polling fleet shares a vendor limit of 500 requests/s. Interactive orders (a user is waiting) get strict priority over background orders. During a big surge of interactive orders, the background orders never get polled. What fixes this without losing the priority?",
-   "options": [
-    "Guarantee a minimum share (weights) or age background orders upward over time, so they are polled eventually",
-    "Raise every order to the same priority",
-    "Remove the rate limit",
-    "Poll background orders in a separate process with an unlimited rate"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Strict priority starves the lower tier. Weighted shares or aging keep both goals: urgent work first, the rest still progresses."
+   "q": "The vendor answers 429 with `Retry-After: 30`. What do you do?",
+   "a": "Pause polling for at least 30 s (for that vendor or key), then resume at a reduced rate. The hint says when the vendor will accept requests again; retrying earlier wastes budget and can extend the penalty."
   },
   {
-   "type": "choice",
-   "q": "The vendor answers 429 with `Retry-After: 30`. What should the poller do?",
-   "options": [
-    "Retry immediately with jitter",
-    "Switch to a new API key",
-    "Pause polling for at least 30 s (for that vendor or key), then resume at a reduced rate",
-    "Treat the order as failed"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "The hint says when the vendor will accept requests again. A retry before that wastes budget and can extend the penalty."
+   "q": "Interactive orders have strict priority over background ones, and in a surge the background orders never get polled. Fix?",
+   "a": "Strict priority starves the lower tier. Guarantee a minimum share (weights) or age background orders upward over time, so they are eventually polled while urgent work still goes first."
   },
   {
-   "type": "choice",
-   "q": "Polling 1,000 pending orders individually costs 1,000 requests per cycle; the vendor offers a batch status endpoint accepting 100 order ids per call. How do you use it?",
-   "options": [
-    "Poll in batches of up to 100 ids, so 10 calls per cycle, and update each order's next_poll_at from its own result",
-    "Ignore it: polling per order gives better data",
-    "Always send all 1,000 ids in one call",
-    "Use it only for failed orders"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Batching reduces the request count tenfold and the per-order adaptive state still works. Respect the endpoint's maximum batch size."
+   "q": "You have 1,000 pending orders and the vendor offers a batch status endpoint of up to 100 ids. How do you use it?",
+   "a": "Poll in batches of up to 100 ids, 10 calls per cycle instead of 1,000, and update each order's `next_poll_at` from its own result so adaptive state still works. Respect the endpoint's maximum batch size."
   },
   {
-   "type": "recall",
-   "q": "Describe three techniques to make polling cheaper without making users wait longer.",
-   "answer": "(1) **Exponential backoff with a cap**, reset on any change, so quiet orders cost little and active ones are polled closely. (2) **Use expected-duration knowledge** and `Retry-After`: do not poll before the earliest plausible completion. (3) **Cheaper polls**: conditional requests (ETag), `updated_since` cursors or a batch status endpoint. Add jitter against synchronized polls, priority tiers with a minimum share for background work, and prefer webhooks when available."
+   "q": "Why jitter?",
+   "a": "Orders created together would otherwise share the same schedule and hit the vendor in synchronized waves. A random spread flattens the load and keeps you under the rate limit."
+  },
+  {
+   "q": "How do you decide who is high priority?",
+   "a": "By cost of delay: a user waiting on the screen, a deadline (cutoff time), money at stake. Make the priority an explicit field on the record so the scheduler can order by it, and keep a metric on time-since-last-poll per tier to see starvation early."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Describe an adaptive polling schedule for one order.",
+   "points": [
+    "Start short, double on no change, capped",
+    "Reset on a status change",
+    "Skip the period when completion is impossible",
+    "Honour Retry-After; jitter"
+   ]
+  },
+  {
+   "q": "Allocate a shared rate budget across interactive and background polling.",
+   "points": [
+    "Vendor limit is one shared budget",
+    "Priority by user waiting, deadline, money",
+    "Strict priority starves, so minimum share or aging",
+    "Global cap via rate limiter"
+   ]
+  },
+  {
+   "q": "Name three ways to make polling cheaper without making users wait longer.",
+   "points": [
+    "Exponential backoff with a cap, reset on change",
+    "Expected-duration knowledge and Retry-After",
+    "Conditional requests, updated_since cursors, batch endpoint",
+    "Webhook as primary with slow poll as safety net"
+   ]
   }
  ]
 }
