@@ -1,0 +1,151 @@
+{
+ "id": "proximity-service",
+ "title": "Design a Proximity Service (Yelp)",
+ "prompt": "Design the backend that lets a user open a map or type a query and see businesses near them: \"coffee within 1 km\", \"open now, 4+ stars\". Business owners can add and edit their listing, and people read details and reviews.\n\nAssume about **200 million businesses** worldwide and **100 million daily users** who run roughly five searches each. Search results must come back in **under 100 ms**.",
+ "clarify": [
+  "Is the search radius fixed or user-selectable (500 m to 20 km), and do we return exact nearest-K or any results inside the radius?",
+  "Are results ranked by distance only, or also by rating, popularity and filters such as category and open now?",
+  "How fresh must edits be: is a new business or changed opening hours visible in seconds or minutes?",
+  "Do businesses move? (Mostly no, which is what makes a static index possible.)",
+  "Is this one global deployment or per-region, and are reviews and photos in scope?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- `search(lat, lng, radius, category?, filters?)` returns ranked businesses\n- CRUD on a business (owner), view a business with details and reviews\n\n**Non-functional**\n- Read-heavy (search : write well above 1000 : 1), p99 under 100 ms\n- High availability; reads may be stale by minutes (eventual consistency is fine for edits)\n- Dense cities and sparse countryside must both be fast",
+  "estimation": "- Searches: 100M users × 5 / 86,400 s ≈ **5,800/s** average, ~**29K/s** at a 5× peak\n- Business rows: 200M × ~1 KB ≈ **200 GB** (photos and reviews live elsewhere), so one machine could hold it, but not serve the QPS\n- Geo index: 200M × (8 B geohash + 8 B id) ≈ **3.2 GB**, which fits in RAM on every search node\n- Writes: even 1% of businesses edited a day is 2M/day ≈ **23/s**\n- Insight: the index is tiny and almost static, so replicate it rather than partition it for capacity",
+  "api": "```\nGET  /v1/search?lat=&lng=&radius=1000&category=cafe&open_now=true&limit=20&cursor=\n       → {results:[{id, name, distance_m, rating, ...}], next_cursor}\nGET  /v1/businesses/{id}                  → full detail (cacheable)\nPOST /v1/businesses   PUT /v1/businesses/{id}   DELETE ...   (owner)\n```\n- Cursor pagination over a stable ranking; return distance computed server-side.\n- Detail is a separate call so the search payload stays small.",
+  "data": "- `businesses(id PK, name, lat, lng, geohash, category, hours, rating, ...)` in a sharded SQL or document store; the system of record.\n- `geo_index(geohash_prefix, business_id)` for the search path, derived from the table above. A B-tree on `(geohash, category)` turns \"same prefix\" into a range scan.\n- Reviews, photos and hours sit in their own services, keyed by `business_id`.\n- Store several precisions (for example 4, 5, 6 characters) or derive them by truncating the prefix.",
+  "design": "```\nclient ─▶ LB ─▶ search service ─▶ geo index (in-memory replicas)\n                      │ └─▶ ranking / filters ─▶ business cache ─▶ business DB\nowner ─▶ business service ─▶ business DB ─CDC─▶ index builder ─▶ geo index\n```\n- **Read:** compute the user's geohash at a precision whose cell is at least the radius, fetch that cell **and its 8 neighbours**, drop anything beyond the radius using real (haversine) distance, rank, and hydrate details from cache.\n- **Write:** owner edits go to the DB; a change feed updates the index within minutes and evicts the cache entry.\n- Index choices: **geohash** is a string prefix, so it works in any SQL or KV store; a **quadtree** splits cells until each holds at most N points, so dense areas get finer cells.",
+  "deepdives": "- **Geo index and the boundary problem.** A [geo cell](#/sd/f/geo-cell) groups nearby points, but two close points can sit in adjacent cells with different prefixes, so always query the 9-cell neighbourhood. Choose precision by radius: level 5 is ~4.9 km square, level 6 ~1.2 × 0.6 km. Geohash is simple but uniform: Manhattan puts thousands of businesses in one cell. Fix with a variable-depth prefix (re-query at one more character when a cell is too full) or a quadtree with a capacity per leaf. Also mention poles and the antimeridian.\n- **Scaling and sharding.** Because the index is ~3 GB, replicate all of it on every search node and spread load by query. If it ever outgrows memory, [shard](#/sd/f/sharding) by geohash prefix; a plain prefix leaves dense cities hot, so split hot prefixes further or use virtual nodes.\n- **Freshness and caching.** Cache results per (cell, category, filters) with a short TTL, and the business detail by id. Edits are rare, so a few minutes of staleness is acceptable; bulk edits from a chain with 500 stores go through a batch job.\n- **Beyond the radius.** Text queries go to a search engine (Elasticsearch/OpenSearch) with a geo-distance filter; keep the geo index for the pure-map path.",
+  "wrapup": "- Biggest decision: a precomputed cell index, read-replicated, instead of scanning or computing distance for every business.\n- Trade-offs: geohash (simple, uniform, boundary handling) vs quadtree (adaptive, harder to update); replicate vs shard the index.\n- Next: personalised ranking, multi-region replicas, moving entities (see nearby friends), map tiles served from a CDN."
+ },
+ "rubric": [
+  {
+   "text": "States the workload is read-heavy and separates the search path from the rare owner-write path",
+   "keywords": [
+    "read-heavy",
+    "read heavy",
+    "separate",
+    "owner"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Estimates search QPS and notes the geo index is small enough to hold in memory",
+   "keywords": [
+    "qps",
+    "/s",
+    "gb",
+    "memory",
+    "ram"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a geo index (geohash, quadtree, S2/H3) instead of scanning all businesses or computing distance for each",
+   "keywords": [
+    "geohash",
+    "quadtree",
+    "s2",
+    "h3",
+    "geo index",
+    "cell"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Explains geohash precision, prefix match and how precision is chosen from the search radius",
+   "keywords": [
+    "precision",
+    "prefix",
+    "radius",
+    "cell size"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles the boundary problem by querying the neighbouring cells and filtering with exact distance",
+   "keywords": [
+    "neighbor",
+    "neighbour",
+    "8 ",
+    "boundary",
+    "haversine"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Addresses uneven density (dense city vs rural): adaptive quadtree or variable-depth prefix",
+   "keywords": [
+    "dense",
+    "density",
+    "adaptive",
+    "quadtree",
+    "hot"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Scaling plan for the index: replicate it, or shard by prefix with hot-cell mitigation",
+   "keywords": [
+    "replica",
+    "shard",
+    "virtual node",
+    "consistent hash"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Caches search results and business details and says how they are invalidated",
+   "keywords": [
+    "cache",
+    "ttl",
+    "evict",
+    "invalidat"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keeps the business table as the source of truth and updates the index asynchronously (eventual consistency accepted)",
+   "keywords": [
+    "eventual",
+    "change feed",
+    "cdc",
+    "async",
+    "stale"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Covers ranking and filters (category, open now, rating) and cursor pagination",
+   "keywords": [
+    "rank",
+    "filter",
+    "cursor",
+    "pagination",
+    "elasticsearch"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Edge cases: poles/antimeridian, bulk updates, fault tolerance (replica failover, multi-region)",
+   "keywords": [
+    "pole",
+    "antimeridian",
+    "bulk",
+    "failover",
+    "multi-region"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "geo-cell",
+  "sharding",
+  "consistent-hashing",
+  "cache-invalidation",
+  "change-feed",
+  "rw-replicas",
+  "eventual-consistency"
+ ]
+}

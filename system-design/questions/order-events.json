@@ -1,0 +1,151 @@
+{
+ "id": "order-events",
+ "title": "Design Order Event Processing",
+ "prompt": "An order moves through many systems: placed, paid, picked, shipped, delivered, sometimes cancelled or returned. Each system emits events, and downstream consumers (notifications, search, analytics, billing, customer service views) must keep an accurate picture of every order.\n\nDesign the pipeline that carries these events. Assume about **10 million orders a day**, about eight events each, and consumers that crash and replay.",
+ "clarify": [
+  "Which service owns the order state: is there one writer per order, or do many services emit events about it?",
+  "Do consumers need strict per-order ordering, or only a correct final state?",
+  "What delivery guarantee do we need, and can consumers tolerate duplicates?",
+  "How late can an event arrive, and do consumers need to replay history (new consumer, bug fix)?",
+  "Which consumers are real-time (notifications) and which are batch (analytics)?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Producers publish order events; many independent consumers subscribe\n- Each consumer keeps a correct per-order state or side effect\n- Replay for new consumers and for bug fixes; query an order's history\n\n**Non-functional**\n- No lost events; duplicates and out-of-order delivery are expected and tolerated\n- Per-order ordering where it matters; independent consumer failure and lag\n- Latency of seconds for notifications, minutes for analytics",
+  "estimation": "- Orders: 10M/day ≈ **116/s**\n- Events: 10M × 8 = 80M/day ≈ **925/s** average, ~**9,300/s** at a 10× peak\n- Volume: ~1 KB per event ≈ **80 GB/day**; 7-day retention × 3 replicas ≈ **1.7 TB** in the log\n- Partitions: a consumer doing a DB write handles ~1K events/s per partition, so peak needs at least 10 partitions; use **32** for headroom and parallelism",
+  "api": "```\nEvent envelope:\n{ event_id, order_id, type, version (per-order, increasing), occurred_at, payload, schema_version }\n\nPublish:   producer ─▶ topic `order-events` (key = order_id)\nGET /v1/orders/{id}/events   → ordered history\n```\n- `event_id` is the dedupe identity; `version` comes from the order's single writer so gaps and reordering are detectable.\n- The schema is versioned and validated through a registry.",
+  "data": "- **Orders DB** (source of truth): `orders(id, state, version, ...)` plus an `outbox(id, order_id, payload, published_at)` table written in the same transaction.\n- **Log**: Kafka-style topic partitioned by `order_id`, retained for days, replayable.\n- **Consumer state**: `processed(consumer, event_id)` or `last_version(order_id)` kept next to the consumer's own data, updated in the same transaction as the side effect.\n- **Dead-letter topic** for events that fail repeatedly.",
+  "design": "```\norder svc ─tx─▶ orders + outbox ─CDC/relay─▶ topic order-events (32 partitions, key=order_id)\n                                                  ├─▶ notifications  (idempotent)\n                                                  ├─▶ search / history view\n                                                  ├─▶ billing\n                                                  └─▶ analytics sink      ─▶ DLQ on poison events\n```\n- **State machine** owned by the order service: `CREATED → PAID → PICKING → SHIPPED → DELIVERED`; `CANCELLED` from `CREATED` or `PAID`; `RETURNED` after `DELIVERED`. Illegal transitions are rejected at the source.\n- **Publish** from the outbox so the state change and its event commit together.",
+  "deepdives": "- **Ordering.** Partitioning by `order_id` gives total order per order within a partition; there is no global order and none is needed. Across sources, rely on the `version`: a consumer applies version n+1 only when it has applied n. If it sees a gap, it parks the event and retries with backoff, or fetches the missing state from the order service. Ignore versions that are not newer than the stored one. A consumer that only needs the latest state can just keep the highest version (last-writer-wins by version, never by arrival time).\n- **Idempotent consumers.** The log is at-least-once: producers retry, brokers redeliver, consumers crash after the side effect but before the offset commit. Make the effect idempotent: write the effect and the `(event_id)` or `version` marker in one transaction, or use a unique constraint; for external side effects (email) use the event id as the provider's idempotency key. Commit the offset after the effect. See [idempotency](#/sd/f/idempotency).\n- **Why outbox, not dual write.** Writing the DB and then the broker can lose the event if the process dies in between. The DB is the commit point; the outbox relays at-least-once, and consumers dedupe. This is DB-first, which also gives read-your-writes and write-time validation of the state machine.\n- **Failure handling.** Poison messages go to a DLQ with the error; lag alerts per consumer; replays reset the consumer group to an offset after fixing the bug, which is safe because handlers are idempotent.",
+  "wrapup": "- Correctness comes from three habits: a single writer with versions, outbox publishing, and idempotent consumers.\n- Trade-offs: DB-first with outbox (validated, ordered writes, DB-bound throughput) vs log-first (higher ingest rate, validation deferred); strict ordering vs parking out-of-order events.\n- Next: schema evolution, GDPR deletion in a retained log, exactly-once-style transactions for stream processors."
+ },
+ "rubric": [
+  {
+   "text": "Estimates event rate and log storage and chooses a partition count with reasoning",
+   "keywords": [
+    "partition",
+    "/s",
+    "gb",
+    "tb",
+    "throughput"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keys the log by order id so each order's events stay ordered in one partition, and says there is no global order",
+   "keywords": [
+    "order_id",
+    "order id",
+    "key",
+    "per-order",
+    "partition"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Defines the order state machine with legal transitions and rejects illegal ones",
+   "keywords": [
+    "state machine",
+    "transition",
+    "cancel",
+    "illegal",
+    "state"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses a per-order version/sequence from a single writer to detect gaps, duplicates and reordering",
+   "keywords": [
+    "version",
+    "sequence",
+    "gap",
+    "out-of-order",
+    "out of order"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Explains at-least-once delivery and makes consumers idempotent (event id dedupe, unique constraint)",
+   "keywords": [
+    "idempoten",
+    "at-least-once",
+    "dedupe",
+    "event_id",
+    "duplicate"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Applies the effect and the dedupe marker atomically, then commits the offset (not the other way)",
+   "keywords": [
+    "offset",
+    "same transaction",
+    "atomic",
+    "commit"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Publishes with a transactional outbox / CDC instead of a dual write",
+   "keywords": [
+    "outbox",
+    "cdc",
+    "dual write",
+    "change feed"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles late or missing events: park and retry with backoff, or fetch current state from the owner",
+   "keywords": [
+    "park",
+    "retry",
+    "backoff",
+    "late",
+    "fetch"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Includes a dead-letter queue, consumer lag monitoring and replay from an offset",
+   "keywords": [
+    "dlq",
+    "dead letter",
+    "lag",
+    "replay"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Gives independent consumer groups per downstream and notes schema versioning/registry",
+   "keywords": [
+    "consumer group",
+    "schema",
+    "registry",
+    "fan-out",
+    "fanout"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Discusses external side effects (email, payment) using the event id as the provider idempotency key",
+   "keywords": [
+    "email",
+    "provider",
+    "side effect",
+    "external"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "idempotency",
+  "change-feed",
+  "queue-first-vs-db-first",
+  "multi-state-machine-sync",
+  "retry",
+  "backoff-jitter",
+  "fanout",
+  "backfill"
+ ]
+}

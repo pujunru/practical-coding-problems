@@ -1,0 +1,158 @@
+{
+ "id": "warehouse",
+ "title": "Design a Warehouse Management System",
+ "prompt": "Design the software that runs a large fulfilment centre: stock arrives and is put away into storage, customer orders are released, workers with handheld scanners pick, sort and pack items, and parcels leave on trucks. The system tells every worker what to do next and always knows where every unit is.\n\nAssume one building shipping **200,000 orders a day**, about three lines per order, **500,000 SKUs**, around **5 million storage bins**, and a few hundred pickers per shift.",
+ "clarify": [
+  "Is the scope one building or the network of buildings, and does a building have to run if the internet is down?",
+  "Is storage orderly (fixed locations per SKU) or chaotic (any bin, tracked by scan)?",
+  "Do we pick by order, by batch of orders, or by waves tied to carrier cut-off times?",
+  "How accurate must inventory be, and how are errors found (short picks, cycle counts)?",
+  "Are workers humans with scanners, robots, or a mix?"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Receive and put away stock; track units by bin\n- Release orders into work, generate pick tasks, assign them to workers, support batch picking\n- Sort, pack, label, load; handle short picks, cancellations and returns\n- Slotting: decide where each SKU should live\n\n**Non-functional**\n- Inventory by location is accurate; each scan is applied exactly once\n- Workers are never idle waiting for a task; deadlines (carrier cut-offs) are met\n- The building keeps operating through a WAN outage",
+  "estimation": "- Picks: 200K orders × 3 lines = **600K** pick lines a day; over a 16-hour operation ≈ **10.4/s**, ~**31/s** at a 3× peak\n- Workforce: 600K ÷ 16 h = 37.5K picks/h; at ~120 picks/h per picker ≈ **310 pickers** on shift\n- Scans: ~3 per pick (bin, item, tote) = 1.8M/day ≈ **31/s**\n- Stock-by-bin: 5M rows × ~100 B ≈ **500 MB**\n- Insight: a single building is a small data problem; the hard parts are workflow correctness, fair and efficient task assignment, and tolerating offline devices",
+  "api": "```\nPOST /v1/receipts          {asn, lines[{sku, qty}]}\nPOST /v1/putaway/scan      {tote, bin, sku, qty, scan_id}\nPOST /v1/waves/release     {order_ids[] | rule}\nPOST /v1/workers/{id}/next-task   → {task_id, bin, sku, qty, lease_until}\nPOST /v1/tasks/{id}/scan   {bin, sku, qty, scan_id}   → ok | short_pick\nPOST /v1/tasks/{id}/complete\n```\n- Handhelds pull their next task; every scan has a `scan_id` for dedupe.",
+  "data": "- `stock(bin_id, sku, qty, reserved)` with an append-only `stock_moves` ledger.\n- `orders / order_lines` allocated to bins at release (`allocation`).\n- `tasks(id, type: PICK|PUTAWAY|REPLEN|PACK, zone, priority, due_at, state, assignee, lease_until, version)`.\n- `bins(id, zone, aisle, position, type, capacity)`; `slotting_plan(sku → zone)`.\n- Each building runs its own database; a cloud copy receives replicated data for reporting.",
+  "design": "```\norders (cloud) ─▶ release/wave planner ─▶ allocation ─▶ pick tasks\n                                                         │\nhandhelds ◀─ task assignment (per-zone priority queues) ◀┘\n   │ scans (scan_id)\n   ▼\nstock ledger ─▶ tote/put-wall sortation ─▶ pack stations (verify, label) ─▶ dock / carriers\nslotting job (nightly, from velocity + affinity) ─▶ replenishment / move tasks\n```\n- **Release** respects carrier cut-offs: orders due earliest enter waves first.\n- **Pick** tasks hold bin, SKU and quantity; the worker scans bin then item, and the system decrements the bin and moves units to a tote.",
+  "deepdives": "- **Task assignment.** Use a pull model: a scanner asks for work and the engine hands out the best task for that worker. Keep a priority queue per zone ordered by due time then by travel distance from the worker's current bin. Give each assignment a lease with a heartbeat, so an abandoned task returns to the queue ([lease](#/sd/f/lease)); protect against double assignment with a version or conditional update. Batch picking groups several orders into one walk through adjacent aisles, trading some latency for fewer steps; cluster picking fills several totes on one cart.\n- **Slotting.** Place fast-moving SKUs near pack stations and at waist height (the golden zone), keep heavy or bulky items low, and put items often ordered together near each other. A nightly job scores SKUs by velocity and co-occurrence and emits move tasks during quiet periods. Chaotic storage skips fixed slots: any bin may hold any SKU, which speeds put-away but makes accurate scans essential.\n- **Accuracy and failures.** Every unit move is a ledger entry applied once, deduplicated by `scan_id`, so retries over bad Wi-Fi do not double count. On a short pick (the bin is empty) mark the bin suspect, schedule a cycle count, and re-allocate from another bin or backorder the line. Reserve stock at allocation so two orders do not claim the same units. The building runs standalone; the cloud receives replicated events asynchronously.",
+  "wrapup": "- A WMS is a set of state machines (receipt, task, order, tote) over an accurate stock ledger, with a scheduler that keeps people busy on the right work.\n- Trade-offs: wave vs continuous release; batch picking efficiency vs order latency; fixed vs chaotic storage.\n- Next: robots and conveyors as additional workers, labour planning, returns processing, multi-building inventory visibility."
+ },
+ "rubric": [
+  {
+   "text": "Sizes a single building: pick lines, scan rate, worker count and stock rows; concludes data volume is small",
+   "keywords": [
+    "600k",
+    "/s",
+    "pickers",
+    "scans",
+    "small"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes the end-to-end flow: receive, put away, release, pick, sort, pack, ship",
+   "keywords": [
+    "receiv",
+    "putaway",
+    "put-away",
+    "pick",
+    "pack",
+    "ship"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses waves or continuous release driven by carrier cut-offs and priorities",
+   "keywords": [
+    "wave",
+    "cut-off",
+    "cutoff",
+    "priority",
+    "due"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models tasks with states and a pull-based assignment per worker or zone using priority queues",
+   "keywords": [
+    "pull",
+    "assign",
+    "priority queue",
+    "zone",
+    "task"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Task assignment uses a lease/heartbeat and a version or conditional update to avoid double assignment and recover abandoned tasks",
+   "keywords": [
+    "lease",
+    "heartbeat",
+    "version",
+    "double assign",
+    "reassign"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Explains batch or cluster picking and path or distance-aware assignment",
+   "keywords": [
+    "batch",
+    "cluster",
+    "path",
+    "route",
+    "travel"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Covers slotting: velocity (golden zone), affinity of items, size/weight, nightly re-slotting",
+   "keywords": [
+    "slotting",
+    "velocity",
+    "golden",
+    "affinity",
+    "abc"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Keeps inventory by bin as an append-only ledger with idempotent scans (scan id) and allocation/reservation at release",
+   "keywords": [
+    "ledger",
+    "scan_id",
+    "scan id",
+    "idempoten",
+    "allocation",
+    "reserve"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles short picks, cycle counts and re-allocation or backorder",
+   "keywords": [
+    "short pick",
+    "short-pick",
+    "cycle count",
+    "re-allocate",
+    "backorder"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Pack station verification (scan to confirm), box choice, labelling and sortation/put wall",
+   "keywords": [
+    "verify",
+    "label",
+    "put wall",
+    "sortation",
+    "pack"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Operates locally per building through WAN loss and replicates to the cloud asynchronously",
+   "keywords": [
+    "offline",
+    "local",
+    "wan",
+    "replicate",
+    "standalone",
+    "cell"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "lease",
+  "heartbeat-lease",
+  "prioritized-scheduling",
+  "dispatcher",
+  "wait-queue",
+  "idempotency",
+  "reservation",
+  "cell"
+ ]
+}

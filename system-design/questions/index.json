@@ -190,6 +190,90 @@
       "Meta",
       "Stripe"
      ]
+    },
+    {
+     "id": "proximity-service",
+     "title": "Design a Proximity Service (Yelp)",
+     "difficulty": "Hard",
+     "companies": [
+      "NVIDIA",
+      "Uber"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Commerce, marketplace & finance",
+   "questions": [
+    {
+     "id": "shopping-cart",
+     "title": "Design a Shopping Cart",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon",
+      "Microsoft"
+     ]
+    },
+    {
+     "id": "parking-payment",
+     "title": "Design a Parking Payment System",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "online-store",
+     "title": "Design an Online Store",
+     "difficulty": "Medium",
+     "companies": [
+      "Microsoft"
+     ]
+    },
+    {
+     "id": "order-events",
+     "title": "Design Order Event Processing",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "inventory",
+     "title": "Design an Inventory System",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "pickup-lockers",
+     "title": "Design Amazon Pickup Lockers",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "warehouse",
+     "title": "Design a Warehouse Management System",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Mobility, mapping & logistics",
+   "questions": [
+    {
+     "id": "driver-heatmap",
+     "title": "Design a Heat Map for Ride-Hailing Drivers",
+     "difficulty": "Medium",
+     "companies": [
+      "Uber"
+     ]
     }
    ]
   },

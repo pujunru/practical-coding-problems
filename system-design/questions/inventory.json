@@ -1,0 +1,152 @@
+{
+ "id": "inventory",
+ "title": "Design an Inventory System",
+ "prompt": "Design the system that answers \"can we sell this?\" for a retailer with many warehouses. It must let checkout hold stock while the shopper pays, prevent selling units that do not exist, and keep the numbers right across warehouses as stock arrives, ships and gets counted.\n\nAssume **50 million SKUs**, about **200 warehouses**, **10 million orders a day**, and flash sales where one SKU gets 100K requests a second.",
+ "clarify": [
+  "Is overselling ever acceptable (backorders), or must it be zero?",
+  "Does an order reserve at one warehouse, or can it be split across several?",
+  "How long may a checkout hold stock, and what happens when the hold expires?",
+  "Is the displayed availability allowed to lag, while the actual reserve step is exact?",
+  "How is physical reality fed in: receiving, picking, damage, cycle counts?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Show availability per SKU; reserve stock for a checkout; commit on payment, release on cancel or expiry\n- Receive, move, adjust and ship stock per warehouse\n- Choose which warehouse(s) fulfil an order\n\n**Non-functional**\n- Never sell units that do not exist (or a bounded, explicit oversell)\n- Reserve is strongly consistent per SKU and warehouse; display may be slightly stale\n- Handle a hot SKU and expired holds without manual cleanup",
+  "estimation": "- Stock rows: 50M SKUs × ~5 warehouses each = **250M** rows × ~100 B ≈ **25 GB**, easily sharded\n- Reservations: 10M orders × 3 lines = 30M/day ≈ **350/s**, ~**3,500/s** at a 10× peak\n- Hot SKU: 100K requests/s on one row is far beyond what one contended row sustains (order of 1K updates/s), so it needs about **64+ sub-counters** (100,000 / 64 ≈ 1,560/s each)\n- Insight: total volume is modest; the problem is contention on a few rows and the lifecycle of holds",
+  "api": "```\nGET  /v1/availability?sku=&region=             → {available}   (cached, approximate)\nPOST /v1/reservations  {order_id, lines[{sku,qty}], ttl}  + Idempotency-Key\n     → 201 {reservation_id, expires_at, lines[{sku, warehouse, qty}]} | 409 insufficient\nPOST /v1/reservations/{id}/commit              → decrement on_hand\nPOST /v1/reservations/{id}/release             (cancel; expiry does the same)\nPOST /v1/stock/adjust  {sku, warehouse, delta, reason}\n```",
+  "data": "- `stock(sku, warehouse, on_hand, reserved)`; **available = on_hand − reserved**. Sharded by `sku`, so one reserve is a single-shard transaction.\n- `reservations(id, order_id, sku, warehouse, qty, state, expires_at)` with state `HELD → COMMITTED | RELEASED | EXPIRED`.\n- `stock_ledger(id, sku, warehouse, delta, reason, ref, ts)`: append-only movements; on_hand is the sum, used for audit and reconciliation.\n- A cached `availability(sku, region)` summary refreshed from stock changes.",
+  "design": "```\ncheckout ─▶ inventory API ─▶ sourcing (pick warehouse(s))\n                               └─▶ stock shards: atomic conditional update\nexpiry sweeper ─▶ release holds past expires_at\nreceiving / picking / counts ─▶ stock_ledger ─▶ on_hand\nstock change feed ─▶ availability cache ─▶ product pages\n```\n- **Reserve** is one atomic statement: `UPDATE stock SET reserved = reserved + q WHERE sku=? AND wh=? AND on_hand - reserved >= q`; zero rows updated means insufficient.\n- **Commit** moves the units out of `on_hand` and `reserved` together; **release** only reduces `reserved`.",
+  "deepdives": "- **Reservation lifecycle** (a [reservation](#/sd/f/reservation) is a lease on stock). A hold must expire, because the shopper may vanish. Store `expires_at`; a sweeper releases expired holds, and commit checks the hold is still `HELD` and that price or quantity did not change since it was taken. Reserve and commit are idempotent by reservation id. Keep the hold short (minutes) so abandoned carts do not strand stock.\n- **Oversell prevention and hot SKUs.** The conditional update is exact but serialises on one row. Split a hot SKU into N sub-counters ([salting](#/sd/f/salting)); each reserve picks one at random and falls back to the others, and a small rebalancer evens them out. Alternatively pre-load a sale quota into Redis and decrement with a script, then persist asynchronously; that is faster but needs recovery logic after a crash. For flash sales add a queue or per-user limit in front.\n- **Multiple warehouses.** Choose the nearest warehouse with stock; if none has all lines, split the order or fail. Multi-line orders reserve lines in a fixed SKU order and release everything if one fails (saga). Displayed availability is the sum across warehouses, cached and eventually consistent; only the reserve call is authoritative.\n- **Physical drift.** Counts, damage and shrinkage change `on_hand` through ledger adjustments; a negative available quantity triggers an alert, not a silent clamp.",
+  "wrapup": "- Truth lives in per-SKU rows updated by conditional writes; reservations turn a lock into expiring data.\n- Trade-offs: strict reserve (never oversell, contention) vs bounded oversell (fast, needs backorder handling); sub-counters vs Redis quota for hot SKUs.\n- Next: safety stock, transfers between warehouses, demand forecasting."
+ },
+ "rubric": [
+  {
+   "text": "Defines available = on_hand − reserved and keeps stock per (sku, warehouse)",
+   "keywords": [
+    "on_hand",
+    "reserved",
+    "available",
+    "per warehouse"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents oversell with an atomic conditional update (check and decrement in one statement/transaction)",
+   "keywords": [
+    "conditional",
+    "atomic",
+    "compare-and-set",
+    "where",
+    "oversell"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses reservations with a TTL/expiry instead of long-held locks, with a state machine (held, committed, released, expired)",
+   "keywords": [
+    "reserv",
+    "expire",
+    "ttl",
+    "lease",
+    "held"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Has a sweeper/expiry process and makes reserve, commit and release idempotent by reservation id",
+   "keywords": [
+    "sweeper",
+    "idempoten",
+    "release",
+    "expir"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Commit re-checks the hold is still valid (and price/quantity unchanged) before decrementing",
+   "keywords": [
+    "commit",
+    "still valid",
+    "re-check",
+    "recheck",
+    "changed"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Shards by sku so a reserve is a single-shard transaction",
+   "keywords": [
+    "shard",
+    "sku",
+    "single-shard",
+    "partition"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles a hot SKU: sub-counters/salting, or a pre-loaded quota in Redis, plus queueing or per-user limits",
+   "keywords": [
+    "hot",
+    "sub-counter",
+    "salt",
+    "redis",
+    "quota",
+    "flash"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Covers choosing warehouses and multi-line or split orders with all-or-nothing compensation",
+   "keywords": [
+    "warehouse",
+    "split",
+    "saga",
+    "all-or-nothing",
+    "sourcing"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Allows displayed availability to be cached and eventually consistent while reserve stays authoritative",
+   "keywords": [
+    "cache",
+    "eventual",
+    "stale",
+    "approximate",
+    "authoritative"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keeps an append-only stock ledger and reconciles with physical counts; alerts on negative availability",
+   "keywords": [
+    "ledger",
+    "reconcil",
+    "cycle count",
+    "audit",
+    "adjust"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Estimates reservation rate and data size and identifies contention, not volume, as the hard part",
+   "keywords": [
+    "qps",
+    "/s",
+    "gb",
+    "contention"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "reservation",
+  "race-condition",
+  "lease",
+  "idempotency",
+  "salting",
+  "sharding",
+  "eventual-consistency",
+  "transaction-boundary"
+ ]
+}

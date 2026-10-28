@@ -1,0 +1,153 @@
+{
+ "id": "parking-payment",
+ "title": "Design a Parking Payment System",
+ "prompt": "A city wants drivers to pay for parking by app, at street meters, and at garage gates. A driver starts a parking session, can extend it, stops it, and is charged the right amount. Enforcement officers must be able to check whether a plate is paid up.\n\nAssume about **5,000 lots and street zones** and **2 million parking sessions a day**. Some meters lose connectivity for hours.",
+ "clarify": [
+  "How do sessions start and end: app, meter, licence-plate camera at a gate, or all of these?",
+  "Is the price a flat block, per-minute, tiered by time of day, with a daily cap and a grace period?",
+  "Do we charge up front for a chosen duration, or after the session ends for actual use?",
+  "How should offline meters behave: accept payments, and reconcile later?",
+  "What do officers need: plate lookup with fresh data, even in a basement with no signal?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Start, extend and stop a session for a plate in a zone; compute the fee\n- Take payment (card on file, wallet, coins at a meter)\n- Enforcement lookup: is this plate currently paid in this zone?\n- Receipts, refunds and reporting\n\n**Non-functional**\n- Never charge twice and never lose a payment, even when devices retry\n- Meters keep working offline and reconcile\n- Low volume but money-critical: correctness before scale",
+  "estimation": "- Sessions: 2M/day ≈ **23/s** average\n- Writes: start + stop + ~1 extension = 3 per session → 6M/day ≈ **70/s**, ~**700/s** at a 10× peak (morning rush)\n- Storage: 2M × 365 × 5 years = 3.65B sessions × ~300 B ≈ **1.1 TB**, fine on sharded SQL; only recent months stay hot\n- Insight: volume is small, so a single-leader SQL database per region is enough; the interview is about correctness, not throughput",
+  "api": "```\nPOST /v1/sessions        {plate, zone_id, payment_method, minutes?}  + Idempotency-Key → 201 {session_id, ends_at}\nPOST /v1/sessions/{id}/extend {minutes}                              + Idempotency-Key\nPOST /v1/sessions/{id}/stop                                          + Idempotency-Key → {amount, receipt}\nGET  /v1/zones/{zone}/plates/{plate}   → {paid_until} | 404         (enforcement)\nPOST /v1/meters/{id}/batch  {events[] with seq}                      (offline sync)\n```\n- Every mutating call carries an idempotency key; meter events carry a per-meter sequence number.",
+  "data": "- `sessions(id, plate, zone_id, started_at, paid_until, state, rate_version, amount_cents)` with a unique active session per (plate, zone).\n- `rates(zone_id, version, rules...)`: immutable versions; the session pins the version it started under.\n- `payments(id, session_id, idempotency_key UNIQUE, psp_ref, amount_cents, status)`.\n- Money in integer cents with a currency; an append-only ledger for audit.\n- Enforcement reads a small cache: `(zone, plate) → paid_until`.",
+  "design": "```\napp / gate ─▶ session service ─▶ SQL (sessions, payments)\nmeter ──(batch, seq)──▶ meter gateway ─┘      └─▶ PSP (authorize / capture)\nofficer ─▶ lookup service ─▶ cache (zone, plate) ◀── session events\n```\n- **Start:** create the session in `ACTIVE`, authorize a hold for the chosen or maximum amount, set `paid_until`.\n- **Stop / expire:** compute the fee from start and stop times and the pinned rate version, capture, release the unused hold.\n- **Lookup:** officers read the cache; a miss falls back to SQL.",
+  "deepdives": "- **Pricing.** Compute fees on the server from timestamps, never trust a client total. Pin `rate_version` at start so a mid-session price change does not alter an open session. Model blocks, time-of-day tiers, a daily cap and a grace period as data rules.\n- **Payment idempotency.** Retries are the norm on cellular networks. Store the idempotency key with a unique constraint and return the stored result for a repeat; pass the key to the PSP too. Use authorize-then-capture: hold funds at start, capture the actual amount at stop, and auto-release if no capture arrives. If the capture call times out, ask the PSP by reference before retrying (see [idempotency](#/sd/f/idempotency)).\n- **Offline meters.** The meter records sessions locally with a monotonic sequence number and its own clock, and uploads batches when it reconnects; the server dedupes on (meter, seq). Cash and coin sessions are already paid; card payments offline use a small floor limit or are refused. Clock skew is handled by trusting the meter's elapsed durations, and by sending a signed time sync each connection.\n- **Races.** Two starts for the same plate and zone, or a stop racing an expiry job, are resolved by the unique active-session constraint and compare-and-set on `state`.",
+  "wrapup": "- A small system where the tricky parts are idempotent money movement, deterministic pricing and offline devices.\n- Trade-offs: pre-pay for a duration (simple) vs pay-on-exit (fairer, needs a pre-auth); strict offline refusal vs a floor limit.\n- Next: dynamic pricing, reservations of spaces, refunds for early departure, fraud checks."
+ },
+ "rubric": [
+  {
+   "text": "Recognises the volume is low and money correctness is the focus; gives sensible QPS and storage",
+   "keywords": [
+    "qps",
+    "/s",
+    "tb",
+    "low volume",
+    "correct"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Models the session lifecycle as states (active, extended, stopped, expired) with valid transitions",
+   "keywords": [
+    "state",
+    "active",
+    "expired",
+    "transition",
+    "lifecycle"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents duplicate active sessions for the same plate and zone (unique constraint / compare-and-set)",
+   "keywords": [
+    "unique",
+    "compare-and-set",
+    "cas",
+    "duplicate",
+    "race"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Computes the price on the server from timestamps and a versioned rate card pinned at session start",
+   "keywords": [
+    "rate",
+    "version",
+    "pin",
+    "server-side",
+    "tier",
+    "cap"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses an idempotency key on session and payment calls so retries do not double-charge",
+   "keywords": [
+    "idempotency key",
+    "idempoten",
+    "retry",
+    "double"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses authorize then capture (or pre-auth hold) and releases the unused part",
+   "keywords": [
+    "authoriz",
+    "capture",
+    "hold",
+    "pre-auth"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles an unknown PSP outcome (timeout) by querying the PSP or reconciling, not blindly retrying",
+   "keywords": [
+    "reconcil",
+    "timeout",
+    "unknown",
+    "query the psp",
+    "webhook"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Offline meters: local record with sequence numbers, batch upload, dedupe on (meter, seq), clock handling",
+   "keywords": [
+    "offline",
+    "sequence",
+    "seq",
+    "batch",
+    "clock",
+    "dedupe"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Stores money as integer minor units and keeps an append-only ledger for audit and refunds",
+   "keywords": [
+    "cents",
+    "integer",
+    "ledger",
+    "audit",
+    "refund"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Enforcement lookup path: cached (zone, plate) to paid_until, with offline or stale handling for officers",
+   "keywords": [
+    "enforcement",
+    "officer",
+    "lookup",
+    "cache",
+    "plate"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Mentions plate recognition errors / disputes and notifications before expiry",
+   "keywords": [
+    "anpr",
+    "lpr",
+    "dispute",
+    "reminder",
+    "notification"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "idempotency",
+  "retry",
+  "race-condition",
+  "reservation",
+  "clock-shift",
+  "backoff-jitter"
+ ]
+}

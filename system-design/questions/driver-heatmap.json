@@ -1,0 +1,159 @@
+{
+ "id": "driver-heatmap",
+ "title": "Design a Heat Map for Ride-Hailing Drivers",
+ "prompt": "Drivers of a ride-hailing app open a map that shows where demand is high right now, so they can move toward riders. Design the pipeline that turns live rider requests and driver locations into a coloured map of the city, refreshed every few seconds.\n\nAssume **1 million drivers online** at peak, each reporting a location every 5 seconds, and about **100 million rider events a day** (app opens, searches, requests).",
+ "clarify": [
+  "What does the colour mean: raw request counts, requests per available driver, or a surge multiplier?",
+  "How fresh must it be (10 seconds, 1 minute) and over what window is demand measured?",
+  "What spatial resolution, and does it change as the driver zooms out?",
+  "Is the same map shown to every driver in an area, or personalised?",
+  "Can we tolerate approximate counts, and is there a privacy rule such as a minimum number of riders per cell?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Ingest driver locations and rider demand events\n- Aggregate by geographic cell over time windows: demand, supply and the ratio between them\n- Serve the current map for a viewport at several zoom levels\n\n**Non-functional**\n- Data no older than ~30 s; the view is the same for everyone in an area, so it can be cached\n- Approximate counts are fine; the pipeline must not melt on hot spots (stadium, airport)\n- Handles late, duplicated and out-of-order events",
+  "estimation": "- Driver pings: 1M / 5 s = **200K/s**\n- Rider events: 100M / 86,400 ≈ **1,160/s** average, ~**5,800/s** at a 5× peak\n- Cells: a city of 600 km² at H3 resolution 8 (~0.74 km² per cell) ≈ **810 cells**; even 500K active cells worldwide × ~50 B ≈ **25 MB** per snapshot\n- Map reads: 1M drivers refreshing every 30 s = **33K/s**, but they all read the same few snapshots, so a cache or CDN absorbs nearly all of it\n- Insight: the input is large (pings), the output is tiny (cells), so aggregate early and cache the output",
+  "api": "```\nIngest:  driver → gateway  {driver_id, lat, lng, status, ts}      (WebSocket/gRPC)\n         rider  → events   {event_id, type, lat, lng, ts}\nRead:    GET /v1/heatmap?bbox=&zoom=   → {resolution, window_end, cells:[{id, demand, supply, score}]}\n         (ETag + short max-age; optional push on change)\n```\n- The server maps `zoom` to a cell resolution so the client never asks for thousands of tiny cells.",
+  "data": "- **Streams**: `driver-locations` partitioned by cell prefix or driver id; `rider-events` partitioned by cell.\n- **Latest driver state**: `driver_id → (cell, status, last_seen)` in a fast KV store with a TTL.\n- **Aggregates**: `heat:{city}:{res}:{window_end}` hash of `cell → {demand, supply, score}` in Redis with a few minutes TTL; recent windows also written to a warehouse for analysis.\n- Cell ids are deterministic functions of (lat, lng, resolution), so every service agrees without a lookup.",
+  "design": "```\ndrivers ─WS─▶ gateway ─▶ Kafka (locations) ─▶ supply tracker ─▶ cell counts\nriders  ───────────────▶ Kafka (events)    ─▶ Flink: key=cell, 1-min tumbling / 5-min sliding\n                                                  ▼\n                       score = demand / (supply+1), smoothed ─▶ Redis snapshots\nCDN / cache ◀─ heatmap API ◀─ roll-up to coarser cells for zoom-out\n```\n- Pick a [fixed hexagonal or geohash grid](#/sd/f/geo-cell) (H3, S2 or geohash); fixed cells are deterministic, unlike a quadtree that changes shape as data arrives.\n- Roll finer cells up to their parents to serve coarser zooms, summing counts instead of re-reading events.",
+  "deepdives": "- **Windowing and lateness.** Demand per cell per minute is a [tumbling window](#/sd/f/tumbling-window); to show a smooth 5-minute trend, emit a sliding or hopping window each minute (a [time-bucket counter](#/sd/f/time-bucket-counter) keeps one bucket per minute and subtracts the oldest). Use event time with a watermark of ~10–15 s and drop or side-output later events; each window is emitted once and then cached, so late data cannot rewrite old maps.\n- **Counting supply correctly.** Do not count pings: a driver pinging every 5 s would be counted 12 times a minute. Keep the latest `driver_id → cell` and update counts only when a driver changes cell or goes offline; a TTL on `last_seen` removes drivers who disappeared. Deduplicate rider events by `event_id` so a retry does not inflate demand.\n- **Hot cells and skew.** An airport or stadium sends most events to one key. Pre-aggregate within each partition and combine partial counts in a second stage ([salting](#/sd/f/salting)): add a random suffix to the key, count, then merge. Choose the resolution so a cell is small enough to be useful but large enough to avoid noise; smooth each cell with its neighbours (and the previous window) so colours do not flicker, and hide cells below a minimum count for privacy.\n- **Serving.** The same snapshot serves everyone in a city, so key the cache by (city, resolution, window) with a 10–30 s TTL and use ETags for polling clients.",
+  "wrapup": "- Aggregate the firehose into small per-cell snapshots, then serve the snapshots from cache.\n- Trade-offs: freshness vs smoothness (window size), fixed grid vs adaptive quadtree, polling vs push, exact vs approximate counts.\n- Next: predictive demand from history (events, weather), per-driver suggestions, surge pricing built on the same cells."
+ },
+ "rubric": [
+  {
+   "text": "Defines what the map shows (demand, supply, ratio) and the freshness requirement",
+   "keywords": [
+    "demand",
+    "supply",
+    "ratio",
+    "freshness",
+    "surge"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Estimates ping rate, event rate and shows output size is tiny compared with the input",
+   "keywords": [
+    "200k",
+    "/s",
+    "cells",
+    "mb",
+    "snapshot"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Chooses a fixed geo cell system (H3, S2, geohash) with a resolution justified by city scale",
+   "keywords": [
+    "h3",
+    "s2",
+    "geohash",
+    "resolution",
+    "cell"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Streams events through a log (Kafka) and aggregates in a stream processor keyed by cell",
+   "keywords": [
+    "kafka",
+    "flink",
+    "stream",
+    "key by cell",
+    "partition"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses tumbling and/or sliding windows over event time with watermarks for late events",
+   "keywords": [
+    "tumbling",
+    "sliding",
+    "window",
+    "watermark",
+    "late",
+    "event time"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Counts drivers by latest state per driver (cell change/TTL), not by raw pings, and dedupes rider events",
+   "keywords": [
+    "latest",
+    "ttl",
+    "dedupe",
+    "idempoten",
+    "double count",
+    "distinct"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles hot cells and skew with partial aggregation / salting",
+   "keywords": [
+    "hot",
+    "skew",
+    "salt",
+    "pre-aggregat",
+    "partial"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Serves precomputed snapshots from a cache/CDN with short TTL, ETag or push; the same view for everyone",
+   "keywords": [
+    "cache",
+    "cdn",
+    "etag",
+    "ttl",
+    "snapshot",
+    "push"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Supports zoom levels by rolling up child cells to parents",
+   "keywords": [
+    "zoom",
+    "roll up",
+    "rollup",
+    "parent",
+    "coarser"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Smooths the signal across neighbouring cells and previous windows to avoid flicker",
+   "keywords": [
+    "smooth",
+    "neighbor",
+    "neighbour",
+    "ema",
+    "flicker"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Privacy and failure handling: minimum counts per cell, replay from the log, degraded stale map",
+   "keywords": [
+    "privacy",
+    "k-anonym",
+    "minimum",
+    "replay",
+    "stale",
+    "fallback"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "geo-cell",
+  "tumbling-window",
+  "time-bucket-counter",
+  "sliding-window-aggregation",
+  "salting",
+  "etag",
+  "partitioning",
+  "hash-bucketing"
+ ]
+}

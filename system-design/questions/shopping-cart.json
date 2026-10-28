@@ -1,0 +1,145 @@
+{
+ "id": "shopping-cart",
+ "title": "Design a Shopping Cart",
+ "prompt": "Design the cart for a large e-commerce site. Shoppers add, change and remove items, on a phone and a laptop, signed in or not. When they check out, the cart must reflect today's prices and stock, not what it looked like last week.\n\nAssume **50 million daily users** doing about ten cart actions each, and carts that can sit untouched for weeks.",
+ "clarify": [
+  "Must guest carts exist, and what happens to them when the shopper signs in?",
+  "Is the same cart shared across devices at the same time, and how fast must changes show up?",
+  "How long does an abandoned cart live (30, 90 days)?",
+  "Does adding to the cart reserve stock, or only checkout does?",
+  "Are there per-item quantity limits, promotions or coupons that depend on the whole cart?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Add, update quantity, remove, view cart; clear after order\n- Guest cart that merges into the account cart on sign-in\n- Checkout re-validates price, availability and limits\n\n**Non-functional**\n- Low latency (p99 under 100 ms) and always writable: a cart that errors loses sales\n- No lost updates when two devices edit at once\n- Cart contents are cheap to lose in a disaster but should be durable",
+  "estimation": "- Actions: 50M × 10 / 86,400 ≈ **5,800/s** average, ~**29K/s** at a 5× peak\n- Cart size: ~5 lines × ~100 B plus overhead ≈ **1 KB**\n- Storage: 300M live carts (90-day TTL) × 1 KB ≈ **300 GB**, trivial for a partitioned KV store\n- Checkouts: 3% of daily users ≈ 1.5M/day ≈ **17/s**, so checkout is two orders of magnitude rarer than cart edits",
+  "api": "```\nGET    /v1/cart                                 → {lines[], version, totals}\nPOST   /v1/cart/items      {sku, qty}           → adds qty (idempotent via request id)\nPUT    /v1/cart/items/{sku} {qty, if_version}   → set qty\nDELETE /v1/cart/items/{sku}\nPOST   /v1/cart/merge      {guest_cart_id}      → called on login\nPOST   /v1/checkout/validate                    → {lines, price_changes[], unavailable[]}\n```\n- Identity is the user id when signed in, otherwise a `cart_id` cookie.\n- Mutations carry a request id so a retried tap is not applied twice.",
+  "data": "`carts(owner_key PK, version, updated_at, ttl)` with `lines` stored inside the same item: `{sku, qty, added_at, price_seen, currency}`.\n\n- Access is always by owner, so a KV / document store (DynamoDB, Cassandra, Redis with persistence) keyed by `owner_key` fits; no joins.\n- `price_seen` is for display (\"price changed since you added it\"); the catalogue stays the source of truth for price.\n- TTL expires abandoned carts; a secondary stream feeds abandoned-cart emails.",
+  "design": "```\nclient ─▶ cart service ─▶ cart store (KV, conditional writes)\n              │  └─▶ catalogue cache (display price, title)\n              └─ checkout/validate ─▶ pricing, inventory, promo services\n```\n- **Read:** load the cart, enrich lines with current catalogue data for display.\n- **Write:** apply the change with a conditional write on `version`; on conflict re-read and retry.\n- **Checkout:** a separate validation call computes real prices, stock and promos and returns a diff the user must confirm.",
+  "deepdives": "- **Concurrent edits across devices.** Replacing the whole cart loses updates. Make operations commutative: `add(sku, +qty)` and `remove(sku)` merge naturally, `set_qty` is last-writer-wins per line. Use a version with a conditional write, or per-line records so two devices touching different items never conflict.\n- **Guest to signed-in merge.** The guest cart lives under a cookie id. On login, read both and union by `sku`; for duplicates pick a documented policy (sum capped by the per-item limit, or take the max). Make the merge idempotent: record `merged_from` or delete the guest cart in the same step, so a retried login does not double the quantities. Keep the guest cart for a short grace period in case the merge fails.\n- **Price and stock re-validation.** Never trust `price_seen`. At checkout recompute against the pricing service, check availability, and show the user what changed before charging. Do not reserve stock on add-to-cart, since most carts are abandoned; reserve at checkout start with a short expiry (see the inventory design).\n- **Availability.** Prefer a store that stays writable under partitions; stale reads of a cart are harmless.",
+  "wrapup": "- A cart is a small, per-owner document; the hard parts are concurrency, merge, and refusing to trust stale prices.\n- Trade-offs: whole-document versioning (simple) vs per-line operations (fewer conflicts); sum vs max on merge; reserve at add vs at checkout.\n- Next: promotions that depend on the whole cart, saved-for-later lists, abandoned-cart recovery."
+ },
+ "rubric": [
+  {
+   "text": "Estimates cart operation rate and storage and concludes a partitioned KV/document store is enough",
+   "keywords": [
+    "qps",
+    "/s",
+    "gb",
+    "kv",
+    "dynamo",
+    "document"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Keys the cart by owner (user id or guest cart id) so each read and write touches one record",
+   "keywords": [
+    "owner",
+    "partition",
+    "key",
+    "cart_id",
+    "cookie"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Supports guest carts via a cookie/device id",
+   "keywords": [
+    "guest",
+    "cookie",
+    "anonymous"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes the guest-to-account merge with an explicit policy for duplicate items",
+   "keywords": [
+    "merge",
+    "union",
+    "sum",
+    "max",
+    "duplicate"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Makes the merge and add operations idempotent (request id, delete guest cart in the same step)",
+   "keywords": [
+    "idempoten",
+    "request id",
+    "retry",
+    "twice"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles concurrent edits from several devices (version/conditional write, commutative per-line ops)",
+   "keywords": [
+    "version",
+    "conditional",
+    "optimistic",
+    "conflict",
+    "commutative",
+    "last-writer"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Does not trust the stored price: re-prices at checkout and shows price changes to the user",
+   "keywords": [
+    "re-validate",
+    "revalidate",
+    "price change",
+    "recompute",
+    "reprice"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Checks availability at checkout and explains why stock is not reserved on add-to-cart",
+   "keywords": [
+    "stock",
+    "availability",
+    "reserve",
+    "abandon"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses TTL to expire abandoned carts and optionally drives abandoned-cart recovery",
+   "keywords": [
+    "ttl",
+    "expire",
+    "abandon"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Chooses availability over strict consistency for cart reads and writes, and says why",
+   "keywords": [
+    "availab",
+    "stale",
+    "eventual"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Separates checkout validation from cart edits since checkout is far rarer",
+   "keywords": [
+    "checkout",
+    "validate",
+    "separate"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "idempotency",
+  "race-condition",
+  "eventual-consistency",
+  "reservation",
+  "cache-invalidation",
+  "partitioning"
+ ]
+}

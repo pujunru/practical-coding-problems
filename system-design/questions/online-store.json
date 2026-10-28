@@ -1,0 +1,154 @@
+{
+ "id": "online-store",
+ "title": "Design an Online Store",
+ "prompt": "Design the backend of an e-commerce site: shoppers browse and search a product catalogue, fill a cart, check out and pay, and track the order. Sellers and the fulfilment network sit behind it.\n\nAssume **10 million daily users**, about **50 million products**, and about **1 million orders a day**, with spikes during promotions.",
+ "clarify": [
+  "First-party retail only, or a marketplace with many sellers and their own inventory?",
+  "How important is search (relevance, filters, facets) compared with browsing by category?",
+  "Which payment methods and currencies, and do we use an external payment provider?",
+  "Do we promise stock at checkout, or can we oversell and backorder?",
+  "Are flash sales in scope, with thousands of buyers for a handful of units?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Browse and search the catalogue; product detail page\n- Cart, checkout, payment, order confirmation and status\n- Order history; sellers or admins manage products\n\n**Non-functional**\n- Browsing and search are fast and highly available; showing slightly stale price or stock is acceptable there\n- Checkout is correct: no oversell, no double charge, no lost order\n- Survive promotion spikes without taking checkout down",
+  "estimation": "- Product views: 10M × 20 / 86,400 ≈ **2,300/s**, ~**11.6K/s** at 5× peak\n- Searches: 10M × 5 / 86,400 ≈ **580/s**, ~**2,900/s** at peak\n- Orders: 1M / 86,400 ≈ **12/s**, ~**58/s** at peak; a flash sale can be 20× that\n- Catalogue: 50M × ~5 KB ≈ **250 GB** of records; images 50M × 5 × 200 KB ≈ **50 TB** in object storage behind a CDN\n- Insight: reads outnumber orders by roughly 200:1, so split the read side (catalogue, search) from the transactional side (checkout)",
+  "api": "```\nGET  /v1/products/{id}\nGET  /v1/search?q=&filters=&sort=&cursor=\nPOST /v1/cart/items               (see the cart design)\nPOST /v1/checkout                 {cart_id, address, payment_token}  + Idempotency-Key\n     → 202 {order_id, status: PENDING}\nGET  /v1/orders/{id}              → status timeline\n```\n- Checkout returns quickly with an order id; payment and confirmation complete asynchronously and the client polls or is pushed the result.",
+  "data": "- **Catalogue** (document store or sharded SQL, keyed by `product_id`): title, attributes, seller, price, images; written rarely.\n- **Search index** (Elasticsearch/OpenSearch): a denormalised copy for text, facets and ranking, fed from the catalogue by a change feed.\n- **Inventory** `(sku, warehouse) → available` with reservations, owned by the inventory service.\n- **Orders** `orders(id, user_id, status, total, idempotency_key)` and `order_lines`, sharded by `user_id`; **payments** and **ledger** separate.",
+  "design": "```\nCDN ─▶ web/API ─▶ catalogue svc ─▶ cache ─▶ catalogue DB ──CDC──▶ search index\n                │ └▶ search svc ─▶ search index\n                └─▶ cart svc ─▶ checkout/order svc ─▶ inventory svc (reserve)\n                                        ├─▶ payment svc ─▶ PSP\n                                        └─▶ order events ─▶ fulfilment, email\n```\n- **Browse:** CDN for images and static pages, cache-aside for product JSON.\n- **Checkout (saga):** create order `PENDING` → reserve stock → authorize payment → mark `CONFIRMED` and publish an event; any failure releases the reservation and voids the authorization.",
+  "deepdives": "- **Checkout as a saga.** One distributed transaction across inventory, payment and orders is not realistic, so run steps with compensations. Persist the order and an outbox row in one transaction; the client's idempotency key makes retries return the same order. Reserve stock first because it is cheap to undo; charge last. Handle the unknown payment outcome by reconciling with the provider rather than guessing.\n- **Search freshness vs correctness.** The search index updates from a change feed within seconds, which is fine for titles and facets. Price and \"in stock\" shown in results are advisory; the product page re-reads them and checkout always re-validates against the source of truth. That keeps search scalable without making it authoritative.\n- **Catalogue read scaling and spikes.** Cache product pages and put popular ones on the CDN with a short TTL; precompute category listings. For a flash sale, put a queue or waiting room in front of checkout, enforce per-user limits, and shed load on browse before checkout. See [rate limiter](#/sd/f/rate-limiter) and [load shedding](#/sd/f/load-shedding).\n- **Data ownership.** Each service owns its store; others read through events or APIs, not shared tables.",
+  "wrapup": "- Browse and search scale by caching and derived indexes; checkout stays small, transactional and idempotent.\n- Trade-offs: eventual consistency in search vs authoritative checks at purchase; saga compensation vs two-phase commit; reserve before or after payment.\n- Next: recommendations, reviews, multi-region, returns and refunds."
+ },
+ "rubric": [
+  {
+   "text": "Separates the read side (catalogue, search) from the transactional side (cart, checkout, orders)",
+   "keywords": [
+    "read",
+    "split",
+    "separate",
+    "cqrs",
+    "transactional"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Estimates read, search and order rates and storage; notes reads dominate orders by a large factor",
+   "keywords": [
+    "qps",
+    "/s",
+    "tb",
+    "gb",
+    "200:1",
+    "peak"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Catalogue storage and serving: key by product id, cache-aside, CDN for images and pages",
+   "keywords": [
+    "cdn",
+    "cache",
+    "product id",
+    "object storage"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Search uses a dedicated index (inverted index, facets) kept in sync from the catalogue by a change feed",
+   "keywords": [
+    "elasticsearch",
+    "opensearch",
+    "inverted",
+    "facet",
+    "change feed",
+    "cdc"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Accepts stale price and stock in search and browse but re-validates at checkout",
+   "keywords": [
+    "stale",
+    "re-validate",
+    "revalidate",
+    "advisory",
+    "source of truth"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Models checkout as a saga with compensations (reserve, pay, confirm; release and void on failure)",
+   "keywords": [
+    "saga",
+    "compensat",
+    "rollback",
+    "release"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Makes checkout idempotent with a client key and persists the order before side effects (outbox)",
+   "keywords": [
+    "idempoten",
+    "outbox",
+    "retry",
+    "key"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Prevents oversell with an inventory reservation that expires",
+   "keywords": [
+    "reserv",
+    "oversell",
+    "expire",
+    "ttl"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses an external payment provider with authorize/capture, and reconciles unknown outcomes",
+   "keywords": [
+    "psp",
+    "authoriz",
+    "capture",
+    "reconcil",
+    "stripe"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Plans for promotion spikes: queue/waiting room, per-user limits, shedding browse before checkout",
+   "keywords": [
+    "flash",
+    "queue",
+    "waiting room",
+    "rate limit",
+    "shed",
+    "spike"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Publishes order events for fulfilment and notifications instead of calling them synchronously",
+   "keywords": [
+    "event",
+    "kafka",
+    "queue",
+    "async",
+    "fulfil"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "idempotency",
+  "reservation",
+  "change-feed",
+  "cache-invalidation",
+  "queue-first-vs-db-first",
+  "load-shedding",
+  "rate-limiter",
+  "eventual-consistency"
+ ]
+}
