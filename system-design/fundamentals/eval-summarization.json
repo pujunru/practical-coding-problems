@@ -1,77 +1,68 @@
 {
-  "id": "eval-summarization",
-  "title": "Summarization",
-  "summary": "**Product:** compress an article, meeting, ticket or set of documents into a short text that is faithful, complete where it matters, and fit for its reader. Unlike extraction there is **no single correct string**, so scoring mixes reference-based checks, rubrics and judges.\n\n**What to measure**\n- **Faithfulness** (P0): is every claim supported by the source? Decompose the summary into atomic claims and check each by entailment (judge or NLI model).\n- **Key-point recall**: share of expert-listed key decisions and conclusions that appear.\n- **Attribution and temporal accuracy**: who said or owns what, what is done vs planned.\n- **Conciseness and structure**: compression ratio, redundancy, required format (action items).\n- **Privacy**: no sensitive data leaked into the summary.\n\n**Failure modes:** hallucinated detail, swapped owners, flipped negation (\"not approved\" becoming \"approved\"), omitted decisions, over-weighting the beginning of long inputs, repeating the same point.\n\n**Choosing metrics:** ROUGE and BLEU only count overlapping words, so they reward a summary that flips the meaning and punish a good paraphrase; use them as cheap regression signals. Gate on faithfulness, key-point recall and privacy individually, and report by input length and document type, not just the average. Pairwise preference judges help choose between candidates; randomize order to counter position bias. Compare [RAG QA](#/sd/f/eval-rag-qa).",
-  "drills": [
-    {
-      "type": "number",
-      "q": "A summary is split into 12 atomic claims. A claim-level entailment judge finds 10 supported by the source, 1 contradicted, and 1 not mentioned at all. What is the faithfulness score (supported claims / total claims), as a decimal to two places?",
-      "answer": 0.83,
-      "unit": "",
-      "tolerance": 0.01,
-      "explain": "10 / 12 = 0.833. Both the contradicted and the unsupported claim count as hallucinations. A single holistic 'is this faithful?' rating tends to miss one bad claim among eleven good ones."
-    },
-    {
-      "type": "number",
-      "q": "Experts list 8 key points for a meeting. The summary covers 5 of them. A 4,000-token transcript became a 200-token summary. What is the key-point recall, as a decimal?",
-      "answer": 0.625,
-      "unit": "",
-      "tolerance": 0,
-      "explain": "5 / 8 = 0.625. Compression is 200/4,000 = 5% (20x); a high compression ratio is only good if recall of the key points stays high, so report the two together."
-    },
-    {
-      "type": "choice",
-      "q": "The source says \"The board did not approve the budget.\" The summary says \"The board approved the budget.\" Why is ROUGE a poor primary metric here?",
-      "options": [
-        "ROUGE penalises short summaries too much",
-        "ROUGE needs a neural model",
-        "The two sentences overlap almost completely in words, so ROUGE stays high although the meaning is reversed",
-        "ROUGE cannot be computed on meeting notes"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "Lexical overlap ignores negation and polarity. A claim-level entailment check catches the contradiction; use ROUGE only as a cheap regression signal."
-    },
-    {
-      "type": "choice",
-      "q": "The transcript shows Alice agreed to migrate the database by Friday. The summary says \"Bob will migrate the database by Friday.\" All words exist in the source. Which check is designed to catch this?",
-      "options": [
-        "An attribution / owner check at claim level (who does what by when) with action items verified against the source",
-        "Conciseness score",
-        "Audience-fit judge",
-        "Compression ratio"
-      ],
-      "answer": [
-        0
-      ],
-      "explain": "The error is a wrong association, not an invented word. Treat owner, deadline and status as explicit fields in the key-point checklist."
-    },
-    {
-      "type": "choice",
-      "q": "Overall faithfulness averages 0.96, but a customer says summaries of long (50-page) documents miss the conclusion. What is the right evaluation fix?",
-      "options": [
-        "Trust the 0.96 average",
-        "Switch from judges to ROUGE",
-        "Shorten every summary",
-        "Slice results by input length and document type, and add long-document key-point recall with the key points placed late in the input"
-      ],
-      "answer": [
-        3
-      ],
-      "explain": "Averages hide slice failures, and long inputs expose positional bias. Build slices where the important content sits at the end or in the middle."
-    },
-    {
-      "type": "order",
-      "q": "Put claim-level faithfulness evaluation in order.",
-      "items": [
-        "Split the summary into atomic claims",
-        "For each claim, give the judge the claim and the relevant source text",
-        "Classify each claim as supported, contradicted or not mentioned",
-        "Compute the supported share and list failing claims",
-        "Human-audit a sample of the judge's verdicts"
-      ],
-      "explain": "Splitting first makes each verdict small and checkable. The human audit measures how far the judge itself can be trusted."
-    }
-  ]
+ "id": "eval-summarization",
+ "title": "Summarization",
+ "explain": "For a model that compresses an article, meeting or ticket into a short, faithful, useful text, there is no single correct string, so scoring mixes reference checks, rubrics and judges. The key checks are faithfulness (every claim supported by the source), key-point recall, attribution and temporal accuracy, and privacy, each with its own gate. ROUGE is only a cheap regression signal. (忠实度第一, 覆盖度第二.)",
+ "model": "| Dimension | How | Gate |\n|---|---|---|\n| Faithfulness | judge: claim-level entailment against source | no key hallucination (P0) |\n| Key-point recall | reference: expert checklist | no missed decisions (P0) |\n| Attribution | claim-level: who owns / said what | no swapped owners (P0) |\n| Temporal accuracy | claim-level | done vs planned not confused (P0) |\n| Privacy | rules + judge | zero severe leaks (P0) |\n| Salience | pairwise or checklist | core beats trivia |\n| Conciseness, structure | ratio, format checks | target compression, hard formats |\n| Audience fit | judge | meets level (P2) |\n\n**Judges:** claim-level entailment (split into atomic claims, label supported / contradicted / not mentioned), key-point checklist, pairwise preference (randomize order), humans to audit the judge.\n\n**Slices:** short to very long and multi-document; meetings, design docs, tickets, research; duplicated or conflicting facts; action items explicit, implicit, absent; PII or confidential content.\n\n**Gate:** faithfulness, key-point coverage and privacy each separately, reported by length and type. Compare [RAG QA](#/sd/f/eval-rag-qa).",
+ "details": [
+  {
+   "q": "How do you measure faithfulness?",
+   "a": "Split the summary into atomic claims, give a judge (or NLI model) each claim with the source, and classify it supported, contradicted or not mentioned. 10 supported of 12 claims is 0.83; both the contradicted and the unsupported claim are hallucinations. A single holistic rating misses one bad claim in twelve."
+  },
+  {
+   "q": "What is key-point recall and how is it paired with compression?",
+   "a": "The share of expert-listed key decisions the summary contains: 5 of 8 is 0.625. Report it with compression: a 4,000-token transcript summarized in 200 tokens is 5% (20x), which is only good if recall of the key points holds."
+  },
+  {
+   "q": "Why is ROUGE a poor primary metric?",
+   "a": "It counts word overlap. 'The board did not approve the budget' versus 'The board approved the budget' overlap almost completely though the meaning flipped, and good paraphrases score low. Use it as a cheap regression signal; gate on entailment and key points."
+  },
+  {
+   "q": "What failure does an attribution check catch?",
+   "a": "Wrong associations with all words present: the source says Alice will migrate the database by Friday; the summary says Bob will. Treat owner, deadline and status as explicit checklist fields at the claim level."
+  },
+  {
+   "q": "Average faithfulness is 0.96 but customers say long documents lose the conclusion. What is the evaluation fix?",
+   "a": "Slice by input length and document type, and add long-document key-point recall where the key points sit late or in the middle of the input. Averages hide slice failures and long inputs expose positional bias."
+  },
+  {
+   "q": "How do you use pairwise preference judges safely?",
+   "a": "They are good for choosing between candidate summaries on overall faithfulness, coverage and brevity. Randomize the order to counter position bias, control for length bias, and compare the judge against human labels before relying on it."
+  },
+  {
+   "q": "How would you handle sensitive data in summaries?",
+   "a": "Add a privacy dimension: rules and detectors for PII and confidential markers in the output, plus slices of inputs that contain such content. Treat any severe leak as a separate zero-tolerance gate, not part of an average."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Walk through how you would evaluate a meeting-notes summarizer.",
+   "points": [
+    "Claim-level faithfulness against the transcript",
+    "Key-point and action-item recall from an expert checklist",
+    "Attribution and temporal accuracy",
+    "Privacy checks",
+    "Format and conciseness"
+   ]
+  },
+  {
+   "q": "Compare ROUGE, entailment judges and pairwise preference.",
+   "points": [
+    "ROUGE counts overlap, misses flipped meaning",
+    "Entailment checks each claim against the source",
+    "Pairwise preference ranks candidates overall",
+    "Randomize order, calibrate on humans",
+    "Use ROUGE only for regression"
+   ]
+  },
+  {
+   "q": "State the release gate and the slices.",
+   "points": [
+    "Faithfulness, key-point coverage, privacy gated separately",
+    "Report by length and document type",
+    "Long inputs with late key points",
+    "Conflicting or duplicated information",
+    "Human audit of a judge-verdict sample"
+   ]
+  }
+ ]
 }

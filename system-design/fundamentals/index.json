@@ -673,12 +673,12 @@
     {
      "id": "top-k-ranking",
      "title": "Top-K Ranking",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "weighted-event-scoring",
      "title": "Weighted Event Scoring",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -689,27 +689,27 @@
     {
      "id": "item-embedding",
      "title": "Item Embedding",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "similarity",
      "title": "Similarity",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "similarity-search",
      "title": "Similarity Search",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "user-context",
      "title": "User Context",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "k-means",
      "title": "K-Means Clustering",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -720,22 +720,22 @@
     {
      "id": "runc",
      "title": "runc",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "gvisor",
      "title": "gVisor",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "wasm",
      "title": "WASM",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "native-sandboxes",
      "title": "Native Sandboxes",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -746,42 +746,42 @@
     {
      "id": "eval-classification-routing",
      "title": "Classification & Routing",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "eval-structured-extraction",
      "title": "Structured Extraction",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "eval-summarization",
      "title": "Summarization",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "eval-rag-qa",
      "title": "RAG Question Answering",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "eval-conversational",
      "title": "Conversational Assistant",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "eval-code-generation",
      "title": "Code Generation",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "eval-tool-agent",
      "title": "Tool-Using Agent",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "eval-safety-policy",
      "title": "Safety & Policy",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   }

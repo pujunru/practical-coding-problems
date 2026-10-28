@@ -1,68 +1,68 @@
 {
-  "id": "weighted-event-scoring",
-  "title": "Weighted Event Scoring",
-  "summary": "Weighted event scoring turns **many events of unequal value** into one score per item or user: a purchase is worth far more than a view. The basic form is\n\n`score = sum over events ( weight(type) x decay(age) )`\n\nwith example weights view = 1, click = 3, add-to-cart = 5, purchase = 10. Raw counts rank by volume; weighted scores rank by value.\n\n**Time decay.** Recent events matter more. With a half-life `H`, an event aged `t` is multiplied by `0.5^(t/H)`. Exponential decay has a handy property: you can keep just `(score, last_update)` and update lazily, `score = score x 0.5^(dt/H) + weight`, the same trick as a lazily refilled [token bucket](#/sd/f/rate-limiter), instead of re-reading every event.\n\n**Guardrails.**\n- **Cap or dampen** repeated events (`min(count, cap)` or `log(1+count)`) so one user clicking 1,000 times cannot dominate.\n- **Deduplicate** by event id because delivery is at least once.\n- Choose weights from outcomes (how strongly each event predicts conversion) and revisit them; they are product decisions, not constants of nature.\n- Scores are only comparable if events are measured on the same scale and window.\n\nThe result feeds [top-k ranking](#/sd/f/top-k-ranking); recent windows can be maintained with [sliding-window aggregation](#/sd/f/sliding-window-aggregation).",
-  "drills": [
-    {
-      "type": "choice",
-      "q": "Weights: view = 1, click = 3, purchase = 10. Item A has 100 views, 10 clicks and 1 purchase. Item B has 20 views, 5 clicks and 12 purchases. Which statement is right?",
-      "options": [
-        "A ranks first on both raw event count and weighted score",
-        "They tie, since the weights cancel out",
-        "A ranks first by weighted score (140 vs 65)",
-        "B ranks first by weighted score (155 vs 140), although A has far more raw events"
-      ],
-      "answer": [
-        3
-      ],
-      "explain": "A = 100 + 30 + 10 = 140. B = 20 + 15 + 120 = 155. Raw counts are 111 versus 37, so volume would rank A first; weighting by value flips the order."
-    },
-    {
-      "type": "number",
-      "q": "An event with weight 10 happened 21 days ago. The score uses exponential decay with a half-life of 7 days, `weight x 0.5^(age/half-life)`. What is its current contribution?",
-      "answer": 1.25,
-      "unit": "points",
-      "tolerance": 0,
-      "explain": "21 days is exactly 3 half-lives: 10 x 0.5^3 = 1.25."
-    },
-    {
-      "type": "number",
-      "q": "Lazy decayed score: an item's score was 8 at time 0. The half-life is 1 hour. At t = 2 hours a new event of weight 5 arrives; the update is `score = score x 0.5^(dt/H) + weight`. What is the new score?",
-      "answer": 7,
-      "unit": "points",
-      "tolerance": 0,
-      "explain": "Two half-lives pass: 8 x 0.25 = 2, plus 5 = 7. This needs only the previous (score, timestamp), not the event history."
-    },
-    {
-      "type": "choice",
-      "q": "One bot account clicks the same product 5,000 times in a minute and the product shoots to the top of the trending list. Which change fixes this class of problem most directly?",
-      "options": [
-        "Increase the weight of purchases",
-        "Cap or dampen per-user, per-item event counts (e.g. log(1+n)) and deduplicate by event id",
-        "Shorten the decay half-life",
-        "Sort ties by item id"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "The weighting is fine; the input is unbounded. Per-user caps and dedup limit the influence of any single actor. A shorter half-life only makes the spike fade sooner."
-    },
-    {
-      "type": "order",
-      "q": "Put the stages of a trending-items pipeline in order.",
-      "items": [
-        "Ingest events and deduplicate by event id",
-        "Apply per-user caps or dampening",
-        "Multiply each event by its type weight",
-        "Apply time decay and add to the item's running score",
-        "Select the top k items by score"
-      ],
-      "explain": "Dedup and capping must come before weighting so a duplicate or spammy event never contributes. Ranking is the last step."
-    },
-    {
-      "type": "recall",
-      "q": "Why use weights instead of raw event counts, and what does exponential decay add?",
-      "answer": "Events differ in value (a purchase signals far more intent than a view), so weights make the score reflect value, not volume. Decay with a half-life makes recent activity count more and, being exponential, can be updated incrementally from `(score, last_update)` without scanning event history. Guardrails: cap per-user repeats, deduplicate, and re-tune the weights against real outcomes."
-    }
-  ]
+ "id": "weighted-event-scoring",
+ "title": "Weighted Event Scoring",
+ "explain": "Weighted event scoring turns many events of unequal value into one score per item or user: a purchase is worth far more than a view, so you multiply each event by a weight and add them up, usually with time decay so recent activity counts more. Raw counts rank by volume; weighted scores rank by value. (含金量: not every event is worth the same.)",
+ "model": "`score = sum over events ( weight(type) x decay(age) )`\n\nExample weights: view = 1, click = 3, add-to-cart = 5, purchase = 10.\n\n**Pipeline:**\n\n```\nevents ──▶ dedupe by event id ──▶ cap per user/item ──▶ x type weight\n       ──▶ x decay(age) ──▶ running score ──▶ top-k\n```\n\n**Exponential decay** with half-life `H`: an event of age `t` counts `0.5^(t/H)`. The nice property is that you need only `(score, last_update)` per item and update lazily:\n\n`score = score x 0.5^(dt/H) + weight`\n\nIt is the same trick as a lazily refilled [token bucket](#/sd/f/rate-limiter): no event history is rescanned.\n\n**Guardrails:** dampen repeats (`min(count, cap)` or `log(1+count)`), deduplicate because delivery is at-least-once, and treat the weights as product decisions to re-tune against outcomes, not constants.\n\nThe result feeds [top-k ranking](#/sd/f/top-k-ranking).",
+ "details": [
+  {
+   "q": "Why weights instead of raw counts?",
+   "a": "Counts rank by volume, weights rank by value. With view = 1, click = 3, purchase = 10, item A (100 views, 10 clicks, 1 purchase) scores 140 and item B (20 views, 5 clicks, 12 purchases) scores 155. A has far more raw events but B is clearly the better-converting item."
+  },
+  {
+   "q": "How do you choose the weights?",
+   "a": "From outcomes: how strongly each event predicts the thing you care about (conversion, retention). Start from ratios that match the funnel, then fit or A/B-test them. They are product decisions that drift as behaviour changes, so revisit them."
+  },
+  {
+   "q": "How does time decay work and how do you pick the half-life?",
+   "a": "An event of age `t` is multiplied by `0.5^(t/H)`. With `H` = 7 days, a weight-10 event from 21 days ago (three half-lives) contributes 1.25. Pick `H` from how fast the thing you rank goes stale: hours for trending, weeks for long-term interest."
+  },
+  {
+   "q": "Do you have to store every event to compute a decayed score?",
+   "a": "No. Keep `(score, last_update)` and on each new event do `score = score x 0.5^(dt/H) + weight`. For example a score of 8 with `H` = 1 hour, hit by a weight-5 event two hours later, becomes `8 x 0.25 + 5 = 7`. Reads apply the same decay without writing."
+  },
+  {
+   "q": "A bot clicks one product 5,000 times in a minute and it tops the trending list. What fixes this class of problem?",
+   "a": "The weights are fine; the input is unbounded. Cap or dampen per-user, per-item repeats (`log(1+n)` or a hard cap) and deduplicate by event id. A shorter half-life only makes the spike fade sooner."
+  },
+  {
+   "q": "In what order do the stages go, and why?",
+   "a": "Dedupe, cap, weight, decay, then rank. Dedupe and caps must come first so a duplicate or spammy event never contributes to the score; ranking is last because it only reads finished scores."
+  },
+  {
+   "q": "When are two scores comparable?",
+   "a": "Only when events are measured on the same scale and window: the same weights, the same decay, the same event sources. A new event type or a changed half-life shifts every score, so version the scoring function and recompute or migrate rather than mixing."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain weighted event scoring and why it beats counting events.",
+   "points": [
+    "Events have unequal value, so score = sum of weight x decay",
+    "Counts rank by volume, weights rank by value",
+    "Example weights view 1, click 3, purchase 10",
+    "Decay makes recent events matter more",
+    "Weights are product decisions tuned against outcomes"
+   ]
+  },
+  {
+   "q": "Show how to maintain a decayed score without keeping event history.",
+   "points": [
+    "Half-life H, multiplier 0.5^(dt/H)",
+    "Store only (score, last_update)",
+    "On event: score = score x 0.5^(dt/H) + weight",
+    "Apply the same decay when reading",
+    "Same idea as a lazily refilled token bucket"
+   ]
+  },
+  {
+   "q": "Make a trending-items score robust to bots and duplicates.",
+   "points": [
+    "Dedupe by event id because delivery is at-least-once",
+    "Cap or dampen per-user repeats (log(1+n))",
+    "Weight after capping, then decay, then rank",
+    "Monitor outliers and re-tune weights",
+    "Keep scores on the same scale and window"
+   ]
+  }
+ ]
 }

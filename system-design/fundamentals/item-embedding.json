@@ -1,62 +1,64 @@
 {
-  "id": "item-embedding",
-  "title": "Item Embedding",
-  "summary": "An item embedding **encodes each item (document, product, image, user) as a vector** so that a computer can compare items by geometry.\n\nTwo families:\n- **Dense** vectors (typically 64-1,536 floats, every dimension non-zero) come from a trained model. Dimensions have no individual meaning, but items with similar meaning end up close together, so \"cheap car\" lands near \"affordable automobile\".\n- **Sparse** vectors (one-hot, bag-of-words, TF-IDF, BM25 weights) have one dimension per vocabulary term and are mostly zeros. They are exact, interpretable and great for rare tokens such as SKUs and error codes, but blind to synonyms.\n\nProduction rules:\n- **One space.** Items and queries must be embedded by the *same model and version*. Mixing v1 and v2 vectors is meaningless; a model upgrade means re-embedding the whole corpus (dual-write the new index, then switch).\n- **Memory** is `items x dims x bytes`: 10M x 768 x 4 B (float32) is about 30.7 GB. Quantizing to int8 or product quantization cuts it 4x to 30x+ at some recall cost.\n- **Embed offline** for items, online only for the query.\n- **Hybrid** retrieval (dense + sparse) often beats either alone.\n\nOnce you have vectors you need a [similarity](#/sd/f/similarity) measure and a [similarity search](#/sd/f/similarity-search) index; user attributes used for exact rules belong in [user context](#/sd/f/user-context) instead.",
-  "drills": [
-    {
-      "type": "number",
-      "q": "A catalogue has 10,000,000 items with 768-dimensional float32 embeddings (4 bytes per number). Ignoring index overhead, how many gigabytes (1 GB = 1e9 bytes) do the raw vectors take?",
-      "answer": 30.72,
-      "unit": "GB",
-      "tolerance": 0.02,
-      "explain": "10,000,000 x 768 x 4 B = 30.72e9 B = 30.72 GB. Storing them as int8 would be one quarter of that, 7.68 GB, before recall effects."
-    },
-    {
-      "type": "choice",
-      "q": "Your search team releases embedding model v2. To save time, new documents are embedded with v2 while old documents keep their v1 vectors, and the query is embedded with v2. What do you expect?",
-      "options": [
-        "Good results, because both models are trained on similar data",
-        "Query-to-old-document scores are meaningless, because the two models define unrelated vector spaces; re-embed the corpus or keep two indexes",
-        "Results only slightly worse because cosine similarity normalizes the difference",
-        "A runtime error because the dimensions differ"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Each model learns its own coordinate system. Even with the same dimensionality, numbers from v1 and v2 are not comparable, and nothing errors, so quality silently drops. Migrate with a parallel index and a cut-over."
-    },
-    {
-      "type": "choice",
-      "q": "Users search a help centre. Which queries favour a dense embedding retriever over a sparse (BM25) one? Select all that apply.",
-      "options": [
-        "\"how do I get my money back\" against an article titled \"Refund policy\"",
-        "\"ERR_CONN_4412\" against an article mentioning exactly that error code",
-        "\"cancel plan\" against an article that says \"terminate your subscription\"",
-        "A query in German against English articles, using a multilingual model"
-      ],
-      "answer": [
-        0,
-        2,
-        3
-      ],
-      "explain": "Dense vectors capture meaning, paraphrase and cross-language similarity. An exact rare token like an error code is where sparse term matching wins, which is why hybrid search is common."
-    },
-    {
-      "type": "order",
-      "q": "Put the stages of an embedding-based retrieval system in order.",
-      "items": [
-        "Choose an embedding model and fix its version",
-        "Embed every item offline and store the vectors in an index",
-        "Embed the user's query with the same model at request time",
-        "Search the index for the nearest vectors",
-        "Return (and optionally re-rank) the matching items"
-      ],
-      "explain": "The index is only valid for the model that built it. Query-time work is one embedding call plus one search."
-    },
-    {
-      "type": "recall",
-      "q": "Compare a dense and a sparse item representation, and say one operational risk of dense embeddings.",
-      "answer": "Dense: short learned vector, all dimensions non-zero, captures meaning (synonyms, languages), not interpretable. Sparse: one dimension per term, mostly zeros, interpretable and exact for rare tokens, no synonym handling. Operational risk: vectors from different model versions are incompatible, so a model upgrade needs a full re-embed and a parallel index; memory also scales as items x dims x bytes."
-    }
-  ]
+ "id": "item-embedding",
+ "title": "Item Embedding",
+ "explain": "An item embedding encodes each item (document, product, image, user) as a vector so a computer can compare items by geometry instead of by exact words. Items with similar meaning land close together, so 'cheap car' sits near 'affordable automobile'. It is what makes semantic search and recommendations work. (把每个 item 编码成一个向量.)",
+ "model": "Two families of vector:\n\n| | Dense | Sparse |\n|---|---|---|\n| Shape | 64-1,536 floats, all non-zero | one dimension per term, mostly zeros |\n| Examples | learned text/image/user embeddings | one-hot, bag-of-words, TF-IDF, BM25 |\n| Strength | meaning, paraphrase, cross-language | exact, interpretable, rare tokens (SKUs, error codes) |\n| Weakness | opaque dimensions, model-bound | blind to synonyms |\n\n```\noffline:  item ──▶ embedding model (vN) ──▶ vector ──▶ index\nonline :  query ──▶ same model (vN) ──▶ vector ──▶ nearest vectors\n```\n\n**Rules that bite**\n- **One space:** items and queries must use the same model *and version*; a model upgrade means re-embedding the corpus behind a parallel index.\n- **Memory** = `items x dims x bytes`.\n- Embed items offline, only the query online.\n- **Hybrid** (dense + sparse) often beats either alone.\n\nNext: a [similarity](#/sd/f/similarity) measure and a [similarity search](#/sd/f/similarity-search) index. Exact attributes belong in [user context](#/sd/f/user-context).",
+ "details": [
+  {
+   "q": "Dense or sparse: how do you decide?",
+   "a": "Dense for meaning: paraphrases ('get my money back' vs 'Refund policy'), synonyms, other languages. Sparse for exact rare tokens such as 'ERR_CONN_4412' or a SKU, where term matching is precise and explainable. Because each fails where the other wins, production search is often hybrid, merging both result lists."
+  },
+  {
+   "q": "How much memory do the vectors take?",
+   "a": "`items x dims x bytes`. 10M items x 768 dims x 4 bytes (float32) is about 30.72 GB before index overhead. int8 quantization cuts that 4x to about 7.7 GB, and product quantization 30x or more, each at some recall cost."
+  },
+  {
+   "q": "What happens if new documents use embedding model v2 while old ones keep v1 vectors?",
+   "a": "Scores between a v2 query and v1 documents are meaningless: each model learns its own coordinate system, even at the same dimensionality. Nothing errors, so quality silently drops. Build a parallel index with the new model, backfill, then cut over; keep both versions running during the migration."
+  },
+  {
+   "q": "What do the individual dimensions of a dense vector mean?",
+   "a": "Nothing on their own. Only distances and angles between whole vectors carry meaning. That is why you cannot debug a dense retriever by reading dimensions and why sparse signals are still useful for explanation."
+  },
+  {
+   "q": "Where do embeddings get computed, and what does that imply for latency?",
+   "a": "Items offline in a batch or stream pipeline, kept in sync on updates; only the query is embedded at request time. Query-time cost is one model call plus one index search, so cache embeddings of frequent queries and keep the query encoder small."
+  },
+  {
+   "q": "When should you not use an embedding?",
+   "a": "For exact, auditable decisions: entitlements, compliance, 'block these countries'. A nearest neighbour says 'probably similar', a rule says 'true or false'. Use [user context](#/sd/f/user-context) rules there."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain what an item embedding is and why it is useful.",
+   "points": [
+    "Encodes an item as a vector so similarity becomes geometry",
+    "Similar meaning means nearby vectors, synonyms land together",
+    "Dense learned vectors vs sparse term vectors",
+    "Feeds search, recommendation and clustering",
+    "Not for exact yes/no rules"
+   ]
+  },
+  {
+   "q": "Compare dense and sparse representations and say when you would use hybrid.",
+   "points": [
+    "Dense: meaning, paraphrase, multilingual, opaque",
+    "Sparse: exact, interpretable, rare tokens, no synonyms",
+    "Query mix with both fuzzy and exact needs",
+    "Merge or fuse the two result lists",
+    "Cost and complexity of running both"
+   ]
+  },
+  {
+   "q": "You must upgrade the embedding model for a 10M-item catalogue. Walk through it.",
+   "points": [
+    "Vectors from different models are incompatible",
+    "Build a parallel index by re-embedding the corpus offline",
+    "Embed queries with the matching version, then cut over",
+    "Memory estimate items x dims x bytes, quantization option",
+    "Rollback path and recall comparison before the switch"
+   ]
+  }
+ ]
 }

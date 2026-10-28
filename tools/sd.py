@@ -76,6 +76,7 @@ def check():
     errors = []
     cats = load(F / "categories.json")["categories"]
     planned = {c["id"] for cat in cats for c in cat["concepts"]}
+    titles = {c["id"]: c["title"] for cat in cats for c in cat["concepts"]}
     for path in sorted(F.glob("*.json")):
         if path.name in ("categories.json", "index.json"):
             continue
@@ -87,6 +88,8 @@ def check():
         if c.get("id") != cid:
             errors.append(f"{cid}: id field must match the file name")
         check_concept(cid, c, errors)
+        if c.get("title") != titles.get(cid):
+            errors.append(f"{cid}: title must match categories.json ({titles.get(cid)!r})")
 
     qplanned = {q["id"]: q for cat in load(Q / "categories.json")["categories"] for q in cat["questions"]}
     for q in qplanned.values():

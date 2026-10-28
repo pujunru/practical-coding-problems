@@ -1,83 +1,68 @@
 {
-  "id": "gvisor",
-  "title": "gVisor",
-  "summary": "**gVisor** (`runsc`) is a container runtime that puts a **user-space kernel** between the app and the host. The **Sentry**, written in memory-safe Go, implements the Linux syscall interface itself; a **Gofer** process handles file access. The sandboxed app never issues its syscalls to the host kernel directly: they are intercepted (via ptrace, KVM or `systrap` platforms) and answered by the Sentry.\n\n**Why it helps:** a bug in a Linux feature the app might poke (netfilter, io_uring, ...) is simply unreachable, because the Sentry does not forward those calls. Memory-safe Go also removes the classic buffer-overflow route into the \"kernel\".\n\n**What it does not do:** the Sentry itself still makes a *small, seccomp-filtered set of real syscalls* to the host. So the host kernel is not eliminated; the vulnerability surface shrinks from the full syscall API to that narrow list. To get host root an attacker must first break the Sentry, then find a second bug in those few host syscalls.\n\n**Cost:** compute-bound code runs near native; syscall-heavy and file/network-heavy workloads are noticeably slower; some rarely used syscalls and `/proc` details are unsupported.\n\n**Pick it** for untrusted *unmodified Linux binaries* (customer code, notebooks, CI) in Kubernetes via a `RuntimeClass`, when a microVM is too heavy. Compare with [runc](#/sd/f/runc) (fast, shared kernel) and [WASM](#/sd/f/wasm) (needs recompiling).",
-  "drills": [
-    {
-      "type": "choice",
-      "q": "In gVisor, which component answers the sandboxed application's syscalls?",
-      "options": [
-        "The host Linux kernel, but with a seccomp filter",
-        "The container image's init process",
-        "The hypervisor",
-        "The Sentry, a Go reimplementation of the Linux kernel interface running in user space"
-      ],
-      "answer": [
-        3
-      ],
-      "explain": "The Sentry is the application's kernel. The Gofer mediates file access, and only the Sentry's own limited set of host syscalls reaches the real kernel."
-    },
-    {
-      "type": "choice",
-      "q": "A new Linux kernel zero-day affects an obscure syscall option that gVisor does not implement. How does an attacker's code inside a gVisor sandbox fare compared with inside a runc container?",
-      "options": [
-        "Identically, since both share the same kernel",
-        "In gVisor the call goes to the Sentry, which does not forward it to the host, so that path is unreachable unless the Sentry's own host syscalls expose it; in runc the call reaches the vulnerable kernel code",
-        "gVisor is always vulnerable because it runs as root",
-        "gVisor cannot run the application at all"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "The point of reimplementing the syscall layer is to stop untrusted code reaching the big, complex host interface. It is not zero risk: the Sentry's small host interface remains."
-    },
-    {
-      "type": "choice",
-      "q": "Which workload pays the largest relative penalty under gVisor?",
-      "options": [
-        "A tight CPU loop doing matrix multiplication",
-        "An idle web server",
-        "A build that creates and reads tens of thousands of small files",
-        "A job that sleeps"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "Each syscall now takes a trip through the Sentry (and possibly the Gofer), so syscall-heavy and file-heavy work slows down. Pure compute makes few syscalls and runs near native."
-    },
-    {
-      "type": "number",
-      "q": "Assume (for sizing) each syscall costs 2 microseconds more under gVisor than under runc. A service makes 100,000 syscalls per second. What fraction of one CPU core's time per second does this extra cost represent, in percent?",
-      "answer": 20,
-      "unit": "%",
-      "tolerance": 0,
-      "explain": "100,000 x 2 µs = 0.2 s of extra work per second = 20% of a core. The 2 µs is an assumed figure for illustration; the real cost depends on the platform and syscall type."
-    },
-    {
-      "type": "choice",
-      "q": "A security reviewer says: \"gVisor doesn't use the host kernel at all, so a kernel bug can never help an attacker.\" What is the correct correction?",
-      "options": [
-        "The Sentry still makes a narrow set of real host syscalls, so the host kernel remains part of the attack surface, just a much smaller one reachable only after compromising the Sentry",
-        "That is correct as stated",
-        "gVisor uses the entire host syscall table",
-        "gVisor depends on the hypervisor instead of the kernel"
-      ],
-      "answer": [
-        0
-      ],
-      "explain": "gVisor shifts and shrinks the exposure rather than removing it. Defence in depth: the Sentry runs unprivileged with a seccomp filter on its own host calls."
-    },
-    {
-      "type": "order",
-      "q": "Put an attacker's path to host root from code inside a gVisor sandbox in order.",
-      "items": [
-        "Run code in the sandbox",
-        "Find and exploit a bug in the Sentry",
-        "Gain execution in the Sentry's unprivileged user-space process",
-        "Find a second bug in the few host syscalls the Sentry may call",
-        "Reach host kernel privilege"
-      ],
-      "explain": "Two independent exploits are required, unlike a plain container where one kernel bug may be enough. This is the 'shifted and isolated' risk."
-    }
-  ]
+ "id": "gvisor",
+ "title": "gVisor",
+ "explain": "gVisor (`runsc`) is a container runtime that puts a user-space kernel between the app and the host. A Go program called the Sentry implements the Linux syscall interface itself, so the sandboxed app never talks to the host kernel directly. The vulnerability is not gone but shifted and isolated: an attacker must first break the Sentry, then find a second bug in the few host syscalls it makes. (不信任内核: 自己用 Go 实现 syscall.)",
+ "model": "```\nsandboxed app\n    │ syscall (intercepted: systrap / KVM / ptrace platforms)\n    ▼\nSentry  — user-space \"kernel\" in memory-safe Go\n    │ file access            │ small, seccomp-filtered set of\n    ▼                        ▼ real host syscalls\nGofer                   host Linux kernel\n```\n\n**Why it helps**\n1. **Do not trust the kernel:** a zero-day in a Linux feature the Sentry does not implement (a netfilter or `io_uring` path) is unreachable, because the call is never forwarded.\n2. **Memory safety:** the \"kernel\" is Go, so the classic buffer-overflow route into kernel code is closed.\n\n**What it does not do:** the Sentry still makes real host syscalls, so the host kernel stays in the attack surface, only narrowed from the whole syscall API to a short seccomp-filtered list. The Sentry runs unprivileged.\n\n**Cost:** compute-bound code runs near native; syscall-, file- and network-heavy work is slower; some rare syscalls and `/proc` details are unsupported.\n\n**Pick it** for untrusted, unmodified Linux binaries in Kubernetes via a `RuntimeClass`, when a microVM is too heavy. Compare [runc](#/sd/f/runc) and [WASM](#/sd/f/wasm).",
+ "details": [
+  {
+   "q": "What exactly answers the sandboxed app's syscalls?",
+   "a": "The Sentry, a Go reimplementation of the Linux syscall interface running in user space. A Gofer process mediates file access. Only the Sentry's own small set of host syscalls ever reaches the real kernel."
+  },
+  {
+   "q": "A Linux kernel zero-day hits an obscure syscall option. How does gVisor fare against runc?",
+   "a": "In runc the call reaches the vulnerable kernel code. In gVisor it lands in the Sentry, which does not implement or forward that path, so it is unreachable unless the Sentry's own host calls expose it. The point is stopping untrusted code from reaching the big, complex host interface."
+  },
+  {
+   "q": "A reviewer says 'gVisor does not use the host kernel at all, so a kernel bug can never help an attacker'. Correct that.",
+   "a": "The Sentry still makes a narrow, seccomp-filtered set of real syscalls (and runs as an unprivileged process), so the host kernel remains part of the attack surface, just a much smaller one. gVisor shifts and shrinks the exposure; it does not remove it."
+  },
+  {
+   "q": "What is the attacker's path to host root from inside a gVisor sandbox?",
+   "a": "Run code in the sandbox, exploit a bug in the Sentry (or its Go runtime) to get execution in its unprivileged user-space process, then find a second, independent bug in the few host syscalls the Sentry may call. Two exploits instead of one, which is the defence in depth."
+  },
+  {
+   "q": "Which workloads pay the largest penalty?",
+   "a": "Syscall- and file-heavy work, such as a build creating and reading tens of thousands of small files, because each syscall takes a trip through the Sentry (and maybe the Gofer). Pure compute makes few syscalls and runs near native. With an assumed 2 microseconds extra per syscall, 100,000 syscalls per second costs 0.2 s, 20% of a core."
+  },
+  {
+   "q": "How do you deploy it?",
+   "a": "As another OCI runtime in Kubernetes: install `runsc` on the nodes, define a `RuntimeClass` for it, and set `runtimeClassName` on pods that run untrusted code. Images and orchestration stay unchanged, which is its main advantage over WASM."
+  },
+  {
+   "q": "When pick gVisor over a microVM?",
+   "a": "When you want stronger isolation than runc for arbitrary Linux binaries but need container-like density and start-up, and can tolerate syscall overhead and a few unsupported calls. If you need a separate guest kernel and hardware-enforced isolation, or full syscall compatibility, choose a microVM."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain how gVisor isolates an untrusted container and what it does not remove.",
+   "points": [
+    "Sentry is a Go user-space kernel answering the app's syscalls",
+    "Gofer handles file access",
+    "Does not trust the host kernel; memory-safe Go",
+    "Sentry still makes a few seccomp-filtered host syscalls",
+    "Risk shifted and shrunk, not eliminated"
+   ]
+  },
+  {
+   "q": "Compare gVisor with runc for a multi-tenant code-execution service.",
+   "points": [
+    "runc shares the kernel through the full syscall API",
+    "gVisor intercepts and reimplements syscalls",
+    "Two exploits needed for host root versus one",
+    "Cost: syscall and file-heavy slowdown, compatibility gaps",
+    "Kubernetes RuntimeClass deployment"
+   ]
+  },
+  {
+   "q": "Decide among runc, gVisor, WASM and a microVM for a notebook service running arbitrary Python with native packages.",
+   "points": [
+    "Native packages rule out WASM for now",
+    "runc alone is too weak for hostile tenants",
+    "gVisor fits unmodified Linux binaries at container density",
+    "microVM if hardware-level isolation is mandated",
+    "Add network egress limits and resource caps"
+   ]
+  }
+ ]
 }

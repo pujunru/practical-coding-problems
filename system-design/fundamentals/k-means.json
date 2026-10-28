@@ -1,71 +1,68 @@
 {
-  "id": "k-means",
-  "title": "K-Means Clustering",
-  "summary": "K-means splits points into **K clusters** by repeating two steps with `K` centroids (think of K magnets pulling points toward their centre of gravity):\n\n1. **Assign** every point to its nearest centroid (Euclidean).\n2. **Update** every centroid to the mean of its points.\n\nRepeat until the assignments stop changing (or a max iteration count). If an assignment pass changes nothing, the means are the same, so the algorithm is at a fixed point. The result is *hard* clustering: each point belongs to one cluster.\n\nIt minimises **inertia** (within-cluster sum of squares) `J = sum |x - mu_k|^2`. Neither step can increase `J`, so it converges, but only to a **local** optimum. Hence: seed with `k-means++` and run several restarts; re-seed an empty cluster.\n\n**Choosing K:** inertia always falls as K grows (K = n gives 0), so look for the **elbow**, or use the **silhouette** `s = (b - a) / max(a, b)` (a = mean distance to own cluster, b = to the nearest other cluster), and finally ask what K the product needs.\n\n**Assumptions:** numeric features on comparable scales (standardize), roughly round clusters of similar size and density. It struggles with outliers, rings, and elongated shapes (consider DBSCAN or Gaussian mixtures). Cost is `O(n K d t)`.\n\nIn systems, k-means builds the cells of [IVF indexes](#/sd/f/similarity-search) and groups [embeddings](#/sd/f/item-embedding).",
-  "drills": [
-    {
-      "type": "number",
-      "q": "1-D points: 1, 2, 3, 10, 11, 12. Initial centroids c1 = 1 and c2 = 2. After the first assignment (each point to the nearest centroid; ties are none here) and update step, what is the new c2?",
-      "answer": 7.6,
-      "unit": "",
-      "tolerance": 0,
-      "explain": "Assignment: 1 -> c1; 2, 3, 10, 11, 12 -> c2 (3 is 1 from c2 and 2 from c1). New c2 = (2+3+10+11+12)/5 = 38/5 = 7.6, new c1 = 1."
-    },
-    {
-      "type": "number",
-      "q": "Continue the previous example for one more iteration with centroids c1 = 1 and c2 = 7.6 until it converges. What is the final inertia (sum of squared distances to the final centroids)?",
-      "answer": 4,
-      "unit": "",
-      "tolerance": 0,
-      "explain": "Second assignment: 1, 2, 3 -> c1 (mean 2); 10, 11, 12 -> c2 (mean 11). The next pass changes nothing. Inertia = (1+0+1) + (1+0+1) = 4."
-    },
-    {
-      "type": "choice",
-      "q": "Inertia for K = 1..6 on a customer dataset is 1000, 400, 200, 180, 170, 165. A colleague proposes K = 6 because it has the lowest inertia. What is the better reasoning?",
-      "options": [
-        "K = 6 is right: lower inertia always means a better model",
-        "K = 1 is right because it is the simplest",
-        "K = 3 is the elbow: going from 3 to 4 only gains 20 while 2 to 3 gained 200; confirm with silhouette and the business need",
-        "Inertia cannot be compared across K, so pick K at random"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "Inertia decreases monotonically with K and reaches 0 at K = n, so the minimum is meaningless. The elbow marks where extra clusters stop paying off; check with silhouette and what the segments are used for."
-    },
-    {
-      "type": "choice",
-      "q": "You cluster customers on two features: annual income (0 to 200,000 dollars) and age (18 to 80). The clusters turn out to be basically income bands. Why, and what is the fix?",
-      "options": [
-        "Euclidean distance is dominated by the larger-scale feature; standardize features before clustering",
-        "K-means ignores features with larger values; use cosine",
-        "K is too small; double it",
-        "Age is categorical so k-means cannot use it"
-      ],
-      "answer": [
-        0
-      ],
-      "explain": "A difference of 10,000 in income swamps a difference of 30 in age. Standardizing (z-scores) puts the features on comparable scale. Raising K does not change the dominance."
-    },
-    {
-      "type": "order",
-      "q": "Put one k-means run in order.",
-      "items": [
-        "Choose K and seed the centroids (k-means++)",
-        "Assign every point to its nearest centroid",
-        "Recompute each centroid as the mean of its points",
-        "Re-seed any empty cluster",
-        "Stop when assignments no longer change or a max iteration is reached"
-      ],
-      "explain": "Assignment and update alternate until a fixed point. Empty clusters need a fresh centroid, otherwise a centroid has no mean to move to."
-    },
-    {
-      "type": "number",
-      "q": "A point has mean distance a = 2 to the other points in its own cluster and mean distance b = 6 to the points of the nearest other cluster. What is its silhouette value, to two decimals?",
-      "answer": 0.67,
-      "unit": "",
-      "tolerance": 0.01,
-      "explain": "s = (b - a) / max(a, b) = (6 - 2) / 6 = 0.667. Near 1 means well matched to its own cluster; near 0 means on the border; negative means probably in the wrong cluster."
-    }
-  ]
+ "id": "k-means",
+ "title": "K-Means Clustering",
+ "explain": "K-means splits points into K clusters by repeating two steps with K centroids: assign every point to its nearest centroid, then move each centroid to the mean of its points. Think of K magnets pulling points toward their centre of gravity. It stops when assignments no longer change, and it gives hard clusters. It is simple and fast but needs K up front and prefers round, similar-sized clusters. (K 个磁铁反复吸引样本, 并移动到各自重心.)",
+ "model": "It minimises **inertia**, the within-cluster sum of squares:\n`J = sum_k sum_{x in C_k} |x - mu_k|^2`\n\n```\nseed K centroids (k-means++)\nrepeat:\n    assign: each point -> nearest centroid\n    update: each centroid -> mean of its points\n    re-seed any empty cluster\nuntil assignments stop changing (or max iterations)\n```\n\nNeither step can increase `J`, so it converges, but only to a **local** optimum. If an assignment pass changes nothing, the cluster memberships and therefore the means are the same: a fixed point.\n\n**Choosing K:** inertia always falls as K grows (K = n gives 0), so look for the **elbow**, or the **silhouette** `s = (b - a) / max(a, b)` (a = mean distance to own cluster, b = to nearest other cluster), then ask what the product needs.\n\n**Assumptions:** numeric features on comparable scales (standardize), roughly round clusters of similar size and density. Cost `O(n K d t)`.\n\nUsed to build the cells of IVF indexes ([similarity search](#/sd/f/similarity-search)) and to group [embeddings](#/sd/f/item-embedding).",
+ "details": [
+  {
+   "q": "Why does k-means converge, and to what?",
+   "a": "The assignment step cannot increase inertia (each point moves to a closer centroid) and the update step cannot increase it either (the mean minimises squared error for fixed members). Inertia is bounded below, so it settles, but at a local optimum that depends on the seeds."
+  },
+  {
+   "q": "How do you handle initialization?",
+   "a": "Use k-means++ (spread the initial centroids apart, choosing far points with higher probability) and run several restarts, keeping the lowest-inertia and stable result. Poor seeds give bad early partitions and high variance between runs. Re-seed any empty cluster with a new centroid."
+  },
+  {
+   "q": "How do you choose K?",
+   "a": "Inertia always decreases with K, so the lowest value is meaningless. Inertia 1000, 400, 200, 180, 170, 165 for K = 1..6 has an elbow at K = 3: going 2 to 3 gains 200, 3 to 4 only 20. Confirm with silhouette and with what the clusters will be used for."
+  },
+  {
+   "q": "What does the silhouette tell you?",
+   "a": "For a point, `s = (b - a) / max(a, b)`. With a = 2 and b = 6, s = 4/6 = 0.67. Near 1 means well matched to its own cluster, near 0 on the border, negative likely in the wrong cluster. Average it over points for a K."
+  },
+  {
+   "q": "Customers clustered on income (0 to 200,000) and age (18 to 80) come out as income bands. Why?",
+   "a": "Euclidean distance is dominated by the larger-scale feature: a 10,000 income difference swamps a 30-year age difference. Standardize features (z-scores) first. Raising K does not fix the dominance."
+  },
+  {
+   "q": "When does k-means fail?",
+   "a": "Non-convex shapes (rings), clusters of very different density or size, and outliers that drag centroids. Consider DBSCAN, hierarchical clustering or a Gaussian mixture model. Features also need a meaningful Euclidean distance, so categorical data needs a different method."
+  },
+  {
+   "q": "Do one hand iteration to show you know the algorithm.",
+   "a": "1-D points 1, 2, 3, 10, 11, 12 with centroids 1 and 2. Assign: 1 goes to c1, the rest go to c2. Update: c1 = 1, c2 = (2+3+10+11+12)/5 = 7.6. Next pass: 1, 2, 3 go to c1 (mean 2), 10, 11, 12 to c2 (mean 11); then nothing changes and inertia is 4."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain k-means in under a minute.",
+   "points": [
+    "K centroids, assign each point to the nearest one",
+    "Update each centroid to the mean of its points, repeat",
+    "Minimises within-cluster squared error (inertia)",
+    "Hard clustering, converges to a local optimum",
+    "Needs K, scaling and good seeds"
+   ]
+  },
+  {
+   "q": "How do you pick K and make the result trustworthy?",
+   "points": [
+    "Inertia always falls with K, so use the elbow",
+    "Silhouette score as a second view",
+    "k-means++ seeding and multiple restarts",
+    "Standardize features",
+    "Tie K to the business purpose"
+   ]
+  },
+  {
+   "q": "Where does k-means appear in a retrieval system, and where does it break?",
+   "points": [
+    "IVF index cells are k-means clusters of vectors",
+    "Query probes the nprobe nearest centroids",
+    "Cluster quality drives recall",
+    "Outliers, uneven density and non-round shapes hurt it",
+    "Cells go stale as data drifts, so retrain"
+   ]
+  }
+ ]
 }

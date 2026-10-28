@@ -1,74 +1,64 @@
 {
-  "id": "wasm",
-  "title": "WASM",
-  "summary": "**WebAssembly** is a portable bytecode that runs inside a **Wasm VM** (Wasmtime, WasmEdge, Wasmer). As a sandbox it works through *capabilities*, not through the kernel:\n\n- The module sees only its own **linear memory** (bounds-checked by the runtime) and can call only **imports** the host links in. There is no ambient authority.\n- **WASI** is that import interface: files (only pre-opened directories), clocks, sockets, environment. To deny networking you simply do not link `wasi:sockets`, so the module has nothing to call.\n- **Kubernetes:** `RuntimeClass` -> containerd -> the **runwasi** shim -> the Wasm runtime loads the `.wasm` -> WASI -> host. The chain is CRI -> shim -> VM -> WASI.\n\n**Isolation boundary:** software fault isolation by the runtime. It is fine-grained and easy to reason about, but the runtime (a process on the host kernel, often with a JIT) is the trusted base; a runtime bug can escape, so run it with seccomp or inside a [container](#/sd/f/runc) when the code is hostile.\n\n**Overhead:** extremely fast starts (microseconds to milliseconds), small footprints, near-native compute (a small slowdown from bounds checks).\n\n**Limits:** code must be compiled to Wasm; native libraries, threads, and many language ecosystems are partial.\n\n**Pick it** for plugins, edge functions, and user scripts you can compile or write for it, at very high density. Choose [gVisor](#/sd/f/gvisor) for arbitrary Linux binaries.",
-  "drills": [
-    {
-      "type": "choice",
-      "q": "You must run third-party Wasm plugins that must never access the network. What is the idiomatic way to guarantee it?",
-      "options": [
-        "Add a firewall rule in the plugin's code",
-        "Ask the plugin author to promise not to use the network",
-        "Do not provide (link) any network import such as `wasi:sockets` when instantiating the module",
-        "Wrap each call in a try/catch"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "Wasm is capability-based: a module can only call what the host imports for it. With no socket capability there is no way to open a connection, no filter needed."
-    },
-    {
-      "type": "choice",
-      "q": "Which workload fits a Wasm sandbox best?",
-      "options": [
-        "Thousands of short user-defined transformation functions compiled to Wasm, each started per request in about a millisecond",
-        "A customer's arbitrary Python script that imports native packages (numpy, pandas)",
-        "A full Linux desktop application",
-        "A database server needing raw io_uring"
-      ],
-      "answer": [
-        0
-      ],
-      "explain": "Wasm shines for small, compilable, high-churn functions with fast cold starts. Native-library-heavy Python or Linux-specific features are better served by gVisor or a microVM."
-    },
-    {
-      "type": "number",
-      "q": "A Wasm linear memory page is 64 KiB. A module declares a maximum of 256 pages. What is the largest linear memory it can use, in MiB?",
-      "answer": 16,
-      "unit": "MiB",
-      "tolerance": 0,
-      "explain": "256 x 64 KiB = 16,384 KiB = 16 MiB. The runtime enforces the cap, so one instance cannot exhaust the host's memory."
-    },
-    {
-      "type": "choice",
-      "q": "A developer says: \"Wasm bytecode is validated, so no extra hardening of the runtime is needed even for hostile modules.\" What is wrong?",
-      "options": [
-        "Wasm cannot be validated",
-        "Wasm modules can always make arbitrary syscalls",
-        "Nothing, that is correct",
-        "Validation protects the module's memory model, but the runtime and its JIT are ordinary host code; a bug there can escape, so add defence in depth (seccomp, container, or microVM)"
-      ],
-      "answer": [
-        3
-      ],
-      "explain": "The sandbox is as strong as the runtime implementation. Production hosts of untrusted Wasm still apply OS-level confinement."
-    },
-    {
-      "type": "order",
-      "q": "Put the path of a Kubernetes pod using a Wasm runtime in order.",
-      "items": [
-        "The pod spec names a `runtimeClassName` for Wasm",
-        "containerd receives the create request over CRI",
-        "The runwasi shim is started for the container",
-        "The shim loads the `.wasm` into the Wasm VM",
-        "The module reaches the host only through WASI imports"
-      ],
-      "explain": "Kubernetes and containerd are unchanged; only the low-level runtime is swapped. Everything the module can do is gated by what WASI exposes."
-    },
-    {
-      "type": "recall",
-      "q": "Explain Wasm's isolation boundary and one reason you might still not choose it for untrusted code.",
-      "answer": "The boundary is the runtime: a module has bounds-checked linear memory and only the capabilities (WASI imports) the host chooses to link, with no ambient access to files or network. Starts are microseconds to milliseconds with tiny footprints. Reasons not to choose it: code must be compiled to Wasm (native libraries, some languages and threads are limited), and the runtime itself is trusted code on the host kernel, so hostile code still wants OS-level hardening."
-    }
-  ]
+ "id": "wasm",
+ "title": "WASM",
+ "explain": "WebAssembly is a portable bytecode that runs inside a Wasm VM (Wasmtime, WasmEdge, Wasmer). As a sandbox it works through capabilities, not through the kernel: the module sees only its own bounds-checked memory and can call only the functions the host links in, usually through WASI. Starts take microseconds to milliseconds. To deny networking, just do not link the network module. (没有 ambient authority: 不给就没有.)",
+ "model": "```\nKubernetes:  RuntimeClass ─▶ containerd ─▶ runwasi shim ─▶ Wasm VM ─▶ WASI ─▶ host\n(CRI -> WASM -> WASM VM -> WASI -> Host Machine)\n\npod spec:   runtimeClassName: wasmtime\n```\n\n- **Memory:** the module touches only its own **linear memory** (pages of 64 KiB, capped by the runtime).\n- **Capabilities:** it can call only the **imports** the host provides. **WASI** is that import interface: files (only pre-opened directories), clocks, sockets, environment. No `wasi:sockets` linked means no network, no filter needed.\n- **Boundary:** software fault isolation by the runtime. It is fine-grained and easy to reason about, but the runtime (a host process, often with a JIT) is the trusted base.\n- **Cost:** very fast cold start, tiny footprint, near-native compute.\n- **Limits:** code must be compiled to Wasm; native libraries, threads and some language ecosystems are partial.\n\n**Pick it** for plugins, edge functions and user scripts you can compile for it. Choose [gVisor](#/sd/f/gvisor) for arbitrary Linux binaries; wrap Wasm in [runc](#/sd/f/runc)-style confinement when the code is hostile.",
+ "details": [
+  {
+   "q": "How do you guarantee a third-party plugin never touches the network?",
+   "a": "Do not link any network import (such as `wasi:sockets`) when instantiating the module. Wasm is capability-based: with no socket capability there is nothing to call and no way to open a connection, so you need no firewall rule or promise from the author."
+  },
+  {
+   "q": "What is the isolation boundary, and where can it fail?",
+   "a": "The Wasm runtime: bounds-checked linear memory, validated bytecode and the imports you grant. But the runtime and its JIT are ordinary host code, so a bug there can escape. Production hosts of hostile Wasm add OS-level confinement (seccomp, a container, or a microVM)."
+  },
+  {
+   "q": "How does a Kubernetes pod end up running Wasm?",
+   "a": "The pod sets a `runtimeClassName` for a Wasm runtime; containerd receives the create request over CRI and starts the runwasi shim; the shim loads the `.wasm` binary into the Wasm VM; the module reaches the host only through WASI. Kubernetes and containerd are unchanged; only the low-level runtime is swapped."
+  },
+  {
+   "q": "What workloads fit and what do not?",
+   "a": "Fits: thousands of short, compilable user-defined functions, edge functions and plugins, each started per request in about a millisecond. Does not fit: arbitrary Python importing native packages like numpy, full Linux applications, or anything needing raw `io_uring`. Those suit gVisor or a microVM."
+  },
+  {
+   "q": "How is memory bounded?",
+   "a": "A Wasm page is 64 KiB. A module declaring a maximum of 256 pages can use at most 256 x 64 KiB = 16 MiB of linear memory, and the runtime enforces the cap, so one instance cannot exhaust the host."
+  },
+  {
+   "q": "Why are cold starts so cheap?",
+   "a": "There is no kernel or OS image to boot and no process-wide setup beyond instantiating a module in an already-running runtime. Instantiation is microseconds to a few milliseconds, which makes per-request sandboxes and very high density practical."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain WASM as a sandbox, including how you restrict what a module can do.",
+   "points": [
+    "Bytecode in a Wasm VM, bounds-checked linear memory",
+    "Capability model: only imports the host links",
+    "WASI exposes files, clocks, sockets selectively",
+    "Skip wasi:sockets to deny the network",
+    "Runtime is the trusted base"
+   ]
+  },
+  {
+   "q": "Walk through how Kubernetes runs a pod on a Wasm runtime.",
+   "points": [
+    "runtimeClassName selects the Wasm runtime",
+    "containerd hands off via CRI",
+    "runwasi shim starts and loads the .wasm",
+    "Wasm VM executes, WASI is the only door to the host",
+    "Orchestration unchanged, only the low-level runtime differs"
+   ]
+  },
+  {
+   "q": "Compare WASM with gVisor and runc for running user-supplied code.",
+   "points": [
+    "WASM: fastest start, densest, needs compilation",
+    "gVisor: runs unmodified Linux binaries, syscall overhead",
+    "runc: native speed, shared kernel",
+    "Where each boundary lives: runtime, Sentry, kernel",
+    "Combine WASM with OS confinement for hostile code"
+   ]
+  }
+ ]
 }

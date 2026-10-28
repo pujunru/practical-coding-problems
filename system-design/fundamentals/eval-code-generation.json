@@ -1,77 +1,68 @@
 {
-  "id": "eval-code-generation",
-  "title": "Code Generation",
-  "summary": "**Product:** a model or coding agent that writes, edits or fixes code. Code is the one domain where the main signal is **execution**: run it. Layer the checks from cheap to expensive.\n\n**Layers**\n1. **Static:** parses, compiles, type-checks, lints, security scan (SAST, dependency scan).\n2. **Dynamic:** hidden unit and integration tests, property-based and edge-case tests; the existing suite for regressions.\n3. **Diff:** scope discipline (no unrelated refactors or files touched), complexity, API compatibility, repository conventions.\n4. **Semantic:** does it meet the real requirement? Acceptance checklist, human or judge review.\n5. **Honesty:** does the explanation match the diff, and did it really run the tests it says it ran?\n\n**Metrics:** `pass@k` = chance that at least one of k samples passes; unbiased estimate from n samples with c passing: `1 - C(n-c, k) / C(n, k)`. Report pass@1 for one-shot products.\n\n**Failure modes:** tests pass but the behaviour is wrong (hard-coded or overfitted to the visible tests), weak or missing tests, **flaky** tests that blame the model for noise, silent regressions, over-broad diffs, security holes, claimed-but-unrun verification.\n\n**Choosing metrics:** text-match metrics (BLEU, exact match) reward the wrong things; use execution, then judge or human review for what tests cannot see. Separate environment or flaky failures from model failures. Gate correctness, regression, scope and security independently. Compare [tool-using agents](#/sd/f/eval-tool-agent).",
-  "drills": [
-    {
-      "type": "number",
-      "q": "A model produces n = 10 samples for a problem and c = 3 of them pass the hidden tests. Using the unbiased estimator pass@k = 1 - C(n-c, k) / C(n, k), what is pass@5, to two decimals?",
-      "answer": 0.92,
-      "unit": "",
-      "tolerance": 0.01,
-      "explain": "C(7,5) = 21 and C(10,5) = 252, so pass@5 = 1 - 21/252 = 0.9167. Note pass@1 = 0.3. A big gap between pass@1 and pass@5 means the product needs a verifier or more samples, not that single-shot quality is high."
-    },
-    {
-      "type": "number",
-      "q": "A repository's suite has 100 independent tests, each of which fails spuriously with probability 1% on a correct solution (flakiness). What is the probability that a correct solution sees at least one spurious failure in a run, in percent?",
-      "answer": 63.4,
-      "unit": "%",
-      "tolerance": 0.02,
-      "explain": "1 - 0.99^100 = 1 - 0.366 = 0.634. Flaky tests contaminate eval scores, so rerun failures, quarantine flaky tests, and label environment failures separately from model failures."
-    },
-    {
-      "type": "choice",
-      "q": "On 100 tasks, 80 solutions pass the provided tests. A reviewer finds 12 of those 80 hard-code expected outputs or special-case the visible test inputs. What should the report say?",
-      "options": [
-        "At most 68% genuinely correct; add hidden and property-based tests and review for overfitting before trusting pass rate",
-        "80% success, tests are the ground truth",
-        "92% success because 12 are only style issues",
-        "12% failure rate"
-      ],
-      "answer": [
-        0
-      ],
-      "explain": "Tests prove only the behaviours they exercise. 80 - 12 = 68 genuine passes. Use held-out tests, mutation or property tests, and a diff review to catch gaming."
-    },
-    {
-      "type": "choice",
-      "q": "Why is BLEU or exact match against a reference solution a poor primary metric for code generation?",
-      "options": [
-        "It is too slow",
-        "It cannot handle Python",
-        "It requires a GPU",
-        "Many different programs are correct, and a small textual change (an operator) can break correctness while keeping high text similarity; execution against tests measures behaviour"
-      ],
-      "answer": [
-        3
-      ],
-      "explain": "Textual similarity is not behavioural equivalence. A near-identical solution with `<` instead of `<=` scores high on BLEU and is wrong."
-    },
-    {
-      "type": "choice",
-      "q": "A bug-fix task asks to correct a one-line off-by-one error. The model's patch fixes it, tests pass, but it also reformats 14 files and renames two public functions. How should it be scored?",
-      "options": [
-        "Pass: the tests are green",
-        "Fail on scope discipline and regression risk: independent gates for correctness, scope and API compatibility mean a passing test run does not offset an over-broad diff",
-        "Pass with bonus for improving style",
-        "Ignore the diff and score only the final answer text"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Reviewers need a minimal, reviewable change. Public API renames can break unseen callers, which the visible tests do not cover."
-    },
-    {
-      "type": "order",
-      "q": "Order these evaluation layers from cheapest to most expensive to run.",
-      "items": [
-        "Parse and compile the code",
-        "Type-check, lint and security scan",
-        "Run unit tests and the existing regression suite",
-        "Run integration and end-to-end tests in a sandbox",
-        "Human or judge review of the diff against the requirement"
-      ],
-      "explain": "Cheap deterministic checks should filter first and fail fast. Human or judge review is the most costly and covers what tests cannot see, so it runs on candidates that already pass."
-    }
-  ]
+ "id": "eval-code-generation",
+ "title": "Code Generation",
+ "explain": "For a model or coding agent that writes, edits or fixes code, the main signal is execution: run it. Layer the checks from cheap to expensive: static (compile, type-check, lint, security scan), dynamic (hidden tests and the existing suite), diff (scope and compatibility), semantic (does it meet the real requirement?) and honesty (did it run what it says it ran?). Tests prove only the behaviours they exercise. (跑起来比看起来重要.)",
+ "model": "| Layer | Evidence | Gate |\n|---|---|---|\n| Static | parse, compile, type-check, lint, SAST, dependency scan | required checks pass, no new high-severity issue |\n| Dynamic | hidden unit/integration/e2e tests, property-based, existing suite | target behaviour passes; no regression |\n| Diff | review of changed files | no unrelated refactors, API compatible |\n| Semantic | acceptance checklist, human or judge | every requirement covered |\n| Agentic / honesty | trace of commands, claims vs diff | no claimed-but-unrun verification |\n\n**Metric:** `pass@k` = chance at least one of `k` samples passes; unbiased from `n` samples with `c` passing: `1 - C(n-c, k) / C(n, k)`. Report pass@1 for one-shot products.\n\n**Slices:** feature, bug fix, refactor, migration, test generation; single-file to repository-level; clear, ambiguous or wrong specs; strong, weak or missing tests; concurrency, error handling, security-sensitive code.\n\n**Gate:** correctness, regression, scope and security pass *independently*; flaky or environment failures labelled apart from model failures. Text metrics (BLEU, exact match) are not primary. Compare [tool-using agents](#/sd/f/eval-tool-agent).",
+ "details": [
+  {
+   "q": "Why not BLEU or exact match against a reference solution?",
+   "a": "Many different programs are correct, and a small textual change (`<` versus `<=`) can break correctness while keeping high text similarity. Execution against tests measures behaviour; use text metrics only as weak diagnostics."
+  },
+  {
+   "q": "Compute pass@k.",
+   "a": "With `n` = 10 samples of which `c` = 3 pass, pass@5 = 1 - C(7,5)/C(10,5) = 1 - 21/252 = 0.92, while pass@1 = 0.3. A big gap means the product needs a verifier or more samples; it does not mean single-shot quality is high."
+  },
+  {
+   "q": "The tests pass, but are the solutions right?",
+   "a": "Tests prove only what they exercise. If 80 of 100 pass but a reviewer finds 12 of those hard-code outputs or special-case visible inputs, at most 68% are genuinely correct. Add hidden and property-based tests, mutation tests and diff review to catch overfitting."
+  },
+  {
+   "q": "How do flaky tests distort scores?",
+   "a": "With 100 independent tests each failing spuriously 1% of the time on a correct solution, the chance of at least one false failure is 1 - 0.99^100 = 63.4%. Rerun failures, quarantine flaky tests, and attribute environment failures separately from model failures."
+  },
+  {
+   "q": "A patch fixes a one-line off-by-one but reformats 14 files and renames two public functions. Pass?",
+   "a": "Fail on scope discipline and API compatibility: the independent gates mean a green test run does not offset an over-broad diff. Reviewers need a minimal change, and renames can break callers the visible tests do not cover."
+  },
+  {
+   "q": "What do you check for security?",
+   "a": "Run SAST and dependency scanning on the diff, add targeted tests for injection, authorization and secret handling, and have expert review on sensitive areas. Gate on no newly introduced high-severity finding, separately from functional correctness."
+  },
+  {
+   "q": "Order the checks from cheap to expensive.",
+   "a": "Parse and compile, then type-check, lint and security scan, then unit and regression tests, then integration and end-to-end in a sandbox, then human or judge review of the diff. Fail fast on the cheap deterministic ones; reserve review for candidates that already pass."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain how you would evaluate a coding assistant.",
+   "points": [
+    "Execution is the main signal",
+    "Static, dynamic, diff, semantic, honesty layers",
+    "Hidden tests plus the existing suite",
+    "Independent gates: correctness, regression, scope, security",
+    "Separate flaky and environment failures"
+   ]
+  },
+  {
+   "q": "What does pass@k tell you and when is it misleading?",
+   "points": [
+    "Chance at least one of k samples passes",
+    "Unbiased estimator from n samples",
+    "pass@1 for one-shot products",
+    "A gap to pass@1 means you need a verifier or more samples",
+    "Green tests can hide hard-coded or overfitted solutions"
+   ]
+  },
+  {
+   "q": "Design checks for an agent that edits a repository.",
+   "points": [
+    "Compile, type-check, lint, scan",
+    "Regression suite and new tests",
+    "Diff review for scope and API changes",
+    "Acceptance checklist for requirement coverage",
+    "Verify its claims against what it actually ran"
+   ]
+  }
+ ]
 }

@@ -1,74 +1,68 @@
 {
-  "id": "top-k-ranking",
-  "title": "Top-K Ranking",
-  "summary": "Top-K ranking returns the `k` highest-scoring items out of `n`. Sorting everything costs `O(n log n)` and holds all `n` items; you rarely need that.\n\n**Min-heap of size k.** Keep the best `k` seen so far in a **min**-heap, so the root is the *k-th best* (the cutoff). For each new score: if the heap has fewer than `k` items, push; otherwise, if the score beats the root, replace the root, else discard it. Cost is `O(n log k)` time and `O(k)` memory, and it works on a stream. (A max-heap is the classic mistake: it keeps the wrong end handy.)\n\n**Other options.** `quickselect` finds the k-th element in `O(n)` average time when all data is in memory; a partial sort suits small arrays.\n\n**Distributed.** Ask every shard for its *local* top-k, then merge those lists: the global top-k is always inside the union of the local top-k lists, so each shard must return at least `k` items. Fetching page 1,000 of results costs `shards x offset` items, so use cursors rather than deep offsets.\n\n**Details that bite.**\n- **Ties:** add a deterministic tie-breaker (e.g. item id) so results do not flicker.\n- **Heavy hitters on a stream:** pair an approximate counter such as a count-min sketch with a heap.\n- **Scores change:** a heap does not support cheap updates; bucket by time with [time-bucket counters](#/sd/f/time-bucket-counter) or recompute on a [window](#/sd/f/sliding-window-aggregation).\n\nThe score itself usually comes from [weighted event scoring](#/sd/f/weighted-event-scoring).",
-  "drills": [
-    {
-      "type": "number",
-      "q": "Keep the top 3 scores with a min-heap of size 3. The stream is 5, 1, 8, 3, 9, 2, 7. After the heap first fills (with 5, 1, 8), how many later items replace the heap's root?",
-      "answer": 3,
-      "unit": "replacements",
-      "tolerance": 0,
-      "explain": "Heap {1,5,8}: 3 > root 1, replace -> {3,5,8}; 9 > 3, replace -> {5,8,9}; 2 < 5, discard; 7 > 5, replace -> {7,8,9}. That is 3 replacements, and the final top 3 are 7, 8, 9."
-    },
-    {
-      "type": "choice",
-      "q": "You must find the 100 most-viewed videos from a stream of 2 billion view counts that does not fit in memory. Which approach fits?",
-      "options": [
-        "Sort all counts and take the first 100",
-        "A max-heap holding every count, then pop 100 times",
-        "Keep a hash set of the first 100 counts and stop",
-        "A min-heap capped at 100 entries, replacing the root when a bigger count arrives"
-      ],
-      "answer": [
-        3
-      ],
-      "explain": "A capped min-heap uses O(100) memory and O(log 100) work per item. A max-heap of everything needs all data in memory, and stopping early ignores the rest of the stream."
-    },
-    {
-      "type": "choice",
-      "q": "The catalogue is split across 8 shards, and you want the global top 10. What must each shard return so the merged answer is guaranteed correct?",
-      "options": [
-        "Its top 10/8, rounded up to 2",
-        "Its top 10",
-        "Its top 1, since the maximum of maxima is global",
-        "Its top 80, since there are 8 shards"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "In the worst case all of the global top 10 live on one shard, so every shard must return at least 10. Returning fewer, such as 2 each, can drop true winners. More than 10 is not needed for correctness."
-    },
-    {
-      "type": "choice",
-      "q": "A leaderboard returns the top 5, but two players tie for 5th place. Between refreshes the page sometimes shows one of them, sometimes the other. What is the fix?",
-      "options": [
-        "Use a bigger heap to hide the problem",
-        "Cache the result forever",
-        "Add a deterministic tie-breaker such as a secondary key (user id) to the sort order",
-        "Randomize ties on each request so both get a fair chance"
-      ],
-      "answer": [
-        2
-      ],
-      "explain": "Ranking needs a total order. Without a tie-break, the heap's internal order decides, which can change from run to run. A random tie-break is the opposite of stable, though it can be a conscious fairness choice."
-    },
-    {
-      "type": "order",
-      "q": "Put the min-heap top-k update for one incoming score in order.",
-      "items": [
-        "Read the next score from the stream",
-        "If the heap holds fewer than k items, push it and stop",
-        "Otherwise compare it with the heap root (the current k-th best)",
-        "If it is larger, replace the root and sift down",
-        "If it is not larger, discard it"
-      ],
-      "explain": "The root is the cutoff, so a single comparison decides whether a score can possibly enter the top k. Most items in a long stream are rejected at that comparison."
-    },
-    {
-      "type": "recall",
-      "q": "Why is `O(n log k)` with a min-heap usually better than sorting for top-k, and what changes in a sharded system?",
-      "answer": "Time is O(n log k) instead of O(n log n), and memory is O(k), so it works on streams. The root of the min-heap is the current k-th best, so most items are rejected with one comparison. In a sharded system each shard returns its local top-k and a coordinator merges them (again with a heap); every shard must return at least k, and deep pagination should use cursors."
-    }
-  ]
+ "id": "top-k-ranking",
+ "title": "Top-K Ranking",
+ "explain": "Top-K ranking returns the `k` best items out of `n` by score without sorting everything. The trick is a size-`k` **min**-heap whose root is the current k-th best, so almost every new item is rejected by one comparison. It costs `O(n log k)` time and `O(k)` memory and works on a stream. (小顶堆守门: the weakest of the winners guards the door.)",
+ "model": "Keep the best `k` seen so far in a **min**-heap. The root is the *cutoff*, the k-th best.\n\n```\nfor each score s:\n    if heap.size < k:     push(s)\n    elif s > heap.root:   replace root with s, sift down\n    else:                 discard\n```\n\n| Option | Time | Memory | When |\n|---|---|---|---|\n| Sort everything | `O(n log n)` | `O(n)` | small `n`, or you need the full order |\n| Min-heap of size `k` | `O(n log k)` | `O(k)` | streams, large `n` |\n| Quickselect | `O(n)` average | `O(n)` | all data in memory, order inside the top-k not needed |\n\n**Distributed:** every shard returns its *local* top-k and a coordinator merges the lists (again with a heap). The global top-k is always inside the union of the local top-k lists, so each shard must return at least `k`.\n\nThe score itself usually comes from [weighted event scoring](#/sd/f/weighted-event-scoring).",
+ "details": [
+  {
+   "q": "Why a min-heap and not a max-heap?",
+   "a": "You need the *cutoff* handy, and the cutoff is the smallest of the current winners. A min-heap exposes exactly that at the root, so one comparison decides whether a new item can enter. A max-heap keeps the wrong end handy and would force you to hold or scan everything."
+  },
+  {
+   "q": "Walk through a small example.",
+   "a": "Top 3 of the stream 5, 1, 8, 3, 9, 2, 7. The heap fills with {1, 5, 8}. Then 3 beats the root 1 (now {3, 5, 8}), 9 beats 3 ({5, 8, 9}), 2 is discarded, 7 beats 5 ({7, 8, 9}). Three replacements, and most items in a long stream behave like the discarded 2."
+  },
+  {
+   "q": "Each of 8 shards holds part of the catalogue. What must a shard return for a correct global top-10?",
+   "a": "At least its own top 10. In the worst case all ten global winners live on one shard, so returning `10/8` per shard can drop true winners. The coordinator merges 8 sorted lists of 10 and keeps the best 10."
+  },
+  {
+   "q": "Why is deep pagination ('page 1,000') expensive, and what do you do instead?",
+   "a": "Page `N` of size `s` needs the top `N*s` from every shard, then a merge that throws most of it away, so the work grows with the offset times the number of shards. Use a cursor (the last score and id seen) so each page asks for 'the next `s` after this key'."
+  },
+  {
+   "q": "Two items tie for 5th place and the page flickers between them. Fix?",
+   "a": "Ranking needs a total order. Add a deterministic tie-breaker such as the item id as a secondary sort key, so the same input always gives the same output. Random tie-breaking is only right if fairness between ties is a deliberate product choice."
+  },
+  {
+   "q": "The scores change over time. Does a heap still work?",
+   "a": "Not directly: a heap has no cheap 'update this item's score'. Either recompute periodically over a window, keep per-bucket counters ([time-bucket counters](#/sd/f/time-bucket-counter), [sliding windows](#/sd/f/sliding-window-aggregation)) and rebuild the top-k from them, or use an indexed heap or sorted structure if you really need point updates."
+  },
+  {
+   "q": "How do you find the top-k most frequent items in a huge stream?",
+   "a": "Counting everything is too big, so pair an approximate counter such as a count-min sketch (frequency estimates in small memory) with a size-`k` heap of the current heavy hitters. Estimates only over-count, so confirm the final candidates with an exact pass if precision matters."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain top-k ranking and why you would not just sort.",
+   "points": [
+    "Top-k returns the k best of n by score",
+    "Sorting is O(n log n) and holds everything",
+    "Min-heap of size k: root is the cutoff, one comparison per item",
+    "O(n log k) time, O(k) memory, works on a stream",
+    "Quickselect as the in-memory O(n) alternative"
+   ]
+  },
+  {
+   "q": "Describe top-k over a sharded catalogue, including pagination.",
+   "points": [
+    "Each shard returns its local top-k, at least k",
+    "Coordinator merges lists with a heap",
+    "Global top-k lies inside the union of local top-k",
+    "Deep offsets cost shards x offset, so use cursors",
+    "Deterministic tie-breaker, e.g. item id"
+   ]
+  },
+  {
+   "q": "Design a trending list where scores keep changing.",
+   "points": [
+    "Score comes from weighted, decayed events",
+    "A heap cannot update cheaply, so bucket by time or recompute on a window",
+    "Approximate counting (count-min) plus a heap for heavy hitters",
+    "Refresh interval and staleness trade-off",
+    "Stable ordering with tie-breaks"
+   ]
+  }
+ ]
 }
