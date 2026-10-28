@@ -16,7 +16,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent / "system-design"
 F, Q = ROOT / "fundamentals", ROOT / "questions"
-DRILL_TYPES = {"choice", "order", "number", "recall"}
 STEPS = {"requirements", "estimation", "api", "data", "design", "deepdives", "wrapup"}
 DIFFICULTIES = {"Easy", "Medium", "Hard"}
 ID = re.compile(r"[a-z0-9-]+")
@@ -34,7 +33,7 @@ def build():
     cats = load(F / "categories.json")["categories"]
     index = []
     for cat in cats:
-        concepts = [{"id": c["id"], "title": c["title"], "drills": len(load(F / f"{c['id']}.json")["drills"])}
+        concepts = [{"id": c["id"], "title": c["title"], "prompts": len(load(F / f"{c['id']}.json").get("prompts") or [])}
                     for c in cat["concepts"] if written(F, c["id"])]
         if concepts:
             index.append({"id": cat["id"], "title": cat["title"], "concepts": concepts})
@@ -52,34 +51,25 @@ def build():
     print(f"index: {n_c} concepts, {n_q} questions")
 
 
-def check_drill(where, d, errors):
-    t = d.get("type")
-    if t not in DRILL_TYPES:
-        errors.append(f"{where}: unknown type {t!r}")
-        return
-    if not isinstance(d.get("q"), str) or not d["q"].strip():
-        errors.append(f"{where}: missing q")
-    if t == "choice":
-        opts, ans = d.get("options"), d.get("answer")
-        if not isinstance(opts, list) or len(opts) < 2:
-            errors.append(f"{where}: choice needs at least 2 options")
-        elif not isinstance(ans, list) or not ans or any(not isinstance(a, int) or not 0 <= a < len(opts) for a in ans):
-            errors.append(f"{where}: answer must be a non-empty list of option indexes")
-        elif len(set(map(str, opts))) != len(opts):
-            errors.append(f"{where}: duplicate options")
-    elif t == "order":
-        if not isinstance(d.get("items"), list) or len(d["items"]) < 3:
-            errors.append(f"{where}: order needs at least 3 items (in the correct order)")
-    elif t == "number":
-        if not isinstance(d.get("answer"), (int, float)):
-            errors.append(f"{where}: number answer must be numeric")
-        if not 0 <= d.get("tolerance", 0) <= 1:
-            errors.append(f"{where}: tolerance is a fraction between 0 and 1")
-    elif t == "recall":
-        if not isinstance(d.get("answer"), str) or not d["answer"].strip():
-            errors.append(f"{where}: recall needs a reference answer")
-    if t != "recall" and not d.get("explain"):
-        errors.append(f"{where}: needs an explain")
+def check_concept(cid, c, errors):
+    for field in ("explain", "model"):
+        if not isinstance(c.get(field), str) or not c[field].strip():
+            errors.append(f"{cid}: missing {field}")
+    details = c.get("details") or []
+    if not 4 <= len(details) <= 8:
+        errors.append(f"{cid}: needs 4-8 details")
+    for i, d in enumerate(details, 1):
+        if not d.get("q") or not d.get("a"):
+            errors.append(f"{cid} detail {i}: needs q and a")
+    prompts = c.get("prompts") or []
+    if not 2 <= len(prompts) <= 4:
+        errors.append(f"{cid}: needs 2-4 prompts")
+    for i, p in enumerate(prompts, 1):
+        if not p.get("q") or not 3 <= len(p.get("points") or []) <= 7:
+            errors.append(f"{cid} prompt {i}: needs q and 3-7 points")
+    leftover = {"summary", "drills"} & set(c)
+    if leftover:
+        errors.append(f"{cid}: old quiz fields {sorted(leftover)} must be removed")
 
 
 def check():
@@ -96,15 +86,7 @@ def check():
         c = load(path)
         if c.get("id") != cid:
             errors.append(f"{cid}: id field must match the file name")
-        if not c.get("summary"):
-            errors.append(f"{cid}: missing summary")
-        drills = c.get("drills") or []
-        if len(drills) < 3:
-            errors.append(f"{cid}: needs at least 3 drills")
-        if len({d.get("type") for d in drills}) < 2:
-            errors.append(f"{cid}: use at least 2 drill types")
-        for i, d in enumerate(drills, 1):
-            check_drill(f"{cid} drill {i}", d, errors)
+        check_concept(cid, c, errors)
 
     qplanned = {q["id"]: q for cat in load(Q / "categories.json")["categories"] for q in cat["questions"]}
     for q in qplanned.values():

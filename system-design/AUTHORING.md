@@ -9,36 +9,39 @@ be right, and say which convention you assume when one exists.
 
 ## Fundamentals: `fundamentals/<concept-id>.json`
 
-The concept must already be listed in `fundamentals/categories.json` (that list
-is the plan; do not invent ids).
+A concept is a **guide**, not a quiz: there are no auto-graded answers. It
+teaches how to explain the concept, the model to draw or name, and the details
+an interviewer will probe, then gives prompts to answer out loud. The concept
+must already be listed in `fundamentals/categories.json`.
 
 ```json
 {
-  "id": "consistent-hashing",
-  "title": "Consistent Hashing",
-  "summary": "Markdown, 120–250 words: the mental model first, then when to use it and when not to.",
-  "drills": [ ... 4 to 6 drills ... ]
+  "id": "fencing-token",
+  "title": "Fencing Token",
+  "explain": "Markdown, 2–4 sentences: what you would say in the first 30 seconds.",
+  "model": "Markdown: the model to draw or name — steps, components, a small ASCII diagram, named variants. 80–200 words.",
+  "details": [
+    {"q": "A probe an interviewer asks", "a": "Markdown answer, 1–4 sentences, with the why."}
+  ],
+  "prompts": [
+    {"q": "Something to explain out loud", "points": ["A key point a good answer covers", "..."]}
+  ]
 }
 ```
 
-Drill types (use at least three different types per concept; Markdown is
-allowed in every text field):
+- `explain`: plain, spoken English — the version you would actually say. Lead
+  with what problem it solves.
+- `model`: the mechanism or the mental model and its usual variants. Use the
+  user's own analogies and framings from their note.
+- `details`: 4–8 probes, ordered from basic to sharp. These are the follow-up
+  questions ("why not X?", "what breaks when…?", "how do you size…?") with
+  short answers. Numbers belong here as rules of thumb, not as quiz answers.
+- `prompts`: 2–4 out-loud prompts ("Explain…", "Walk through…", "Compare…
+  and say when you would pick each"), each with 3–7 key points the user ticks
+  off after answering. Points are short and concrete.
 
-| type | fields | notes |
-| --- | --- | --- |
-| `choice` | `q`, `options` (3–5), `answer` (list of correct option indexes), `explain` | More than one index = "select all that apply". Options are shuffled on screen, so never write "all of the above". Wrong options must be plausible misconceptions, not jokes. |
-| `order` | `q`, `items` (3–6, **in the correct order**), `explain` | Use for processes, state machines, request paths. |
-| `number` | `q`, `answer`, `unit`, `tolerance` (fraction, 0 = exact), `explain` | Back-of-the-envelope or exact quantities. Give every assumption in `q`. Use 0.3–0.5 tolerance for estimates. |
-| `recall` | `q`, `answer` (reference, Markdown) | Self-graded. One per concept is plenty. |
-
-A good drill tests a decision or a mechanism ("what breaks if…", "which
-component owns…", "what happens next"), not a definition someone could
-pattern-match. Scenario stems beat "Which of the following is true".
-`explain` says *why* in one to three sentences, including why the tempting
-wrong answer is wrong.
-
-Exemplars: `fundamentals/lease.json`, `fundamentals/fencing-token.json`,
-`fundamentals/consistent-hashing.json`.
+Exemplars: `fundamentals/high-level-thinking.json`, `fundamentals/lease.json`,
+`fundamentals/fencing-token.json`, `fundamentals/consistent-hashing.json`.
 
 ## Design questions: `questions/<question-id>.json`
 

@@ -1,74 +1,63 @@
 {
  "id": "consistent-hashing",
  "title": "Consistent Hashing",
- "summary": "Place nodes and keys on the same hash ring (`0 … 2^m − 1`). A key belongs to the **first node token clockwise** from its hash. Adding a node takes over only the arc next to it; every other key stays put.\n\n```\nA(10) ---- B(40) ---- C(80) ---- wrap        keys in (10,40] → B\nA(10) - D(25) - B(40) ---- C(80) ---- wrap   keys in (10,25] → D, the rest unchanged\n```\n\n**Scaling out** differs by what the node holds:\n- **Cache:** no migration. Moved keys just miss and refill.\n- **Database:** must migrate. New node joins as *joining* → the key range is copied while traffic still goes to the old node → once caught up, switch traffic → the old node deletes its copy.\n\n**Use it** when you want key affinity (the same key almost always lands on the same shard: caches, KV stores) and when the node count changes freely, because rebalancing moves the minimum. **Don't** use it to route to stateful backends that own sessions or in-flight work; route those explicitly. In practice each node gets many virtual tokens so load evens out.",
- "drills": [
+ "explain": "Consistent hashing places servers and keys on the same ring, and each key belongs to the next server clockwise. When a server joins or leaves, only the keys next to it move — about 1/N of them — instead of almost all keys as with `hash mod N`. I use it when I want each key to stick to one server while the server count changes.",
+ "model": "```\n0 ─────────────────────────────── 2^m − 1 (wraps)\nA(10) ───── B(40) ───── C(80)           keys in (10,40] → B\nA(10) ─ D(25) ─ B(40) ───── C(80)        D joins: only (10,25] moves, B → D\n```\n\n- **Virtual nodes:** each server takes many tokens so shares are even and a leaving server's load spreads over many neighbours.\n- **Bounded load:** cap each node at ~1.25 × average and spill to the next node, to survive hot keys.\n- **Scaling out — cache vs database:**\n  - cache: no migration, moved keys just miss and refill;\n  - database: new node joins as *joining* → copy its range while the old owner still serves → switch traffic → old owner deletes.\n\n**Use it** for key affinity with a changing node set (caches, KV stores). **Don't** use it to route to stateful backends that own sessions or in-flight work — route those by an explicit owner lookup.",
+ "details": [
   {
-   "type": "choice",
-   "q": "With N nodes on a hash ring and one node added, roughly what fraction of keys move?",
-   "options": [
-    "About 1/(N+1)",
-    "About half",
-    "All of them",
-    "About N/(N+1)"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Only the arc the new node claims moves. With `hash(key) % N`, adding a node remaps almost every key — the problem consistent hashing solves."
+   "q": "Why not `hash(key) % N`?",
+   "a": "Changing N remaps almost every key (going from 4 to 5 nodes moves 80%). With a ring, adding one node moves about 1/(N+1)."
   },
   {
-   "type": "choice",
-   "q": "Ring: A at 10, B at 40, C at 80; a key belongs to the first token clockwise. D joins at 25. Which keys change owner?",
-   "options": [
-    "Keys hashing into (10, 25], moving from B to D",
-    "Keys hashing into (10, 25], moving from A to D",
-    "Keys hashing into (25, 40], moving from B to D",
-    "Every key owned by A"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Before D, (10, 40] belonged to B. D now owns (10, 25]. A and C are untouched. (Some systems use the opposite convention — say which one you use.)"
+   "q": "Why virtual nodes?",
+   "a": "With one token per node the arcs are uneven, so load is uneven, and a departing node dumps its whole arc on one neighbour. Many tokens per node make each share close to 1/N and spread failures; weights are just more tokens for bigger machines."
   },
   {
-   "type": "order",
-   "q": "Order the steps for adding a node to a consistent-hashed **database**.",
-   "items": [
-    "New node joins the ring marked as joining",
-    "Its key range is copied from the old owner while reads and writes still go to the old owner",
-    "Once it has caught up, traffic for the range switches to the new node",
-    "The old owner deletes its copy of the range"
-   ],
-   "explain": "A cache can skip the copy (misses refill it); a database cannot, or reads would return nothing."
+   "q": "Which node takes over when D joins at 25 between A(10) and B(40)?",
+   "a": "With 'the next token clockwise owns the key', D takes (10, 25] from B. Some systems use the opposite convention — say which one you use."
   },
   {
-   "type": "choice",
-   "q": "Where is consistent hashing a good fit?",
-   "options": [
-    "A distributed cache whose node count changes with load",
-    "A KV store that wants each key on a stable shard",
-    "Routing requests to the server that holds a user's live WebSocket session",
-    "Balancing stateless HTTP requests evenly across identical servers"
-   ],
-   "answer": [
-    0,
-    1
-   ],
-   "explain": "It shines for key affinity with a changing node set. Stateful routing needs an explicit owner lookup (a ring rebalance would silently move sessions), and stateless requests just need round-robin or least-loaded."
+   "q": "What about a single hot key?",
+   "a": "Hashing cannot split one key. Use bounded-load hashing to spill traffic, replicate the hot key to several nodes, or cache it closer to clients."
   },
   {
-   "type": "number",
-   "q": "A cache cluster grows from 9 to 10 nodes with consistent hashing (many virtual nodes each). About what percentage of keys miss because they moved?",
-   "answer": 10,
-   "unit": "%",
-   "tolerance": 0.3,
-   "explain": "About 1/10 of the ring is handed to the new node, so ≈ 10% of keys move. With `% N` it would be ≈ 90%."
+   "q": "Why not use it to route WebSocket sessions or running jobs?",
+   "a": "A rebalance silently moves keys to new owners, but the state (the open connection, the in-flight job) stays on the old server. Those need an explicit registry of who owns what."
   },
   {
-   "type": "recall",
-   "q": "Why do real systems give each node many virtual tokens instead of one?",
-   "answer": "With one token per node, arcs are uneven, so load is uneven, and a leaving node dumps its whole arc onto a single neighbour. Many virtual tokens per node make each node's share close to 1/N and spread a departing node's load across many nodes. Weights are easy too: more tokens for bigger machines."
+   "q": "How does adding a database node differ from adding a cache node?",
+   "a": "A cache can just miss and refill. A database must copy the range first and switch traffic only once the new node has caught up, or reads would return nothing."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain consistent hashing and why it beats `hash mod N`, with a quick sketch.",
+   "points": [
+    "Nodes and keys on the same ring",
+    "A key goes to the next node clockwise",
+    "Adding a node moves only its arc (~1/N)",
+    "mod N moves almost everything when N changes"
+   ]
+  },
+  {
+   "q": "Walk through adding a node to a consistent-hashed database without losing reads.",
+   "points": [
+    "The new node joins in a joining state",
+    "Its range is copied while the old owner keeps serving",
+    "Traffic switches once it has caught up",
+    "The old owner deletes its copy",
+    "Contrast: a cache can skip the copy"
+   ]
+  },
+  {
+   "q": "Say when you would and would not use consistent hashing.",
+   "points": [
+    "Use: caches and KV stores that want key affinity",
+    "Use: the node count changes often",
+    "Don't: stateful backends (sessions, in-flight work)",
+    "Don't: stateless requests that just need load balancing",
+    "Virtual nodes / bounded load for evenness and hot keys"
+   ]
   }
  ]
 }

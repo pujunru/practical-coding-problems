@@ -1,74 +1,58 @@
 {
  "id": "lease",
  "title": "Lease",
- "summary": "A lease is **temporary ownership that expires on its own**: `Lease(resource=X, owner=A, expires_at=10:00:10)`.\n\nThink of a **hotel key card**: it is yours, but only until checkout. When time is up the system invalidates it without you handing it back, and the next guest gets a new card.\n\n- The holder must **renew** before expiry to keep ownership; if it crashes or is partitioned, the lease simply lapses and someone else can take over. That is the point: no one has to detect the failure for ownership to move.\n- Expiry gives **liveness** (the resource is never stuck), not **safety**: a paused holder can wake up and act on an expired lease. Pair leases with a [fencing token](#/sd/f/fencing-token).\n- **Who grants leases?** Only the single owner of the state machine (the orchestrator). Middleware in between — a dispatcher, a gateway, a message queue — passes work along but must never *own* the lease.",
- "drills": [
+ "explain": "A lease is ownership that expires on its own. The holder keeps it only by renewing, so if it crashes the ownership frees itself and someone else can take over — nobody has to detect the failure. It is like a hotel key card that stops working at checkout without you handing it back.",
+ "model": "`Lease(resource, owner, expires_at)` issued by one **lease authority**.\n\n```\ngrant ──▶ renew ──▶ renew ──▶ (stop renewing) ──▶ expire ──▶ grant to someone else\n```\n\n- **Renew interval < TTL**, typically TTL ≈ 3 × interval, so one lost renewal is survivable.\n- **Liveness, not safety.** Expiry guarantees the resource is never stuck; it does not stop a paused holder from acting late. Pair it with a [fencing token](#/sd/f/fencing-token).\n- **Who grants leases?** Only the single owner of the state machine (the orchestrator). A dispatcher, gateway or message queue passes work along but never owns the lease.",
+ "details": [
   {
-   "type": "choice",
-   "q": "A worker holds a 30 s lease on a job and crashes without saying anything. What happens to the job?",
-   "options": [
-    "It stays stuck until an operator releases the lease",
-    "The lease expires after at most 30 s and the job can be granted to another worker",
-    "The lock service immediately detects the crash and reassigns the job",
-    "The job is lost unless the worker wrote a checkpoint"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Expiry is the whole mechanism: nobody has to detect the crash. The worst case is waiting out the remaining lease time."
+   "q": "Why use a lease instead of a lock that the holder releases?",
+   "a": "A released lock depends on the holder being alive to release it; a crashed holder would hold it forever unless something detects the crash. A lease needs no detection: time does the release."
   },
   {
-   "type": "choice",
-   "q": "What does a lease guarantee on its own?",
-   "options": [
-    "Liveness: ownership cannot be stuck forever",
-    "Safety: two holders can never act on the resource at the same time",
-    "Both liveness and safety",
-    "Neither, unless clocks are synchronized"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A holder paused by GC or the network can resume after its lease expired and still act. Safety needs the resource to reject stale holders — a **fencing token**."
+   "q": "How long should the lease be?",
+   "a": "Long enough to ride out a GC pause or a network blip (renew every TTL/3), short enough that failover — up to one full TTL after the last renewal — is acceptable. It is the failover-time vs false-takeover trade-off."
   },
   {
-   "type": "choice",
-   "q": "In a job system with an orchestrator, a dispatch service, a worker gateway and a message queue, which component should own the job leases?",
-   "options": [
-    "The message queue, since it delivers the job",
-    "The dispatch service, since it picks the worker",
-    "The orchestrator, the single owner of the job state machine",
-    "Each worker, for the jobs it runs"
-   ],
-   "answer": [
-    2
-   ],
-   "explain": "Lease authority belongs to whoever exclusively owns the state machine. Middleware forwards work; letting it own leases splits the source of truth."
+   "q": "What happens if the holder pauses past its expiry and then keeps working?",
+   "a": "It may act on a resource someone else now owns. The lease alone cannot stop that; the resource must reject stale holders with a fencing token."
   },
   {
-   "type": "number",
-   "q": "A worker renews its lease every 10 s. The lease lasts 30 s. If the worker crashes right after a renewal, how many seconds until another worker can take the job, at most?",
-   "answer": 30,
-   "unit": "s",
-   "tolerance": 0,
-   "explain": "Takeover waits for the full lease after the last renewal: 30 s. This is the trade-off — longer leases tolerate hiccups, shorter leases fail over faster."
+   "q": "Whose clock decides expiry?",
+   "a": "The lease authority's. Holders should stop working a margin *before* their local view of expiry, and the authority should wait a margin *after*, to absorb clock skew."
   },
   {
-   "type": "order",
-   "q": "Put a lease's life cycle in order.",
-   "items": [
-    "The owner asks the lease authority for a lease on the resource",
-    "The authority grants it with an expiry time",
-    "The owner renews before expiry while it keeps working",
-    "The owner stops renewing (crash, pause or done)",
-    "The lease expires and the resource can be granted again"
-   ],
-   "explain": "Grant → renew → stop renewing → expire. Release is an optimization; expiry is what makes it safe to assume the owner is gone."
+   "q": "Why must only the orchestrator own leases?",
+   "a": "The lease is part of the state machine (who is working on what). If a middle layer like a queue or dispatcher also tracks ownership, there are two sources of truth and they will disagree after a failure."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain a lease to an interviewer, with an analogy, in under 30 seconds.",
+   "points": [
+    "Ownership with a built-in expiry",
+    "Kept alive only by renewing",
+    "A crash frees it without failure detection",
+    "An analogy (e.g. hotel key card)"
+   ]
   },
   {
-   "type": "recall",
-   "q": "Explain a lease to an interviewer in two sentences, with an analogy.",
-   "answer": "A lease is ownership with a built-in expiry: the holder keeps it only by renewing, so if it dies the ownership frees itself. Like a hotel key card that stops working at checkout without you returning it."
+   "q": "A worker holding a job lease crashes. Walk through what happens, and how long until the job runs again.",
+   "points": [
+    "Renewals stop",
+    "The lease expires up to one TTL after the last renewal",
+    "The authority grants it to another worker",
+    "Failover time is bounded by the TTL",
+    "The TTL vs false-takeover trade-off"
+   ]
+  },
+  {
+   "q": "Say what a lease does and does not guarantee, and what you add to cover the gap.",
+   "points": [
+    "Liveness: the resource is never stuck",
+    "Not safety: a paused holder can act late",
+    "Add a fencing token checked by the resource",
+    "Clock-skew margins on both sides"
+   ]
   }
  ]
 }

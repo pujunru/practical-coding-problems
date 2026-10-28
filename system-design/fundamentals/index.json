@@ -7,32 +7,32 @@
     {
      "id": "high-level-thinking",
      "title": "High-Level Thinking",
-     "drills": 6
+     "prompts": 3
     },
     {
      "id": "low-level-decision-order",
      "title": "Low-Level Decision Order",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "one-way-door",
      "title": "One-Way Doors",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "two-way-door",
      "title": "Two-Way Doors",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "scalable-simplicity",
      "title": "Scalable Simplicity",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "transaction-boundary",
      "title": "Transaction Boundary",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -43,7 +43,7 @@
     {
      "id": "sli-slo-sla",
      "title": "SLI, SLO and SLA",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -54,22 +54,22 @@
     {
      "id": "tcp-connection",
      "title": "TCP Connections",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "multiplexing",
      "title": "Multiplexing",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "proxy-tcp-termination",
      "title": "Proxies, TCP Termination and NAT",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "anycast",
      "title": "Anycast",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -80,7 +80,7 @@
     {
      "id": "load-balancing",
      "title": "Load Balancing",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -91,17 +91,17 @@
     {
      "id": "cache-invalidation",
      "title": "Cache Invalidation",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "client-side-cache",
      "title": "Client-Side Cache",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "etag",
      "title": "ETag",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -112,12 +112,12 @@
     {
      "id": "data-locality",
      "title": "Data Locality",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "json-vs-sql",
      "title": "JSON vs SQL",
-     "drills": 5
+     "prompts": 0
     }
    ]
   },
@@ -128,37 +128,37 @@
     {
      "id": "sharding",
      "title": "Sharding",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "partitioning",
      "title": "Partitioning",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "consistent-hashing",
      "title": "Consistent Hashing",
-     "drills": 6
+     "prompts": 3
     },
     {
      "id": "hash-bucketing",
      "title": "Bucketing (Fixed Hash Slots)",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "token-rebalancing",
      "title": "Token Rebalancing",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "salting",
      "title": "Salting and Desalting",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "geo-cell",
      "title": "Geo Cells",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -169,72 +169,72 @@
     {
      "id": "leader-based-replication",
      "title": "Leader-Based Replication",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "leader-based-write-path",
      "title": "Leader-Based Write Path",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leader-based-read-path",
      "title": "Leader-Based Read Path",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leader-based-consistency",
      "title": "Leader-Based Consistency",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leader-based-failover",
      "title": "Leader-Based Failover",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "multi-leader-replication",
      "title": "Multi-Leader Replication",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leaderless-replication",
      "title": "Leaderless Replication",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leaderless-write-path",
      "title": "Leaderless Write Path",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leaderless-read-path",
      "title": "Leaderless Read Path",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leaderless-repair",
      "title": "Leaderless Repair",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leaderless-quorum",
      "title": "Leaderless Quorum",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "quorum-based-replication",
      "title": "Quorum-Based Replication",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "rw-replicas",
      "title": "Read/Write Replicas",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "multi-region",
      "title": "Multi-Region",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -245,47 +245,47 @@
     {
      "id": "eventual-consistency",
      "title": "Eventual Consistency",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "quorum",
      "title": "Quorum",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "consensus",
      "title": "Consensus",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "raft",
      "title": "Raft",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "leader-election",
      "title": "Leader Election",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "race-condition",
      "title": "Race Conditions",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "reservation",
      "title": "Reservation (Race + Long Fulfillment)",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "multi-state-machine-sync",
      "title": "Syncing Multiple State Machines",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "idempotency",
      "title": "Idempotency",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -296,32 +296,32 @@
     {
      "id": "lease",
      "title": "Lease",
-     "drills": 6
+     "prompts": 3
     },
     {
      "id": "fencing-token",
      "title": "Fencing Token",
-     "drills": 5
+     "prompts": 3
     },
     {
      "id": "acquire-release",
      "title": "Lock Acquire / Release",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "lock-contention",
      "title": "Lock Contention",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "read-write-lock",
      "title": "Read-Write Lock",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "reentrant-lock",
      "title": "Reentrant Lock",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -332,62 +332,62 @@
     {
      "id": "timeout",
      "title": "Timeout",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "retry",
      "title": "Retry",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "backoff-jitter",
      "title": "Exponential Backoff + Jitter",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "circuit-breaker",
      "title": "Circuit Breaker",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "rate-limiter",
      "title": "Rate Limiter",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "concurrency-limiter",
      "title": "Concurrency Limiter",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "load-shedding",
      "title": "Load Shedding",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "time-box-patterns",
      "title": "Time-Box Patterns",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "heartbeat-lease",
      "title": "Heartbeat + Lease",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "failover",
      "title": "Failover",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "active-monitoring",
      "title": "Active Monitoring",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "clock-shift",
      "title": "Clock Skew",
-     "drills": 5
+     "prompts": 0
     }
    ]
   },
@@ -398,17 +398,17 @@
     {
      "id": "cell",
      "title": "Cells",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "compartment",
      "title": "Compartments",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "tenant-isolation",
      "title": "Tenant Isolation",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -419,22 +419,22 @@
     {
      "id": "horizontal-scaling",
      "title": "Horizontal Scaling",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "partition-expansion",
      "title": "Partition Expansion",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "rebalance",
      "title": "Rebalance",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "backfill",
      "title": "Backfill",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -445,17 +445,17 @@
     {
      "id": "dispatcher",
      "title": "Dispatcher",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "queue-first-vs-db-first",
      "title": "Persisted Queue First vs DB First",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "wait-queue",
      "title": "Wait Queue",
-     "drills": 5
+     "prompts": 0
     }
    ]
   },
@@ -466,22 +466,22 @@
     {
      "id": "prioritized-scheduling",
      "title": "Prioritized Scheduling",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "weighted-scheduling",
      "title": "Weighted Scheduling",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "wait-running-queues",
      "title": "Wait / Running Queues",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "trigger-based-invocation",
      "title": "Trigger-Based Invocation",
-     "drills": 5
+     "prompts": 0
     }
    ]
   },
@@ -492,17 +492,17 @@
     {
      "id": "connection-pooling",
      "title": "Connection Pooling",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "timer-wheel",
      "title": "Timer Wheel",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "tumbling-window",
      "title": "Tumbling Window",
-     "drills": 5
+     "prompts": 0
     }
    ]
   },
@@ -513,12 +513,12 @@
     {
      "id": "sliding-window-aggregation",
      "title": "Sliding Window Aggregation",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "time-bucket-counter",
      "title": "Time Bucket Counter",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -529,7 +529,7 @@
     {
      "id": "batching",
      "title": "Batching",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -540,7 +540,7 @@
     {
      "id": "fanout",
      "title": "Fanout",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -551,7 +551,7 @@
     {
      "id": "change-feed",
      "title": "Change Feed",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -562,12 +562,12 @@
     {
      "id": "cursor",
      "title": "Cursor",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "server-log",
      "title": "Server Log",
-     "drills": 5
+     "prompts": 0
     }
    ]
   },
@@ -578,7 +578,7 @@
     {
      "id": "websocket-patterns",
      "title": "WebSocket Design Patterns",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -589,22 +589,22 @@
     {
      "id": "third-party-checklist",
      "title": "What to Consider with a Third Party",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "caller-diligence",
      "title": "Caller Diligence",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "polling",
      "title": "Polling",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "adaptive-polling",
      "title": "Adaptive & Priority Polling",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -615,12 +615,12 @@
     {
      "id": "idp",
      "title": "Identity Provider (IdP)",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "token-minting",
      "title": "Token Minting",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -631,22 +631,22 @@
     {
      "id": "cookie",
      "title": "Cookie",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "local-storage",
      "title": "localStorage",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "session-storage",
      "title": "sessionStorage",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "indexeddb",
      "title": "IndexedDB",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -657,12 +657,12 @@
     {
      "id": "common-hashing",
      "title": "Common Hashing",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "bloom-filter",
      "title": "Bloom Filter",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -673,12 +673,12 @@
     {
      "id": "top-k-ranking",
      "title": "Top-K Ranking",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "weighted-event-scoring",
      "title": "Weighted Event Scoring",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -689,27 +689,27 @@
     {
      "id": "item-embedding",
      "title": "Item Embedding",
-     "drills": 5
+     "prompts": 0
     },
     {
      "id": "similarity",
      "title": "Similarity",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "similarity-search",
      "title": "Similarity Search",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "user-context",
      "title": "User Context",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "k-means",
      "title": "K-Means Clustering",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -720,22 +720,22 @@
     {
      "id": "runc",
      "title": "runc",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "gvisor",
      "title": "gVisor",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "wasm",
      "title": "WASM",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "native-sandboxes",
      "title": "Native Sandboxes",
-     "drills": 6
+     "prompts": 0
     }
    ]
   },
@@ -746,42 +746,42 @@
     {
      "id": "eval-classification-routing",
      "title": "Classification & Routing",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "eval-structured-extraction",
      "title": "Structured Extraction",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "eval-summarization",
      "title": "Summarization",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "eval-rag-qa",
      "title": "RAG Question Answering",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "eval-conversational",
      "title": "Conversational Assistant",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "eval-code-generation",
      "title": "Code Generation",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "eval-tool-agent",
      "title": "Tool-Using Agent",
-     "drills": 6
+     "prompts": 0
     },
     {
      "id": "eval-safety-policy",
      "title": "Safety & Policy",
-     "drills": 6
+     "prompts": 0
     }
    ]
   }
