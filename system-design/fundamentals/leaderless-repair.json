@@ -1,76 +1,67 @@
 {
  "id": "leaderless-repair",
  "title": "Leaderless Repair",
- "summary": "Writes need only **W** replicas, so replicas diverge: one was down, a message was dropped, a write failed partway. **Repair** makes lagging replicas converge, with no leader involved. There are three mechanisms with different coverage.\n\n1. **Read repair.** While serving a read, the coordinator compares the R responses, returns the winner, and updates the stale replicas. Great for hot keys. **A cold key may never be read**, so it may never be repaired.\n2. **Hinted handoff.** If a target replica is down, another node stores the write as a **hint** and replays it when the target returns. It covers short outages only: hints have size and age limits and must replay idempotently.\n3. **Anti-entropy.** A background process compares replicas, using **Merkle trees** (a hash per key range, compared from the root down) so only differing ranges are exchanged. It covers cold data and long outages, at a constant CPU, disk and network cost.\n\nTwo rules that cause real incidents:\n\n- **Versions decide.** Repair must compare version metadata, not copy \"the latest received\". LWW is simple but can drop writes under clock skew; version vectors can detect concurrent writes and keep both.\n- **Deletes need tombstones.** A delete is a write of a marker. If tombstones are purged before every replica has seen them, a replica that missed the delete **resurrects** the data. Run repair within the tombstone retention period.\n\nRepair closes the gap that [quorum](#/sd/f/leaderless-quorum) overlap leaves open; read repair is triggered in the [read path](#/sd/f/leaderless-read-path).",
- "drills": [
+ "explain": "Leaderless writes need only W replicas, so replicas drift apart: one was down, a message dropped, a write failed partway. Repair is how lagging replicas converge without a leader. There are three mechanisms with different coverage, and two rules, compare versions and keep tombstones, that cause real incidents when ignored.",
+ "model": "```\nread repair      hot keys     coordinator fixes stale replicas it saw on a read\nhinted handoff   short outage another node holds the write, replays on return\nanti-entropy     everything   background Merkle-tree comparison, sync diffs\n```\n\n1. **Read repair:** the coordinator compares the R responses, returns the winner and updates stale replicas. Great for hot keys; a **cold key may never be read**, so never repaired.\n2. **Hinted handoff:** if a target replica is down, another node stores a **hint** and replays it later. Short outages only: hints have size and age limits and must replay idempotently.\n3. **Anti-entropy:** a background process compares replicas via **Merkle trees** (hash per key range, compared from the root down) and exchanges only differing ranges. Covers cold data and long outages at a constant CPU, disk and network cost.\n\nRules:\n\n- **Versions decide.** Compare version metadata, never \"copy the latest received\". LWW is simple but can drop writes under clock skew; version vectors detect concurrent writes and keep both.\n- **Deletes need tombstones.** A delete is a write of a marker. If tombstones are purged before every replica sees them, a replica that missed the delete **resurrects** the data. Run repair within the tombstone retention period.\n\nRepair closes the gap that [quorum](#/sd/f/leaderless-quorum) overlap leaves open; read repair is triggered in the [read path](#/sd/f/leaderless-read-path).",
+ "details": [
   {
-   "type": "choice",
-   "q": "Replica C missed a write for a rarely used key three days ago while it was down. Nobody has read the key since. Which mechanism will fix it?",
-   "options": [
-    "Anti-entropy, because read repair needs a read and any hints have likely expired",
-    "Read repair, which runs continuously",
-    "Hinted handoff, which keeps hints indefinitely",
-    "Nothing: it is permanently lost"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Read repair is read-driven, so a key nobody reads is never repaired. Hints are bounded in time. A periodic background comparison (Merkle-tree anti-entropy) is what covers cold data."
+   "q": "A replica missed a write for a rarely used key three days ago. What fixes it?",
+   "a": "Anti-entropy. Read repair needs a read of that key, which may never come, and hints have long expired. The background Merkle-tree comparison finds the differing range and syncs it."
   },
   {
-   "type": "choice",
-   "q": "Hinted handoff stores hints for at most 3 hours. Replica C was down for 5 hours. After it returns, what is the right action?",
-   "options": [
-    "Run an anti-entropy repair (or rebuild C), because hints for the first 2 hours of the outage were dropped",
-    "Nothing: hints repair everything",
-    "Remove all hints and restart",
-    "Raise W for the next 5 hours"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Hints cover only outages shorter than the hint window; anything longer leaves gaps that only repair or rebuild closes. Plan hint windows against the outages you expect to tolerate."
+   "q": "Hints are kept for at most 3 hours; the replica was down 5 hours. What do you do on return?",
+   "a": "Run a repair (anti-entropy for that node's ranges) to cover the writes whose hints expired. Hinted handoff is for short outages only."
   },
   {
-   "type": "choice",
-   "q": "A key is deleted, and replicas A and B drop the tombstone after a 10-day retention period. Replica C was down for 12 days and rejoins holding the old value. What happens next?",
-   "options": [
-    "The deleted value can be resurrected because C is the only replica with a version and nobody remembers the delete",
-    "The delete is applied to C immediately",
-    "C is rejected because it is too old",
-    "C rewrites the delete to A and B"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Once the tombstone is gone, the old value looks like new data to repair. The mitigation is to repair every node within the tombstone retention window, and to rebuild a node that has been away longer."
+   "q": "Why do Merkle trees help?",
+   "a": "Comparing two replicas by sending all leaf hashes is expensive: 2^20 leaves × 32 bytes = 32 MiB. With a tree you compare root hashes first and descend only into subtrees that differ, so a mostly-identical replica pair exchanges very little."
   },
   {
-   "type": "number",
-   "q": "A Merkle tree has 2^20 leaf hashes (one per key range) of 32 bytes each. Comparing two replicas by exchanging all leaf hashes would transfer how many MiB? (1 MiB = 2^20 bytes.)",
-   "answer": 32,
-   "unit": "MiB",
-   "tolerance": 0,
-   "explain": "2^20 x 32 B = 2^25 B = 32 MiB per replica. By descending from the root, comparing only the children of mismatching nodes, one differing range costs about 20 levels x 2 hashes x 32 B, roughly 1.3 KB."
+   "q": "Why must deletes be tombstones?",
+   "a": "Without a marker, a replica that missed the delete can look like it has data the others lack, and repair copies it back. A tombstone is a write that wins by version, so it propagates like any other."
   },
   {
-   "type": "choice",
-   "q": "Replica A holds `x = 1` with version vector {A:1}; replica B holds `x = 2` with {B:1}. The anti-entropy job must reconcile them. What is the correct behaviour?",
-   "options": [
-    "Detect that neither version dominates (concurrent writes) and keep both or merge them",
-    "Copy whichever was seen first",
-    "Overwrite B with A because A's node id is lower",
-    "Delete both values"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Neither vector is greater than or equal to the other, so these writes were concurrent. Choosing one by arrival or id silently loses a write; a timestamp rule is equally lossy but at least deterministic."
+   "q": "Tombstones are dropped after 10 days; a replica was down 12 days and rejoins with the old value. What happens?",
+   "a": "The data resurrects: the other replicas no longer have the tombstone, so the old value looks like a legitimate newer-or-only copy. Run repair within the tombstone retention, and replace or rebuild nodes that stay down longer."
   },
   {
-   "type": "recall",
-   "q": "List the three repair mechanisms and the case each one cannot cover.",
-   "answer": "Read repair cannot cover keys that are never read; hinted handoff cannot cover long outages or lost hints; anti-entropy covers both but is a constant background cost and only converges as fast as its schedule."
+   "q": "Replica A holds x = 1 with version vector {A:1}; replica B holds x = 2 with {B:1}. What should repair do?",
+   "a": "Recognise they are concurrent (neither dominates), keep both as siblings or merge via a CRDT or application rule. Choosing by arrival time or a skewed clock loses one update."
+  },
+  {
+   "q": "Does W + R > N make repair unnecessary?",
+   "a": "No. It guarantees a read can see the newest acknowledged write, not that replicas are identical. Repair brings the rest into agreement and covers failed writes and cold keys."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "List the three repair mechanisms and the case each cannot cover.",
+   "points": [
+    "Read repair: cold keys never read",
+    "Hinted handoff: long outages, hint limits",
+    "Anti-entropy: costs continuous resources, runs on a schedule",
+    "Combine all three"
+   ]
+  },
+  {
+   "q": "Explain tombstones and the resurrection bug.",
+   "points": [
+    "Delete is a write of a marker",
+    "Replicas that missed it need to learn it",
+    "Purged too early, old data comes back",
+    "Run repair within tombstone retention",
+    "Version comparison decides the winner"
+   ]
+  },
+  {
+   "q": "Explain how replicas decide which version wins during repair.",
+   "points": [
+    "Never copy latest-received",
+    "LWW: simple but clock skew drops writes",
+    "Version vectors detect concurrency",
+    "Concurrent: siblings or merge via CRDT / app",
+    "Tie rules must be deterministic"
+   ]
   }
  ]
 }

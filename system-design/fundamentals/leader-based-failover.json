@@ -1,77 +1,64 @@
 {
  "id": "leader-based-failover",
  "title": "Leader-Based Failover",
- "summary": "Failover replaces a dead leader with a follower. It sounds simple and is where leader-based systems lose data or split in two.\n\n1. **Detect.** Heartbeats missing for a timeout declare the leader dead. Too short a timeout causes false failovers on GC pauses; too long extends the outage.\n2. **Choose.** Pick the follower with the **most advanced log** (not the first to answer), usually by an election or consensus ([leader election](#/sd/f/leader-election)).\n3. **Promote and reconfigure.** The follower becomes leader, other followers repoint to it, and routing is updated.\n4. **Neutralise the old leader.** If it comes back it must demote itself. Without a [lease](#/sd/f/lease) or [fencing token](#/sd/f/fencing-token) it may keep accepting writes: split brain.\n\nFailure modes:\n\n- **Lost writes (asynchronous replication).** Writes the old leader acknowledged but never shipped are gone. The data-loss window is the lag at the moment of failure. Semi-synchronous replication, plus promoting a follower that holds the acknowledged entries, shrinks it to zero.\n- **Split brain.** Two nodes accept writes. Fix with epochs (term numbers) that replicas and storage use to reject the old leader.\n- **Flapping.** Repeated promotions under load; add hysteresis and stable timeouts.\n\nThe unavailability window for writes is roughly **detection + election + client rediscovery**. Reads can usually continue from followers throughout. Related: [failover](#/sd/f/failover), [write path](#/sd/f/leader-based-write-path), [raft](#/sd/f/raft).",
- "drills": [
+ "explain": "Failover replaces a dead leader with a follower. It sounds simple, and it is exactly where leader-based systems lose data or split into two leaders. The things to get right are detecting the failure, choosing the most up-to-date follower, and making sure the old leader can no longer write.",
+ "model": "```\n1 detect ─▶ 2 choose ─▶ 3 promote + repoint ─▶ 4 fence the old leader\nheartbeat   most advanced   followers follow   lease / epoch so it cannot\ntimeout     log wins        new leader,        write if it returns\n                            routing updated\n```\n\n1. **Detect:** missing heartbeats beyond a timeout. Too short causes false failovers on GC pauses; too long extends the outage.\n2. **Choose:** the follower with the **most advanced log**, not the first to answer, usually via election or consensus ([leader election](#/sd/f/leader-election)).\n3. **Promote and reconfigure:** the follower becomes leader, others repoint, routing updates.\n4. **Neutralise the old leader:** without a [lease](#/sd/f/lease) or [fencing token](#/sd/f/fencing-token) it may keep accepting writes.\n\nFailure modes: **lost writes** (async: acknowledged but unshipped writes are gone; semi-sync plus promoting a follower that holds them closes it), **split brain** (two leaders; fix with epochs/term numbers), **flapping** (add hysteresis).\n\nWrite unavailability ≈ detection + election + client rediscovery; reads usually continue from followers. See [failover](#/sd/f/failover) and [Raft](#/sd/f/raft).",
+ "details": [
   {
-   "type": "number",
-   "q": "The monitor declares a leader dead after 6 s without a heartbeat. The leader crashes immediately after sending a heartbeat. Election and promotion take 2 s, and clients refresh their routing in a further 1 s. What is the write unavailability window, in seconds?",
-   "answer": 9,
-   "unit": "s",
-   "tolerance": 0,
-   "explain": "Detection waits for the full timeout since the last heartbeat (6 s), then 2 s to elect/promote and 1 s for clients: 6 + 2 + 1 = 9 s. A shorter timeout reduces this but raises the chance of a false failover."
+   "q": "How long are writes unavailable?",
+   "a": "Roughly detection + election + client rediscovery. If the timeout is 6 s and the leader died just after a heartbeat, detection takes up to 6 s, election 2 s and routing refresh 1 s: about 9 s. Reads from followers continue throughout."
   },
   {
-   "type": "number",
-   "q": "With asynchronous replication, the old leader had acknowledged writes through log position 5,000. The best follower has applied through position 4,940. How many acknowledged writes are lost if that follower is promoted?",
-   "answer": 60,
-   "unit": "writes",
-   "tolerance": 0,
-   "explain": "Entries 4,941 to 5,000 were acknowledged to clients but never reached the new leader: 5,000 - 4,940 = 60. With semi-synchronous replication (at least one follower acknowledges before the client does), some follower holds every acknowledged entry, and promoting that follower loses nothing."
+   "q": "Why promote the most advanced follower, not the first to respond?",
+   "a": "The first responder may be far behind. Followers at log positions 4,900, 4,985 and 4,940: promote the one at 4,985, since everything past a promoted follower's position is lost. Promoting 4,940 loses 45 more entries."
   },
   {
-   "type": "choice",
-   "q": "Three followers survive a leader crash. F1 answered the election request fastest but is at log position 4,900, F2 is at 4,985 and F3 at 4,940. Which should be promoted?",
-   "options": [
-    "F2: it has the most advanced log, so it loses the fewest committed writes",
-    "F1: the fastest responder is the healthiest",
-    "F3: the median node is the safest",
-    "Any: the followers are equivalent"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Promotion should minimise lost data, which means choosing the highest log position (and ensuring it is at least as up to date as a quorum for consensus systems). Response speed says nothing about how much of the log a node has."
+   "q": "How many writes are lost with async replication?",
+   "a": "The gap between the old leader's last acknowledged position and the promoted follower's. Acknowledged through 5,000, follower at 4,940: 60 acknowledged writes lost. Semi-sync shrinks this to zero as long as you promote a follower that holds the acknowledged entries."
   },
   {
-   "type": "choice",
-   "q": "The old leader was only partitioned, not dead. It rejoins after a new leader has been promoted and still accepts writes from clients that did not re-route. How do you prevent corruption?",
-   "options": [
-    "Give each leader an epoch/term and have followers and storage reject writes with an older epoch (fencing), and have the old leader's lease expire before promotion",
-    "Trust the old leader because it was the leader first",
-    "Keep both leaders and merge later",
-    "Use a shorter heartbeat interval only"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Shortening heartbeats cannot stop a process that is paused or partitioned and does not know it. Safety needs the *resource side* to refuse stale leaders, which is exactly the fencing-token idea."
+   "q": "The old leader was only partitioned, not dead, and rejoins still accepting writes. How do you prevent corruption?",
+   "a": "Epochs (term numbers) with a fencing token: storage and followers reject any request carrying a lower epoch. A lease also makes the old leader stop by itself when it can no longer renew."
   },
   {
-   "type": "choice",
-   "q": "A leader that pauses for 4 s on garbage collection every few minutes is run with a failover timeout of 3 s. What happens?",
-   "options": [
-    "Spurious failovers: it is declared dead while alive, causing leader churn and possible split brain",
-    "No effect: the GC pause is shorter than a failover",
-    "The followers ignore the missing heartbeats",
-    "The cluster becomes read-only permanently"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Choose the timeout above the normal pause and latency tail, or fix the pauses. A false failover costs an election and possibly lost writes for no reason."
+   "q": "A leader pauses for 4 s on GC every few minutes and the failover timeout is 3 s. What happens?",
+   "a": "False failovers and flapping: the cluster promotes a new leader for a leader that was merely paused. Raise the timeout above the pause, fix the pauses, add hysteresis."
   },
   {
-   "type": "order",
-   "q": "Order the steps of a leader failover.",
-   "items": [
-    "Followers stop receiving heartbeats and the timeout expires",
-    "The cluster picks the follower with the most advanced log",
-    "That follower is promoted with a new epoch",
-    "Followers and clients are pointed at the new leader",
-    "The old leader, if it returns, is demoted to a follower and catches up"
-   ],
-   "explain": "The new epoch is what lets the rest of the system reject the old leader, so it must be assigned before clients are redirected."
+   "q": "What is the timeout trade-off?",
+   "a": "Short timeouts detect real failures sooner but misfire on pauses and network blips; long timeouts avoid false positives but lengthen the write outage. Size it above your worst normal pause."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Walk through a leader failover from the moment the leader dies.",
+   "points": [
+    "Heartbeats stop, timeout declares failure",
+    "Elect the follower with the most advanced log",
+    "Promote, repoint followers, update routing",
+    "Fence the old leader with epoch/lease",
+    "Writes resume after detection + election + rediscovery"
+   ]
+  },
+  {
+   "q": "Explain how failover loses data and how you prevent it.",
+   "points": [
+    "Async acks that were never shipped are lost",
+    "Loss window equals lag at failure",
+    "Semi-sync makes acknowledged writes exist on 2 nodes",
+    "Promote a follower that holds them",
+    "Clients retry idempotently"
+   ]
+  },
+  {
+   "q": "Explain split brain in failover and how fencing stops it.",
+   "points": [
+    "Old leader alive after partition",
+    "Both accept writes, data diverges",
+    "Epoch / term numbers on every write",
+    "Replicas and storage reject the stale epoch",
+    "Lease expiry stops the old leader on its own"
+   ]
   }
  ]
 }

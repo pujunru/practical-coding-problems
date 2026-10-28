@@ -1,77 +1,67 @@
 {
  "id": "token-rebalancing",
  "title": "Token Rebalancing",
- "summary": "Token rebalancing is how a partitioned store **changes who owns which token ranges** (a node joins, leaves, or is overloaded) while staying online. Ownership change is cheap; the expensive part is **moving the data** that belongs to the range.\n\nA safe move follows the same shape every time:\n\n1. Pick the ranges to move and mark the target as *joining* (or *bootstrapping*).\n2. **Stream** the range's data to the target while the old owner still serves traffic.\n3. **Catch up**: writes that arrive during streaming must reach the target too, by dual-writing, forwarding, or replaying a change log. Copying a snapshot alone loses them.\n4. Flip ownership, then let the old owner delete the range.\n\nPractical rules:\n\n- **Virtual nodes** (many small token ranges per node) spread the streaming load over many sources, and a joining node takes a little from each instead of a lot from one neighbor.\n- **Throttle streaming** so it does not starve foreground traffic.\n- **Do not rebalance on every blip.** A node that restarts for two minutes should not trigger a move; wait for a threshold, bridge short outages with hints, and rebalance only on a decision (decommission, replace, or sustained failure).\n\nThe data volume to move is about `total / (N + 1)` for a balanced join to N nodes. See [partitioning](#/sd/f/partitioning), [consistent hashing](#/sd/f/consistent-hashing) and [hash bucketing](#/sd/f/hash-bucketing).",
- "drills": [
+ "explain": "Token rebalancing is how a partitioned store changes which node owns which token ranges, for example when a node joins, leaves or is overloaded, without going offline. Changing ownership on paper is cheap; the expensive part is moving the data that belongs to the range. The skill is doing that move so no write is lost and reads never hit an empty node.",
+ "model": "Same shape every time:\n\n```\njoining ──▶ stream range ──▶ catch up ──▶ flip ownership ──▶ old owner deletes\n (target)   (old owner       (writes that   (route to        (only after the\n            still serves)     arrived since   the target)     flip)\n                              the snapshot)\n```\n\n1. Pick the ranges to move and mark the target as *joining* (or *bootstrapping*).\n2. **Stream** the range's data to it while the old owner keeps serving.\n3. **Catch up**: writes that landed during streaming must also reach the target (dual-write, forwarding, or replaying a change log). A bare snapshot loses them.\n4. **Flip** ownership, then let the old owner delete.\n\nPractical rules: use **virtual nodes** so a joiner takes a little from many sources; **throttle** streaming so it does not starve foreground traffic; and **do not rebalance on every blip**. A node that reboots for two minutes should be bridged with hints, and ranges move only on a decision (decommission, replace, sustained failure). Related: [consistent hashing](#/sd/f/consistent-hashing), [partitioning](#/sd/f/partitioning), [hash bucketing](#/sd/f/hash-bucketing).",
+ "details": [
   {
-   "type": "number",
-   "q": "Six nodes each store 6 TB (36 TB of data on disk in total, replicas included). A seventh node joins and the cluster rebalances to equal shares. How many TB must the new node receive? (Round to 2 decimals.)",
-   "answer": 5.14,
-   "unit": "TB",
-   "tolerance": 0.02,
-   "explain": "Equal shares across 7 nodes is 36 / 7 = 5.14 TB per node, all of which the new node must receive. Each old node gives up 6 - 5.14 = 0.86 TB."
+   "q": "Why is changing ownership cheap but rebalancing expensive?",
+   "a": "Ownership is a small piece of metadata (a token map). The data behind a range can be terabytes, and it has to be copied over the network and written to disk before the new owner can serve it."
   },
   {
-   "type": "number",
-   "q": "The new node from the previous scenario receives data at a throttled 200 MB/s total. Take 1 TB = 10^6 MB and 5.14 TB to move. About how many hours does streaming take?",
-   "answer": 7.1,
-   "unit": "hours",
-   "tolerance": 0.05,
-   "explain": "5.14 x 10^6 MB / 200 MB/s = 25,700 s, about 7.1 h. The point: rebalancing time is data-bound, so throttling that protects foreground traffic stretches the window during which the cluster is in a transitional state."
+   "q": "How much data moves when a node joins?",
+   "a": "For a balanced join to N nodes, about `total / (N + 1)`. Example: six nodes with 36 TB in total (replicas included); a seventh node should hold 36/7 ≈ 5.14 TB, so that is what it receives, and each old node gives up about 0.86 TB."
   },
   {
-   "type": "order",
-   "q": "Order the steps of adding a node to a partitioned database.",
-   "items": [
-    "The new node picks or is assigned token ranges and enters a joining state",
-    "The old owners stream the ranges' data to it while still serving traffic",
-    "Writes that arrived during streaming are applied to the new node",
-    "Ownership of the ranges flips to the new node",
-    "Old owners delete the moved data"
-   ],
-   "explain": "Traffic only moves after the target is caught up. Deleting before the flip, or flipping before the catch-up, leaves reads that find nothing."
+   "q": "How long does that take?",
+   "a": "It is data-bound. 5.14 TB at a throttled 200 MB/s is about 25,700 s, roughly 7 hours. Throttling protects foreground traffic but stretches the window in which the cluster is in a transitional state."
   },
   {
-   "type": "choice",
-   "q": "A node is rebooted for a kernel patch and is gone for 2 minutes. What should the cluster do about its token ranges?",
-   "options": [
-    "Nothing structural: tolerate the short outage (for example with hinted writes) and do not stream its ranges elsewhere",
-    "Immediately reassign all its ranges and stream them to other nodes",
-    "Remove the node permanently from the ring",
-    "Stop all writes to those ranges until it returns"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Reassigning on every blip would trigger heavy, pointless data movement, a rebalancing storm that can cause more outages than it fixes. Treat a short absence as transient and a decision to decommission or replace as the trigger for moving data."
+   "q": "Snapshot copied at 10:00, flip at 10:20. What keeps the 10:00–10:20 writes?",
+   "a": "The catch-up step: the old owner forwards or dual-writes new writes to the target, or the target replays a change log from the snapshot's position. Copying only the snapshot would silently drop them."
   },
   {
-   "type": "choice",
-   "q": "During streaming of range R to a new node, a snapshot of R is copied at 10:00. Writes to R keep arriving at the old owner until the flip at 10:20. What guarantees the new node does not lose the 10:00-10:20 writes?",
-   "options": [
-    "The writes are also sent to the new node (dual-write or forwarding) or replayed from a change log before the flip",
-    "Nothing is needed because the old owner is still the source of truth",
-    "Clients retry failed reads against the old owner",
-    "The snapshot is taken again at 10:20 with the old owner offline"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A snapshot is correct only as of its timestamp. Unless the later changes are applied, the new owner serves stale or missing data after the flip. 'The old owner still has it' stops being true once ownership flips."
+   "q": "Why do virtual nodes make a join less disruptive?",
+   "a": "With many small ranges per node, the joiner takes a few ranges from many different nodes. Streaming load is spread over many sources instead of crushing one neighbour, and the new node becomes useful range by range."
   },
   {
-   "type": "choice",
-   "q": "Why do virtual nodes (many tokens per node) make a node join less disruptive than one token per node?",
-   "options": [
-    "The joining node receives small slices from many existing nodes in parallel, so no single node bears the streaming load",
-    "They make the total data smaller",
-    "They remove the need for replication",
-    "They avoid data movement entirely"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "With one token per node, a joiner takes half of one neighbor's range, so one machine does all the streaming. With many tokens the load is spread over most of the cluster and the result is also more balanced."
+   "q": "A node is down for 2 minutes for a kernel patch. Should the cluster rebalance?",
+   "a": "No. Moving terabytes for a two-minute outage costs far more than the outage. Bridge it with hinted handoff or replicas, and rebalance only after a threshold or an explicit decommission or replace decision."
+  },
+  {
+   "q": "When can the old owner delete the range?",
+   "a": "Only after the flip, once routing points at the new owner and it has caught up. Deleting earlier risks data loss if the move fails; keep the data until the new owner is confirmed."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Walk through adding a node to a running partitioned database without downtime or lost writes.",
+   "points": [
+    "New node enters a joining state and is assigned ranges",
+    "Old owners stream data while still serving",
+    "Catch-up of writes made during streaming",
+    "Flip ownership only when caught up",
+    "Old owners delete afterwards"
+   ]
+  },
+  {
+   "q": "Explain what you would do when a node disappears: when to rebalance and when not to.",
+   "points": [
+    "Short outage: hints / replicas bridge it, no move",
+    "Sustained failure or decommission: decide, then rebalance",
+    "Moving data is expensive and creates its own load",
+    "Throttle streaming, use virtual nodes",
+    "Restore replication factor, not just ownership"
+   ]
+  },
+  {
+   "q": "Estimate the cost of adding the 7th node to six nodes holding 6 TB each, and say what dominates.",
+   "points": [
+    "Total/(N+1) = 36/7 ≈ 5.14 TB to move",
+    "Bandwidth divided into that gives hours",
+    "Data volume, not metadata, dominates",
+    "Throttling trades window length for foreground latency"
+   ]
   }
  ]
 }

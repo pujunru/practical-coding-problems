@@ -1,75 +1,62 @@
 {
  "id": "leader-based-read-path",
  "title": "Leader-Based Read Path",
- "summary": "The read path is about **where a read is served and how fresh it must be**. Only the leader is guaranteed to have all committed writes, but every read on the leader uses the capacity that writes need.\n\nRouting options:\n\n- **Read from the leader:** fresh, but it limits read throughput.\n- **Read from a follower:** scales reads, but the data may be stale by the replication lag.\n- **Route by need:** reads that feed a decision or follow the user's own write go to the leader (or to a follower that has caught up); everything else goes to followers.\n\nTechniques:\n\n- **Position-tagged reads:** a write returns its log position; the next read goes to a follower only if its applied position is at least that, or else waits or falls back to the leader.\n- **Lag-aware routing:** remove followers whose lag exceeds a threshold from the read pool.\n- **Sticky routing:** keep one user on the same follower so reads do not go backward in time.\n- **Reading from the leader is not automatically fresh:** a deposed leader that does not know it was replaced can serve stale reads, so linear reads need a leadership check (a [lease](#/sd/f/lease) or a quorum round).\n\nWhich guarantees these give are formalised in [leader-based consistency](#/sd/f/leader-based-consistency); the write side is in the [write path](#/sd/f/leader-based-write-path). A [read/write replica split](#/sd/f/rw-replicas) is the common deployment.",
- "drills": [
+ "explain": "The read path is about where a read is served and how fresh it has to be. Only the leader is guaranteed to have every committed write, but reads on the leader use the capacity that writes need, so you route each read by how much staleness it can tolerate.",
+ "model": "Routing options:\n\n- **Read from the leader:** fresh, but it caps read throughput.\n- **Read from a follower:** scales reads, but data may be stale by the replication lag.\n- **Route by need:** reads that feed a decision, or that follow the user's own write, go to the leader (or a caught-up follower); the rest go to followers.\n\nTechniques:\n\n```\nwrite ─▶ returns log position 812\nread  ─▶ follower with applied_position ≥ 812 ? serve : wait / fall back to leader\n```\n\n- **Position-tagged reads:** carry the write's log position and require the follower to have applied at least that.\n- **Lag-aware routing:** drop followers whose lag exceeds a threshold from the read pool.\n- **Sticky routing:** pin a user to one follower so reads do not go backwards.\n- **A leader read is not automatically fresh:** a deposed leader that does not know it was replaced can serve stale data, so linearizable reads need a leadership check (a [lease](#/sd/f/lease) or a quorum round).\n\nThe guarantees these give are in [leader-based consistency](#/sd/f/leader-based-consistency); the write side is the [write path](#/sd/f/leader-based-write-path). A [read/write replica split](#/sd/f/rw-replicas) is the usual deployment.",
+ "details": [
   {
-   "type": "choice",
-   "q": "A shopping app serves reads from followers. Which reads should still go to the leader (or a caught-up replica)? Select all that apply.",
-   "options": [
-    "Showing a customer their order immediately after they place it",
-    "The balance check inside a transaction that decides whether to allow a withdrawal",
-    "Browsing the public product catalog",
-    "A weekly analytics export"
-   ],
-   "answer": [
-    0,
-    1
-   ],
-   "explain": "Read-your-own-writes and reads that feed a write decision must not be stale. Catalog browsing and analytics tolerate lag, and they are the bulk of traffic, which is why they are the reads you move to followers."
+   "q": "Which reads should still go to the leader in a shopping app?",
+   "a": "Reads that feed a decision (stock check at checkout, balance before a charge) and reads right after the user's own write (their cart, their order). Browsing, product pages and feeds can use followers."
   },
   {
-   "type": "number",
-   "q": "A single node serves at most 5,000 reads/s. The workload is 18,000 reads/s, and the leader serves no reads. Each follower counts as one node. What is the minimum number of followers needed?",
-   "answer": 4,
-   "unit": "followers",
-   "tolerance": 0,
-   "explain": "18,000 / 5,000 = 3.6, so 4 followers (4 x 5,000 = 20,000). Three followers would be saturated at 15,000/s, with no headroom for failures or spikes, which in practice means you need more than the minimum."
+   "q": "How many followers do I need for 18,000 reads/s if one node serves 5,000 and the leader serves none?",
+   "a": "18,000 / 5,000 = 3.6, so 4 followers, ignoring headroom. In practice add spare capacity so that one failed follower does not overload the others."
   },
   {
-   "type": "choice",
-   "q": "The router measures follower lag as 8 s on follower F2 while your freshness budget is 2 s. What should it do?",
-   "options": [
-    "Take F2 out of the read pool until its lag recovers, sending its reads to other followers (or the leader)",
-    "Keep routing, because eventual consistency covers it",
-    "Reboot the leader",
-    "Retry the same read on F2 until it is fresh"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A budget is only meaningful if it is enforced by routing. Make sure the remaining pool can take the load; if every follower lags, fall back to the leader or shed load rather than serving data that breaks the guarantee."
+   "q": "A follower is 8 s behind and my freshness budget is 2 s. What should the router do?",
+   "a": "Take it out of the read pool until it catches up (lag-aware routing), and send its traffic to healthy followers or the leader. Alert if many followers exceed the budget."
   },
   {
-   "type": "choice",
-   "q": "An old leader is partitioned from the rest of the cluster; a new leader has been elected. A client that still reaches the old leader reads from it. Is the data fresh?",
-   "options": [
-    "Not necessarily: the old leader may still believe it is the leader and serve stale reads, so it must confirm leadership via a lease or quorum before answering",
-    "Yes, the leader always has the latest data",
-    "Yes, if the read is a primary key lookup",
-    "No, because leaders never serve reads"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "'Read from the leader' is only fresh while it really is the leader. Lease-based leadership (the leader stops serving when its lease lapses) or a quorum check on each read closes that gap; see failover for the write-side analogue."
+   "q": "An old leader is partitioned and a new one has been elected. A client still reaches the old one. Is its data fresh?",
+   "a": "No. It does not know it has been replaced and may serve stale reads. Linearizable reads need a leadership check: a lease that it verifies is still valid, or a quorum round."
   },
   {
-   "type": "order",
-   "q": "Order the steps of a position-tagged read-your-writes read.",
-   "items": [
-    "The write commits at log position 1042 and the client stores 1042",
-    "The client issues a read with min_position = 1042",
-    "The router picks a follower and checks its applied position",
-    "If the follower is at or beyond 1042 it serves the read",
-    "Otherwise the read waits briefly or is redirected to the leader"
-   ],
-   "explain": "The token carries the causal dependency, so the system only pays the leader read cost when a follower is actually behind. A fixed 'read from the leader for N seconds' rule is simpler but coarser."
+   "q": "How does a position-tagged read give read-your-writes?",
+   "a": "The write returns its log position; the next read carries it; the router sends the read to a follower whose applied position is at least that, or waits briefly, or falls back to the leader."
   },
   {
-   "type": "recall",
-   "q": "List three read-routing policies for a leader-based store and the staleness each one allows.",
-   "answer": "Leader-only (none, but limited read capacity); any follower (stale by the replication lag, can go backward between followers); lag- or position-aware routing (bounded staleness or read-your-writes, at the price of a position check and a fallback to the leader)."
+   "q": "Why use sticky routing?",
+   "a": "Two consecutive reads from different followers with different lag can show newer data and then older data. Pinning a session to one follower makes its view move only forward."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "List three read-routing policies for a leader-based store and the staleness each allows.",
+   "points": [
+    "Always leader: fresh, limited throughput",
+    "Any follower: scalable, stale by replication lag",
+    "Route by need or position token: fresh where it matters",
+    "Lag-aware pool drops slow followers"
+   ]
+  },
+  {
+   "q": "Explain how you give a user read-your-writes without sending all reads to the leader.",
+   "points": [
+    "Write returns a log position or version",
+    "Read is sent with that position",
+    "Follower serves only if it has applied it",
+    "Otherwise wait briefly or use the leader",
+    "Short window of leader reads is a simpler fallback"
+   ]
+  },
+  {
+   "q": "Explain why reading from the leader is not always fresh.",
+   "points": [
+    "Leader may have been deposed by a partition",
+    "It does not know it was replaced",
+    "Need a lease or quorum confirmation",
+    "Fencing for writes, lease check for reads"
+   ]
   }
  ]
 }

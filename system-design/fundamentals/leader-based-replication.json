@@ -1,60 +1,64 @@
 {
  "id": "leader-based-replication",
  "title": "Leader-Based Replication",
- "summary": "In leader-based (single-leader, primary-backup) replication **one replica, the leader, accepts all writes**; the others, the followers, copy its **replication log** and apply it in the same order. Because exactly one node decides the order of writes, replicas cannot disagree about write order, and there are no write-write conflicts to resolve between replicas.\n\nThink of one editor with several proofreaders who only get copies: the editor's version is the truth, and copies lag by however long delivery takes.\n\nWhat you get and what you pay:\n\n- **Reads scale** by adding followers; **writes do not**. Every write still goes through the one leader (to scale writes, [shard](#/sd/f/sharding) as well).\n- **Followers can be stale**, depending on sync or async replication.\n- **Losing the leader** needs a [failover](#/sd/f/leader-based-failover), which risks lost writes and two leaders at once.\n\nCommon log formats: statement-based (breaks on `NOW()` or `RAND()`), physical WAL shipping (exact but version-coupled), and logical row-based (portable, the usual choice).\n\nAdding a follower never pauses the leader: take a consistent snapshot tagged with its log position, copy it, then replay everything after that position.\n\nThe four sub-topics are the [write path](#/sd/f/leader-based-write-path), [read path](#/sd/f/leader-based-read-path), [consistency](#/sd/f/leader-based-consistency) and [failover](#/sd/f/leader-based-failover). Compare with [multi-leader](#/sd/f/multi-leader-replication) and [leaderless](#/sd/f/leaderless-replication).",
- "drills": [
+ "explain": "In leader-based replication, one replica, the leader, accepts every write, and the other replicas, the followers, copy its replication log and apply it in the same order. Because exactly one node decides write order, replicas cannot disagree about it and there are no write-write conflicts between them. It scales reads and gives simple semantics, but writes still go through one node.",
+ "model": "My analogy: one editor and several proofreaders who only get copies. The editor's version is the truth, and copies lag by the delivery time.\n\n```\nclients ─writes─▶ LEADER ──replication log──▶ follower 1\n                    │                     └─▶ follower 2\nclients ─reads──▶ leader or followers (maybe stale)\n```\n\n- **Reads scale** by adding followers; **writes do not** (to scale writes, [shard](#/sd/f/sharding) as well).\n- **Followers can be stale**, depending on sync or async replication.\n- **Losing the leader** needs a failover, which risks lost writes and two leaders at once.\n- **Log formats:** statement-based (breaks on `NOW()` and `RAND()`), physical WAL shipping (exact but version-coupled), logical row-based (portable, the usual choice).\n- **Adding a follower never pauses the leader:** consistent snapshot tagged with a log position, copy it, replay everything after that position.\n\nThe four sub-topics: [write path](#/sd/f/leader-based-write-path), [read path](#/sd/f/leader-based-read-path), [consistency](#/sd/f/leader-based-consistency), [failover](#/sd/f/leader-based-failover). Contrast [multi-leader](#/sd/f/multi-leader-replication) and [leaderless](#/sd/f/leaderless-replication).",
+ "details": [
   {
-   "type": "choice",
-   "q": "A primary database is at 95% CPU from write load (reads are only 5% of traffic). The team adds three followers. What is the expected effect?",
-   "options": [
-    "Almost none: all writes still go through the one leader, so write capacity is unchanged",
-    "Write throughput roughly quadruples",
-    "CPU on the leader halves because writes are split among replicas",
-    "Writes are now safe from conflicts"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Followers copy the leader's work; they do not share it. They absorb reads. To scale writes you must shard the data or change the write path."
+   "q": "My primary is at 95% CPU from writes. Will adding followers help?",
+   "a": "No. Every follower must still apply every write, so writes do not get cheaper; they get slightly more expensive. Followers only offload reads. Scale writes by sharding or by reducing write cost."
   },
   {
-   "type": "number",
-   "q": "A leader can commit at most 2,000 writes/s. The workload is 4% writes and 96% reads, and the followers can absorb all the reads. What is the maximum total request rate the system can sustain?",
-   "answer": 50000,
-   "unit": "requests/s",
-   "tolerance": 0,
-   "explain": "Writes are the bottleneck: total x 0.04 <= 2,000, so total <= 50,000 requests/s (of which 48,000 are reads on followers). Adding followers does not raise this ceiling."
+   "q": "What is the throughput ceiling of a single leader?",
+   "a": "Write capacity divided by the write fraction. A leader that commits 2,000 writes/s with a 4% write workload supports at most 2,000 / 0.04 = 50,000 total requests/s, if followers absorb all the reads."
   },
   {
-   "type": "order",
-   "q": "Order the steps of adding a new follower to a running leader without downtime.",
-   "items": [
-    "Take a consistent snapshot of the leader and record its log position",
-    "Copy the snapshot to the new follower",
-    "The follower connects to the leader and requests all changes after the recorded position",
-    "The follower applies the backlog until it has caught up",
-    "The follower starts serving reads and following the live log"
-   ],
-   "explain": "The log position is what makes the snapshot usable: without it you cannot tell which writes happened after the snapshot and would miss or double-apply changes."
+   "q": "Why does one leader remove write conflicts, and what does that cost?",
+   "a": "One node sequences all writes, so every replica applies the same order and there is nothing to reconcile. The cost is a write bottleneck and a single point of write failure that needs failover."
   },
   {
-   "type": "choice",
-   "q": "A leader ships statements (not row changes) to its followers. A write is `UPDATE jobs SET started_at = NOW() WHERE id = 5`. What can go wrong?",
-   "options": [
-    "Each follower evaluates NOW() at its own time, so the replicas end up with different values",
-    "The statement is rejected by followers",
-    "The leader loses the write",
-    "Followers apply it twice"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Non-deterministic functions make statement-based replication diverge. Row-based (logical) logging ships the resulting values, so every replica stores the same data."
+   "q": "Why is statement-based replication dangerous?",
+   "a": "Re-executing `UPDATE ... SET started_at = NOW()` on each follower yields different values on each. Non-deterministic functions, triggers and auto-increments diverge; row-based logical logs ship the result, not the statement."
   },
   {
-   "type": "recall",
-   "q": "Why does a single leader remove write-write conflicts between replicas, and what does that cost you?",
-   "answer": "All writes pass through one node, which assigns one total order that every follower replays, so replicas never see competing orders. The cost is that write throughput is bounded by one node and that losing it requires a failover."
+   "q": "How do you add a follower without pausing the leader?",
+   "a": "Take a consistent snapshot that records its log position, copy it to the new node, then have the follower request all log entries after that position and replay until it catches up."
+  },
+  {
+   "q": "Sync vs async followers: what is the trade-off?",
+   "a": "Sync waits for follower acks (durable, slower, a slow follower can stall writes); async acknowledges after local commit (fast, but an acknowledged write can be lost if the leader dies first). See the write path."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain leader-based replication and what you gain and lose compared with a single node.",
+   "points": [
+    "One leader orders all writes, followers apply the log",
+    "No write-write conflicts between replicas",
+    "Reads scale, writes do not",
+    "Followers may be stale",
+    "Failover complexity"
+   ]
+  },
+  {
+   "q": "Walk through adding a new follower to a live database.",
+   "points": [
+    "Consistent snapshot with a log position",
+    "Copy snapshot to the new node",
+    "Replay log entries after that position",
+    "Leader keeps serving throughout",
+    "Join the read pool only when caught up"
+   ]
+  },
+  {
+   "q": "Your database is write-bound. Say what does and does not help.",
+   "points": [
+    "Followers do not help writes",
+    "Shard the data across leaders",
+    "Batch / reduce write amplification",
+    "Move reads off the leader to free capacity",
+    "Multi-leader only for regional reasons"
+   ]
   }
  ]
 }

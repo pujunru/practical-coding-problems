@@ -1,70 +1,62 @@
 {
  "id": "quorum",
  "title": "Quorum",
- "summary": "A quorum is **the minimum number of votes that lets a group decide**. For agreement, the quorum is a **majority**: `floor(N/2) + 1` of N nodes.\n\nThe whole trick is arithmetic: **any two majorities of the same group overlap in at least one node** (two sets of size > N/2 cannot be disjoint). That shared node has seen both decisions, so two conflicting decisions can never both succeed, and during a network split **at most one side can hold a majority**. Think of a **jury**: a verdict needs a majority, and two different verdicts cannot both have one.\n\n- **Fault tolerance:** a majority quorum survives `f = floor((N-1)/2)` failures, so `N = 2f + 1`: 3 nodes tolerate 1, 5 tolerate 2, 7 tolerate 3.\n- **Even sizes waste a node:** 4 nodes need 3 votes and still tolerate only 1 failure, and a 2/2 split leaves nobody with a majority.\n- **Place nodes with the failure domains in mind:** 3 nodes in one datacenter and 2 in another means losing the big one stops the cluster.\n\nTwo flavours share the idea: majority quorums for *agreement* (leader election, [consensus](#/sd/f/consensus), [Raft](#/sd/f/raft)) and tunable `W + R > N` read/write quorums for *replicated data* ([leaderless quorum](#/sd/f/leaderless-quorum), [quorum-based replication](#/sd/f/quorum-based-replication)). The price of a quorum is that without enough live nodes it refuses to answer.",
- "drills": [
+ "explain": "A quorum is the minimum number of votes that lets a group decide. For agreement, the quorum is a majority: floor(N/2) + 1 of N nodes. The whole trick is arithmetic: any two majorities of the same group overlap in at least one node, so two conflicting decisions cannot both succeed.",
+ "model": "My analogy is a jury: a verdict needs a majority, and two different verdicts cannot both have one.\n\n```\n5 nodes, quorum = 3\nside 1 {A,B,C}  3 votes ✓ can decide\nside 2 {D,E}    2 votes ✗ must wait         (any two majorities share a node)\n```\n\n- **Intersection property:** two sets of size > N/2 cannot be disjoint. The shared node saw both decisions, so conflicts are caught.\n- **Network split:** at most one side holds a majority.\n- **Fault tolerance:** f = floor((N−1)/2) failures, N = 2f + 1: 3 tolerates 1, 5 tolerates 2, 7 tolerates 3.\n- **Even sizes waste a node:** 4 need 3 votes and still tolerate 1, and a 2/2 split leaves nobody a majority.\n- **Failure domains:** 3 nodes in one datacenter and 2 in another means losing the big one halts the cluster.\n\nTwo flavours share the idea: majority quorums for *agreement* ([consensus](#/sd/f/consensus), [Raft](#/sd/f/raft), leader election) and tunable `W + R > N` quorums for *replicated data* ([leaderless quorum](#/sd/f/leaderless-quorum), [quorum-based replication](#/sd/f/quorum-based-replication)). The price: without enough live nodes, the group refuses to answer.",
+ "details": [
   {
-   "type": "number",
-   "q": "A cluster has 7 voting nodes and decisions need a majority. How many votes make a quorum?",
-   "answer": 4,
-   "unit": "nodes",
-   "tolerance": 0,
-   "explain": "A majority is floor(7/2) + 1 = 4. With 3 votes, two disjoint groups of 3 could each decide independently (3 + 3 < 7 leaves one node out); any two groups of 4 must share a node (4 + 4 > 7)."
+   "q": "How many votes make a quorum in a 7-node cluster?",
+   "a": "Four: floor(7/2) + 1. It tolerates three failures."
   },
   {
-   "type": "number",
-   "q": "You must keep making decisions through 3 simultaneous node failures, using a majority quorum. What is the smallest cluster size?",
-   "answer": 7,
-   "unit": "nodes",
-   "tolerance": 0,
-   "explain": "Survivors must still form a majority: N - 3 >= floor(N/2) + 1 gives N = 7 (4 alive, majority is 4). With N = 6 the majority is 4 but only 3 are alive; with N = 2f + 1 you need 7."
+   "q": "I need to keep deciding through three simultaneous failures. How big a cluster?",
+   "a": "N = 2f + 1 = 7 nodes."
   },
   {
-   "type": "choice",
-   "q": "Why is a 4-node cluster no better than a 3-node cluster for a majority quorum?",
-   "options": [
-    "Majority of 4 is 3, so both tolerate exactly one failure, and 4 nodes can split 2/2 with no majority on either side",
-    "Majority of 4 is 2, so it tolerates two failures but is slower",
-    "Four-node clusters cannot elect a leader at all",
-    "Quorums are only defined for prime sizes"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "floor(3/2) = 1 failure for both. The fourth node adds cost and one more way to lose a majority, without adding fault tolerance. Odd sizes are the sweet spot."
+   "q": "Why is a 4-node cluster no better than 3?",
+   "a": "Both tolerate one failure (4 need 3 votes). The extra node adds cost and a 2/2 split in which no side has a majority."
   },
   {
-   "type": "choice",
-   "q": "Five nodes are split by a partition into groups of 3 and 2. A client writes to each side. What does a majority-quorum system do?",
-   "options": [
-    "The 3-node side can commit; the 2-node side cannot reach 3 votes and refuses or stalls",
-    "Both sides commit and merge later",
-    "Neither side can commit because the cluster is split",
-    "The 2-node side commits because it has the original leader"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Quorum is how split-brain is avoided: only one side can hold a majority, because 3 + 3 > 5 means two committing groups would have to share a node. The minority side gives up availability to keep consistency."
+   "q": "Five nodes are split 3 and 2 and a client writes to each side. What happens?",
+   "a": "The 3-node side commits; the 2-node side refuses the write. Only one side can hold a majority, so there is no split brain."
   },
   {
-   "type": "choice",
-   "q": "A 5-node cluster has 3 nodes in datacenter A and 2 in datacenter B, with majority quorums. Which failure stops the cluster from making decisions?",
-   "options": [
-    "Datacenter A going offline: only 2 of 5 nodes remain",
-    "Datacenter B going offline: 3 of 5 nodes remain",
-    "Losing any single node",
-    "The link between A and B being cut"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A holds the majority, so losing A leaves 2 nodes, short of the 3 required. Losing B leaves exactly a quorum, and a cut link leaves A with 3. Two datacenters can never be made symmetric; a quorum across datacenters needs a third site (even a small tiebreaker)."
+   "q": "A 5-node cluster has 3 nodes in datacenter A and 2 in B. Which failure stops decisions?",
+   "a": "Losing datacenter A: only 2 nodes remain, below the majority of 3. Losing B leaves 3 and still works. Spread nodes so no single domain holds a majority, or accept that domain as a single point of failure."
   },
   {
-   "type": "recall",
+   "q": "What does a quorum cost?",
+   "a": "Availability when too many nodes are unreachable (it refuses rather than answers wrongly) and a round trip to the majority per decision."
+  }
+ ],
+ "prompts": [
+  {
    "q": "State the quorum intersection property and say what it prevents.",
-   "answer": "Any two majority quorums of the same N nodes share at least one node, since both have more than N/2 members. So two conflicting decisions cannot both be accepted, and in a partition at most one side can proceed, which prevents split-brain. It requires N = 2f + 1 nodes to tolerate f failures."
+   "points": [
+    "Any two majorities share at least one node",
+    "Two conflicting decisions cannot both be accepted",
+    "Prevents split brain across a partition",
+    "Majority is floor(N/2) + 1"
+   ]
+  },
+  {
+   "q": "Size a cluster for two simultaneous failures and place its nodes.",
+   "points": [
+    "N = 2f + 1 = 5",
+    "Majority 3",
+    "Odd sizes only",
+    "Spread over failure domains so no domain has a majority",
+    "Accept refusal when the quorum is lost"
+   ]
+  },
+  {
+   "q": "Explain the two flavours of quorum and how they differ.",
+   "points": [
+    "Majority for agreement: election, consensus",
+    "W + R > N for replicated data",
+    "Majority guarantees single history",
+    "Tunable is available but only mostly fresh"
+   ]
   }
  ]
 }

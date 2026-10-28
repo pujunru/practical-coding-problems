@@ -1,74 +1,64 @@
 {
  "id": "leader-based-write-path",
  "title": "Leader-Based Write Path",
- "summary": "The write path is the journey of one write from the client to being **committed**. The key design decision is **when the leader acknowledges the client**.\n\n1. The client sends the write to the leader.\n2. The leader validates it, appends it to its **log** (the write-ahead log) with a new log position, and flushes it to disk.\n3. The leader **ships** the log entry to followers.\n4. Followers append, flush and **acknowledge** it.\n5. The leader decides the entry is **committed** according to the replication mode, applies it, and replies to the client.\n6. Followers apply committed entries in the same log order.\n\nThe replication mode sets the commit rule:\n\n- **Asynchronous:** commit after the local flush. Lowest latency; if the leader dies before shipping, an acknowledged write is lost.\n- **Synchronous:** wait for *every* follower. Safest, but one slow or dead follower stalls all writes.\n- **Semi-synchronous:** wait for *one* (or k) follower. A common compromise: acknowledged data exists on at least two nodes.\n\nWrite latency is therefore the local flush plus the *k-th fastest* follower acknowledgment, and followers must apply entries in log order or replicas diverge. What readers then see is the topic of [leader-based consistency](#/sd/f/leader-based-consistency); what happens when the leader dies mid-write is [failover](#/sd/f/leader-based-failover).",
- "drills": [
+ "explain": "The write path is the journey of one write from the client to being committed. The key design decision is when the leader acknowledges the client: after its own flush, after every follower, or after some of them. That choice sets the trade-off between latency and the risk of losing an acknowledged write.",
+ "model": "```\nclient ─▶ leader: validate, append to log, flush\n              │ ship entry\n              ▼\n          followers: append, flush, ACK\n              │\nleader: commit rule met? ─▶ apply ─▶ reply to client\nfollowers apply committed entries in log order\n```\n\nThe replication mode sets the commit rule:\n\n- **Asynchronous:** commit after the local flush. Lowest latency; if the leader dies before shipping, an acknowledged write is lost.\n- **Synchronous:** wait for *every* follower. Safest, but one slow or dead follower stalls all writes.\n- **Semi-synchronous:** wait for *one* (or k) follower. The usual compromise: an acknowledged write exists on at least two nodes.\n\nWrite latency = local flush + the **k-th fastest** follower acknowledgement. Followers must apply in log order or replicas diverge. What readers see is [leader-based consistency](#/sd/f/leader-based-consistency); a leader dying mid-write is [failover](#/sd/f/leader-based-failover).",
+ "details": [
   {
-   "type": "order",
-   "q": "Order the steps of a semi-synchronous write.",
-   "items": [
-    "Client sends the write to the leader",
-    "Leader appends the entry to its log and flushes it",
-    "Leader ships the entry to followers",
-    "At least one follower flushes the entry and acknowledges",
-    "Leader marks the entry committed and replies to the client"
-   ],
-   "explain": "The reply comes after the first required follower ack, not after all of them. The remaining followers still receive and apply the entry, just off the critical path."
+   "q": "Walk me through the steps of one semi-synchronous write.",
+   "a": "Client sends to the leader; leader appends and flushes; ships the entry; followers append, flush and ack; once one follower has acked the leader commits, applies and replies. Other followers catch up asynchronously."
   },
   {
-   "type": "choice",
-   "q": "A leader uses fully asynchronous replication. It acknowledges write #9001 to the client and crashes before sending the entry to any follower. A follower is promoted. What is the outcome?",
-   "options": [
-    "The client was told the write succeeded, but the new leader never saw it: an acknowledged write is lost",
-    "The new leader recovers it from the clients' retries automatically",
-    "The write is replayed from the followers' logs",
-    "The client gets an error"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Async buys latency by acknowledging before durability on a second node. Surviving a leader crash requires that an acknowledgment imply the write exists on at least one other node (semi-sync or sync)."
+   "q": "What does the client latency look like with semi-sync?",
+   "a": "The leader flushes locally (2 ms) in parallel with shipping. A same-region follower acks in 3 ms (1 ms round trip + 2 ms flush), a remote one in 42 ms. Waiting for one follower, latency is about 3 ms, not 42: it is the k-th fastest ack."
   },
   {
-   "type": "number",
-   "q": "A leader has 2 followers. In parallel, the leader flushes locally (2 ms) and ships the entry. Follower A takes 1 ms network round trip + 2 ms flush = 3 ms to acknowledge. Follower B is in another region: 40 ms round trip + 2 ms flush = 42 ms. With semi-synchronous replication (wait for one follower), what is the write latency, in ms?",
-   "answer": 3,
-   "unit": "ms",
-   "tolerance": 0,
-   "explain": "The leader must have flushed (2 ms) and have one follower ack (A at 3 ms), so the latency is max(2, 3) = 3 ms. Fully synchronous would wait for B too: 42 ms. B still receives the entry; it just does not delay the client."
+   "q": "With fully asynchronous replication the leader acknowledges write #9001 and crashes before shipping. What happens?",
+   "a": "The write is lost. A follower is promoted without it, and the client was told it succeeded. That is the durability price of async commit."
   },
   {
-   "type": "choice",
-   "q": "A cluster has three synchronous followers. One follower's disk starts failing and each flush takes 5 s. What happens to client writes, and what is the standard remedy?",
-   "options": [
-    "Writes stall at about 5 s each; make replication semi-synchronous (wait for k of the followers) and eject the bad follower",
-    "Writes are unaffected because the other two followers answer fast",
-    "Writes become asynchronous automatically",
-    "The leader skips the slow follower silently and keeps full durability guarantees"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Fully synchronous means every follower is on the critical path, so the slowest one sets the latency and its failure blocks writes. Waiting for any k of them tolerates slow members; ejecting a failing node restores the target number of copies."
+   "q": "Three synchronous followers; one has a failing disk with 5 s flushes. What happens?",
+   "a": "Every write now takes at least 5 s, effectively an outage. The standard remedy is semi-synchronous: require a small number of acks and automatically demote or replace the slow follower."
   },
   {
-   "type": "choice",
-   "q": "A follower receives entries #100 (`x = 1`) and #101 (`x = 2`) but applies them in parallel and #101 finishes first. What is the problem?",
-   "options": [
-    "Replication must apply entries for the same key in log order; otherwise the follower ends with `x = 1` while the leader has `x = 2`",
-    "None; both values are eventually written",
-    "The follower must reject all parallel apply",
-    "The leader will resend #101"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The log order is the single source of truth about write order. Parallel apply is fine only for entries that touch independent keys; same-key entries must be applied in sequence."
+   "q": "Why must followers apply entries in log order?",
+   "a": "Entries are not independent: #100 `x = 1` then #101 `x = 2` applied in parallel can finish in reverse order and leave `x = 1`. Parallel apply is fine only for entries that touch disjoint data."
   },
   {
-   "type": "recall",
-   "q": "What do 'committed' and 'acknowledged to the client' mean on the leader write path, and why can asynchronous mode make them diverge from 'durable'?",
-   "answer": "Committed means the leader considers the entry safe by its replication rule and will include it in the log forever; the client is acknowledged then. In async mode that happens after the local flush only, so the entry may exist on one node and vanish with it."
+   "q": "Does 'acknowledged to the client' mean 'durable'?",
+   "a": "Not under async. 'Committed' means the commit rule was met, which only guarantees the data survives to the extent the rule requires: async means one node, semi-sync at least two."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Walk through a leader-based write and where you place the acknowledgement.",
+   "points": [
+    "Validate, append to log, flush",
+    "Ship to followers, they append, flush, ack",
+    "Commit rule decides when to reply",
+    "Followers apply in log order",
+    "Async vs semi-sync vs sync"
+   ]
+  },
+  {
+   "q": "Compare asynchronous, semi-synchronous and synchronous replication and say which you would choose for a payments ledger.",
+   "points": [
+    "Async: fast but can lose acknowledged writes",
+    "Sync: safest, availability tied to slowest follower",
+    "Semi-sync: at least two copies, latency of the fastest ack",
+    "Pick semi-sync or consensus for money",
+    "Demote slow followers"
+   ]
+  },
+  {
+   "q": "A follower becomes slow. Explain the effect on writes in each mode and what you do.",
+   "points": [
+    "Async: no effect on latency, lag grows",
+    "Sync: all writes stall",
+    "Semi-sync: unaffected while another follower acks",
+    "Remove or replace the follower",
+    "Alert on lag"
+   ]
   }
  ]
 }

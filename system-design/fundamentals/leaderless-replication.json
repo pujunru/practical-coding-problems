@@ -1,75 +1,64 @@
 {
  "id": "leaderless-replication",
  "title": "Leaderless Replication",
- "summary": "In leaderless replication **every replica of a key can accept reads and writes**, and nobody orders writes. Whichever node receives a client request acts as that request's **coordinator** (not a leader) and talks to the key's replicas.\n\nThink of an engineering team serving customers: each engineer is assigned to different customers, yet every change (a feature, a fix) ends up in the same shared service, and eventually everyone learns what happened.\n\nStructure (Dynamo / Cassandra style):\n\n```\nKey -> hash -> Partition -> Replica set [A, B, C]   (replication factor N = 3)\nClient -> any node = coordinator for this request -> replicas\n```\n\n- A write succeeds when **W** replicas confirm; a read consults **R** replicas and reconciles. See the [write path](#/sd/f/leaderless-write-path), the [read path](#/sd/f/leaderless-read-path), [quorum](#/sd/f/leaderless-quorum) and [repair](#/sd/f/leaderless-repair).\n- **No failover:** a down replica just means fewer acks, so availability is high.\n- **Costs:** replicas may disagree, so every value needs version metadata; concurrent writes can conflict; and there is no global order or transaction across keys.\n\nUse it for high availability and write throughput on key-addressed data that tolerates eventual convergence (shopping carts, sessions, time series, activity feeds). Avoid it where an invariant needs a single arbiter (balances, uniqueness) unless you add consensus. Contrast with [leader-based replication](#/sd/f/leader-based-replication).",
- "drills": [
+ "explain": "In leaderless replication every replica of a key can accept reads and writes, and nobody orders writes. Whichever node receives a request acts as that request's coordinator and talks to the key's replicas. It gives high availability and write throughput, in exchange for replicas that may disagree and need version metadata and repair.",
+ "model": "My mental model: every engineer can read and write, but each handles one customer request; every change ends up in the same shared service, and eventually everyone learns what happened.\n\nStructure (Dynamo / Cassandra style):\n\n```\nKey ─hash─▶ Partition P ─replication factor N=3─▶ Replica set [A, B, C]\nClient ─▶ any node = Coordinator (for this request only)\n            ├─ write to replicas, wait for W acks\n            ├─ read replicas, wait for R responses\n            └─ reconcile versions\n```\n\n- A write succeeds when **W** replicas confirm; a read consults **R** and reconciles. Details: [write path](#/sd/f/leaderless-write-path), [read path](#/sd/f/leaderless-read-path), [quorum](#/sd/f/leaderless-quorum), [repair](#/sd/f/leaderless-repair).\n- **No failover:** a down replica just means fewer acks.\n- **Costs:** replicas may disagree so every value needs version metadata; concurrent writes can conflict; no global order or cross-key transaction.\n\n**Use** for high availability and write throughput on key-addressed data that tolerates eventual convergence (carts, sessions, time series, feeds). **Avoid** where an invariant needs a single arbiter (balances, uniqueness) unless you add consensus. Contrast [leader-based replication](#/sd/f/leader-based-replication).",
+ "details": [
   {
-   "type": "choice",
-   "q": "A replica set of three loses one node. What does a client writing at W = 2 see in a leaderless system, compared with the same loss being the leader in a single-leader system?",
-   "options": [
-    "Leaderless: the write still succeeds with 2 acks. Single-leader: writes pause until failover completes",
-    "Both stay fully available",
-    "Leaderless stops writing; single-leader continues",
-    "Both lose data"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "No node is special, so losing one only reduces the available acks. Losing the leader removes the only place that accepts writes until a new one is chosen."
+   "q": "What does a client see when one of three replicas dies, at W = 2?",
+   "a": "Nothing: two live replicas still ack and the write succeeds. In single-leader, losing the leader blocks writes until failover completes. That is the availability advantage."
   },
   {
-   "type": "choice",
-   "q": "Node X coordinates client 1's write of key K, and node Y coordinates client 2's write of K at the same moment. What is true in a leaderless system?",
-   "options": [
-    "Replicas may apply the two writes in different orders, so versions must be compared to decide the outcome",
-    "X is the leader for K, so its write wins",
-    "The replicas lock K to serialise them",
-    "Y's write is rejected because X coordinated first"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A coordinator only drives one request; it has no authority over the key. Without a single orderer, concurrency must be resolved with version metadata (timestamps or version vectors)."
+   "q": "What is a coordinator, and why is it not a leader?",
+   "a": "The node that happened to receive a request and fans it out to the replicas. It has no authority over other requests and no ordering role: two coordinators handling the same key concurrently is normal."
   },
   {
-   "type": "choice",
-   "q": "Which workloads fit leaderless replication? Select all that apply.",
-   "options": [
-    "A shopping cart that must always accept adds, even during a partial outage",
-    "A user session store",
-    "A uniqueness check for usernames across all users",
-    "An inventory counter that must never go below zero"
-   ],
-   "answer": [
-    0,
-    1
-   ],
-   "explain": "Carts and sessions prefer availability and can merge or overwrite. Uniqueness and non-negative invariants need an arbiter; with no leader, two writers can both succeed."
+   "q": "Two coordinators write the same key at the same time. What is true?",
+   "a": "Both proceed independently; replicas may receive them in different orders. Resolution depends on version metadata (LWW timestamps or version vectors), not arrival order."
   },
   {
-   "type": "order",
-   "q": "Order the pieces of a leaderless request path.",
-   "items": [
-    "The client sends the request to any node (the coordinator)",
-    "The key is hashed to a partition",
-    "The partition maps to its replica set",
-    "The coordinator contacts the replicas",
-    "The coordinator waits for W acks (write) or R responses (read)"
-   ],
-   "explain": "Placement is deterministic from the key; only the coordinator is incidental. That is why any node can take any request."
+   "q": "How much disk does a cluster need?",
+   "a": "Unique data times the replication factor, divided by nodes. 30 TB across 9 nodes with N = 3 is 90 TB of total storage, so 10 TB per node on average."
   },
   {
-   "type": "number",
-   "q": "A leaderless cluster has 9 nodes and replication factor 3. There is 30 TB of unique data, spread evenly. How much disk does each node use on average, in TB?",
-   "answer": 10,
-   "unit": "TB",
-   "tolerance": 0,
-   "explain": "Raw data is 30 x 3 = 90 TB; spread over 9 nodes it is 10 TB each. Replication multiplies storage by N, regardless of whether there is a leader."
+   "q": "Which workloads fit and which do not?",
+   "a": "Fit: carts, sessions, time-series, activity feeds, anything key-addressed and convergence-tolerant. Don't fit: balances, uniqueness constraints, inventory of the last item, anything that needs a single arbiter."
   },
   {
-   "type": "recall",
-   "q": "Explain a coordinator in leaderless replication, and why it is not a leader.",
-   "answer": "The coordinator is whichever node received the request; it fans the operation out to the key's replicas and collects W or R responses. It is chosen per request and holds no authority over ordering, so different requests for the same key can have different coordinators."
+   "q": "What do you give up compared with leader-based?",
+   "a": "A single history: replicas can disagree, concurrent writes can conflict, there is no multi-key transaction, and reads are only fresh if the quorum overlap holds and repair keeps up."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain leaderless replication and the role of a coordinator.",
+   "points": [
+    "Any replica can accept reads and writes",
+    "Key → partition → replica set",
+    "Coordinator is per request, not a leader",
+    "Waits for W acks or R responses",
+    "Eventual convergence through repair"
+   ]
+  },
+  {
+   "q": "Compare leaderless with leader-based and say when you would pick each.",
+   "points": [
+    "Leaderless: availability, no failover, write throughput",
+    "Leader-based: single order, simple semantics",
+    "Leaderless needs version metadata and repair",
+    "Balances/uniqueness need a leader or consensus",
+    "Carts, sessions, time series suit leaderless"
+   ]
+  },
+  {
+   "q": "Trace a request through a leaderless cluster from client to replicas.",
+   "points": [
+    "Client contacts any node",
+    "Hash gives partition, partition gives replica set",
+    "That node coordinates with the replicas",
+    "Quorum counts decide success",
+    "Versions reconciled; stale replicas repaired"
+   ]
   }
  ]
 }

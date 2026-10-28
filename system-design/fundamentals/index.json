@@ -148,17 +148,17 @@
     {
      "id": "token-rebalancing",
      "title": "Token Rebalancing",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "salting",
      "title": "Salting and Desalting",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "geo-cell",
      "title": "Geo Cells",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -169,72 +169,72 @@
     {
      "id": "leader-based-replication",
      "title": "Leader-Based Replication",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leader-based-write-path",
      "title": "Leader-Based Write Path",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leader-based-read-path",
      "title": "Leader-Based Read Path",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leader-based-consistency",
      "title": "Leader-Based Consistency",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leader-based-failover",
      "title": "Leader-Based Failover",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "multi-leader-replication",
      "title": "Multi-Leader Replication",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leaderless-replication",
      "title": "Leaderless Replication",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leaderless-write-path",
      "title": "Leaderless Write Path",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leaderless-read-path",
      "title": "Leaderless Read Path",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leaderless-repair",
      "title": "Leaderless Repair",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "leaderless-quorum",
      "title": "Leaderless Quorum",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "quorum-based-replication",
      "title": "Quorum-Based Replication",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "rw-replicas",
      "title": "Read/Write Replicas",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "multi-region",
      "title": "Multi-Region",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -245,17 +245,17 @@
     {
      "id": "eventual-consistency",
      "title": "Eventual Consistency",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "quorum",
      "title": "Quorum",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "consensus",
      "title": "Consensus",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "raft",
