@@ -382,12 +382,12 @@
     {
      "id": "active-monitoring",
      "title": "Active Monitoring",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "clock-shift",
      "title": "Clock Skew",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -398,17 +398,17 @@
     {
      "id": "cell",
      "title": "Cells",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "compartment",
      "title": "Compartments",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "tenant-isolation",
      "title": "Tenant Isolation",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -419,22 +419,22 @@
     {
      "id": "horizontal-scaling",
      "title": "Horizontal Scaling",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "partition-expansion",
      "title": "Partition Expansion",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "rebalance",
      "title": "Rebalance",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "backfill",
      "title": "Backfill",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -445,17 +445,17 @@
     {
      "id": "dispatcher",
      "title": "Dispatcher",
-     "prompts": 0
+     "prompts": 4
     },
     {
      "id": "queue-first-vs-db-first",
      "title": "Persisted Queue First vs DB First",
-     "prompts": 0
+     "prompts": 4
     },
     {
      "id": "wait-queue",
      "title": "Wait Queue",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -466,22 +466,22 @@
     {
      "id": "prioritized-scheduling",
      "title": "Prioritized Scheduling",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "weighted-scheduling",
      "title": "Weighted Scheduling",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "wait-running-queues",
      "title": "Wait / Running Queues",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "trigger-based-invocation",
      "title": "Trigger-Based Invocation",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -492,17 +492,17 @@
     {
      "id": "connection-pooling",
      "title": "Connection Pooling",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "timer-wheel",
      "title": "Timer Wheel",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "tumbling-window",
      "title": "Tumbling Window",
-     "prompts": 0
+     "prompts": 3
     }
    ]
   },
@@ -513,7 +513,7 @@
     {
      "id": "sliding-window-aggregation",
      "title": "Sliding Window Aggregation",
-     "prompts": 0
+     "prompts": 3
     },
     {
      "id": "time-bucket-counter",

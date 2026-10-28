@@ -1,72 +1,62 @@
 {
  "id": "horizontal-scaling",
  "title": "Horizontal Scaling",
- "summary": "Horizontal scaling means **adding more machines instead of a bigger machine**. It is easy when the nodes are **stateless**: any request can go to any node, so you keep adding compute behind a [load balancer](#/sd/f/load-balancing) and capacity grows roughly linearly. Vertical scaling (a bigger box) is simpler but has a ceiling, a price curve that bends upward, and one big failure domain.\n\nWhat makes a node stateless: sessions, uploaded files, caches, counters and locks live outside it (database, shared cache, object store). If a node's death loses something, it was state.\n\nWhere it stops being easy:\n\n- **The shared parts become the bottleneck.** More app nodes means more DB connections, more cache traffic, more contention on the same locks and queues. Check the downstream limits before adding nodes.\n- **Serial work caps the gain** (Amdahl's law): if a fraction `s` of the work cannot be parallelized, speedup is at most `1/s`, however many nodes you add.\n- **Stateful tiers need real design:** [partitioning and sharding](#/sd/f/sharding), replication, and [rebalancing](#/sd/f/rebalance) when nodes join. Growing the stateful tier is covered by [partition expansion](#/sd/f/partition-expansion).\n\nCapacity planning: size for peak at your target utilization (say 60-70%), and keep N+1 headroom so losing a node doesn't push the rest into overload. A scaling alternative that avoids sharing altogether is [tenant isolation](#/sd/f/tenant-isolation).",
- "drills": [
+ "explain": "Horizontal scaling means adding more machines rather than a bigger one. With stateless nodes you keep adding compute behind a load balancer and capacity grows roughly linearly. It stops being free where state lives or where something shared, a database, a lock or a serial section, becomes the bottleneck.",
+ "model": "**Stateless nodes: just keep adding computation.** Any request can go to any node; sessions, files, caches, counters and locks live outside (database, shared cache, object store). If a node's death loses something, that something was state.\n\n```\nclients --> load balancer --> [node][node][node][node] ... --> shared DB / cache / object store\n                               add more here                   <- becomes the bottleneck\n```\n\nVertical scaling (a bigger box) is simpler but has a ceiling, a price curve that bends upward, and one big failure domain.\n\nWhere it stops being easy:\n\n1. **Shared dependencies.** More nodes means more DB connections, cache traffic and lock contention. 40 nodes x 20 connections = 800 against a limit of 500.\n2. **Serial work.** Amdahl's law: if a fraction `s` is serial, speedup is at most `1/s`.\n3. **Stateful tiers** need [sharding](#/sd/f/sharding), replication and [rebalancing](#/sd/f/rebalance); see [partition expansion](#/sd/f/partition-expansion).\n\nCapacity planning: size for peak at about 60 to 70 percent utilization and keep N+1 headroom. The alternative that avoids sharing altogether is [tenant isolation](#/sd/f/tenant-isolation).",
+ "details": [
   {
-   "type": "choice",
-   "q": "A web tier keeps user sessions in each node's memory and the load balancer spreads requests round-robin. After scaling from 3 to 6 nodes, users are randomly logged out. What is the correct fix?",
-   "options": [
-    "Move sessions to a shared store (or signed tokens) so any node can serve any request",
-    "Add a bigger load balancer",
-    "Scale back to 3 nodes",
-    "Increase each node's memory"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A node that holds the session is no longer interchangeable. Externalizing state restores statelessness, and only then does adding nodes scale. Sticky routing would paper over it but fails when that node dies."
+   "q": "Sessions live in each node's memory. After scaling from 3 to 6 nodes users are randomly logged out. Fix?",
+   "a": "Move sessions to a shared store or use signed tokens so any node can serve any request. Sticky sessions hide the problem but lose sessions when a node dies."
   },
   {
-   "type": "number",
-   "q": "Each node can serve 500 requests per second, but you want to run at no more than 70% utilization. Peak load is 6,000 requests per second, and after any one node fails the remaining nodes must still stay at or below 70%. How many nodes should you run?",
-   "answer": 19,
-   "unit": "nodes",
-   "tolerance": 0,
-   "explain": "Target capacity per node is 500 × 0.7 = 350. After losing one node you still need 6,000 / 350 = 17.14, i.e. 18 survivors. So run 18 + 1 = 19 nodes."
+   "q": "Each node serves 500 req/s, target utilization 70 percent, peak 6,000 req/s, and the fleet must survive one node failure. How many nodes?",
+   "a": "Per node usable load is 350, so 6,000/350 = 17.1, i.e. 18 nodes. For N+1, 19 nodes. With 19 nodes, losing one leaves 18 at about 67 percent."
   },
   {
-   "type": "choice",
-   "q": "You scale the stateless API tier from 10 to 40 nodes. Each node keeps a pool of 20 database connections, and the database accepts at most 500 connections. What happens?",
-   "options": [
-    "The database cannot accept all of them (40 × 20 = 800 > 500), so the database is now the bottleneck",
-    "Throughput quadruples",
-    "Nothing; pools only open connections lazily and never exceed 500",
-    "The load balancer rejects the new nodes"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Horizontal scaling multiplies the load on shared downstreams. Cap per-node pools, add a pooling proxy, or scale the database tier first."
+   "q": "You scale the API tier from 10 to 40 nodes, 20 DB connections each, database limit 500. What happens?",
+   "a": "40 x 20 = 800 exceeds 500, so the database is now the bottleneck or refuses connections. Check downstream limits before adding nodes; use a connection proxy or smaller pools."
   },
   {
-   "type": "choice",
-   "q": "Which kinds of in-process state stop an application from scaling cleanly just by adding nodes? Select all that apply.",
-   "options": [
-    "A per-node in-memory rate limit counter (the effective limit is multiplied by the node count)",
-    "User sessions stored in node memory",
-    "Uploaded files saved to a node's local disk",
-    "Read-only configuration loaded at startup from a file"
-   ],
-   "answer": [
-    0,
-    1,
-    2
-   ],
-   "explain": "Each of the first three differs between nodes or disappears with the node. Immutable config loaded the same on every node is fine."
+   "q": "Which in-process state breaks 'just add nodes'?",
+   "a": "Per-node rate-limit counters (effective limit multiplies by node count), sessions in memory, and files on local disk. Read-only config loaded at startup is fine."
   },
   {
-   "type": "number",
-   "q": "10% of the work in each request is serial: it goes through one single-threaded component and cannot be parallelized. What is the maximum speedup possible however many nodes you add, as a multiple of one node?",
-   "answer": 10,
-   "unit": "x",
-   "tolerance": 0,
-   "explain": "Amdahl's law: speedup <= 1/s = 1/0.10 = 10x. The remaining 90% shrinks toward zero, but the serial 10% never does."
+   "q": "If 10 percent of each request is serial, what is the best speedup?",
+   "a": "At most 10x, by Amdahl's law (1/0.1), however many nodes you add. Find and shrink the serial part."
   },
   {
-   "type": "recall",
-   "q": "Why is horizontal scaling easy for stateless services, and name two things that stop it from being free.",
-   "answer": "Any node can serve any request, so you add nodes behind a load balancer and capacity grows about linearly, and losing a node loses nothing. It isn't free because shared dependencies (databases, caches, locks) become the bottleneck as node count grows, and serial portions of the work cap the speedup. Stateful tiers also need partitioning and rebalancing."
+   "q": "Why is the stateful tier different?",
+   "a": "Data must be split and moved. You need partitioning, replication and rebalancing, and adding a node means copying data, not just starting a process."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Why is horizontal scaling easy for stateless services, and what stops it being free?",
+   "points": [
+    "Any node serves any request, add nodes behind a load balancer",
+    "Capacity grows about linearly and losing a node loses nothing",
+    "Shared dependencies become the bottleneck",
+    "Serial portions cap speedup (Amdahl)",
+    "Stateful tiers need partitioning and rebalancing"
+   ]
+  },
+  {
+   "q": "Size a fleet: 6,000 req/s peak, 500 req/s per node, 70 percent target, survive one failure.",
+   "points": [
+    "Usable capacity per node is 350",
+    "6,000/350 rounds up to 18",
+    "Add one for N+1, giving 19",
+    "State the assumption about utilization"
+   ]
+  },
+  {
+   "q": "You doubled the API fleet and latency got worse. Diagnose.",
+   "points": [
+    "Check shared dependency limits: DB connections, cache, locks",
+    "Look for per-node state or counters",
+    "Serial section or hot key limits gains",
+    "Fix the bottleneck rather than adding nodes"
+   ]
   }
  ]
 }

@@ -1,70 +1,61 @@
 {
  "id": "sliding-window-aggregation",
  "title": "Sliding Window Aggregation",
- "summary": "Time keeps moving: new contributions enter the window, old ones leave, and you maintain only the aggregate over the **current** window. It answers \"what is the count, sum or max over the last W?\" at any moment: views in the last 30 minutes, failures in the last minute.\n\nUnlike a [tumbling window](#/sd/f/tumbling-window), sliding windows overlap. An event counts in every window that covers it, and the edge moves continuously (or in small hops), so there is no boundary blind spot.\n\nKnobs per problem: window length W, hop or precision, the aggregate, exact versus approximate.\n\nTwo implementations:\n1. **Event log (exact).** Keep raw events in a time-ordered queue or sorted set (for example a Redis sorted set scored by timestamp). To query, drop entries older than `now - W`, then aggregate. Exact, but memory is O(events in the window).\n2. **[Time bucket counter](#/sd/f/time-bucket-counter) (approximate).** Slice W into fixed buckets. Memory is O(W / bucket width), independent of traffic, and precision is one bucket.\n\n**Incremental maintenance:** add a contribution when it enters and subtract it when it expires. That works for **invertible** aggregates: count, sum, and average kept as sum and count. Max, min and distinct counts cannot be subtracted, because when the current maximum expires you do not know the next one. Keep per-bucket values and combine them (max of bucket maxima, union of sketches), or use a monotonic deque.\n\nUses: rate limiting, trending, anomaly detection. Pay for exactness only when it is needed.",
- "drills": [
+ "explain": "Time keeps moving: new contributions enter the window, old ones leave, and I maintain only the aggregate over the current window. It answers 'what is the count, sum or max over the last W?' at any moment. I choose between an exact event log and approximate time buckets, and I check whether the aggregate can be subtracted.",
+ "model": "Mental model (user's note): time moves forward; new contributions enter; expired ones are removed; keep only the aggregate of the currently valid window.\n\nKnobs: window length W, hop or precision, the aggregate, exact versus approximate. Overlaps [tumbling windows](#/sd/f/tumbling-window): an event counts in every window covering it, so no boundary blind spot.\n\n```\ntime ------------------------------------------------>\n          [<--------- W --------->]            expired | in window | new\n```\n\nTwo implementations:\n\n1. **Event log (exact).** Keep raw events in a time-ordered queue or a sorted set scored by timestamp (Redis). To query: add the event, remove entries with score at or below `now - W`, count or aggregate. Memory is O(events in the window): 5,000 events/s x 600 s x 40 B = 120 MB.\n2. **[Time bucket counter](#/sd/f/time-bucket-counter) (approximate).** Slice W into fixed buckets. Memory is O(W / bucket width), independent of traffic, error is one bucket.\n\n**Incremental maintenance** (add on entry, subtract on expiry) works for **invertible** aggregates: count, sum, average as sum and count. Max, min and distinct counts are not invertible: when the maximum expires you do not know the next. Keep per-bucket values and combine (max of maxima, union of sketches) or use a monotonic deque.\n\nUses: rate limiting, trending, anomaly detection.",
+ "details": [
   {
-   "type": "number",
-   "q": "An exact event log keeps one record per event in memory. A stream delivers 5,000 events/s, the window is 10 minutes, and each record takes 40 bytes. How many megabytes (1 MB = 1,000,000 bytes) does the log hold at steady state?",
-   "answer": 120,
-   "unit": "MB",
-   "tolerance": 0.05,
-   "explain": "5,000 x 600 s = 3,000,000 events; x 40 B = 120,000,000 B = 120 MB. A 1-second-bucket counter for the same window needs 600 numbers, which is why approximate buckets win on large streams."
+   "q": "Alert on more than 5 failed logins in any 60 s. A per-minute tumbling counter sees 3 at 12:00:50 and 4 at 12:01:10. What happens?",
+   "a": "It misses the alert: each fixed minute holds 3 and 4, yet 7 failures occurred within 20 seconds. A sliding window sees them together."
   },
   {
-   "type": "choice",
-   "q": "Which aggregates can be kept by adding new contributions and subtracting expired ones? Select all that apply.",
-   "options": [
-    "Sum of order values in the window",
-    "Maximum latency in the window",
-    "Count of events in the window",
-    "Average value, kept as a running sum and a running count"
-   ],
-   "answer": [
-    0,
-    2,
-    3
-   ],
-   "explain": "Sum, count and sum/count are invertible. A running maximum is not: when the max expires, the second largest is unknown unless you retained the other values (per-bucket maxima, or a monotonic deque)."
+   "q": "How much memory does an exact log need for 5,000 events/s, 10 minutes, 40 bytes per record?",
+   "a": "5,000 x 600 x 40 B = 120 MB per stream at steady state. Exactness scales with traffic; buckets do not."
   },
   {
-   "type": "choice",
-   "q": "Alert when more than 5 failed logins occur in ANY 60-second period. A per-minute tumbling counter sees 3 failures at 12:00:50 and 4 at 12:01:10. What happens?",
-   "options": [
-    "It alerts, because 7 > 5",
-    "It alerts only if the counters are reset at the second",
-    "It double-counts the failures",
-    "It misses the alert: each fixed minute holds only 3 and 4, although 7 happened within 20 seconds; use a sliding window"
-   ],
-   "answer": [
-    3
-   ],
-   "explain": "Fixed windows cannot see across their boundary. 'Any 60 seconds' is by definition a sliding window."
+   "q": "Which aggregates can be maintained by add and subtract?",
+   "a": "Sum, count, and average as a running sum and count. Maximum, minimum and distinct count cannot be subtracted, because when the current max expires you cannot recover the next. Keep per-bucket values and combine them, or use a monotonic deque for sliding max."
   },
   {
-   "type": "order",
-   "q": "Put an exact sliding-window count in order, using a Redis-style sorted set scored by timestamp.",
-   "items": [
-    "A new event is added with its timestamp as the score",
-    "Entries with a score at or below now minus W are removed",
-    "The remaining entries are counted",
-    "The count is compared with the threshold"
-   ],
-   "explain": "Evict before counting, otherwise expired events inflate the result. Each event costs O(log n) for the add, and eviction is amortised."
+   "q": "A trending list refreshes every second from 1,000,000 events/s over 1 minute, and a reviewer wants an exact log. Respond.",
+   "a": "Use bucketed counters, say 1 s buckets: 60 numbers per key instead of 60 million records, with an error of at most one bucket, invisible in a trending list. Pay for exactness only when the use needs it."
   },
   {
-   "type": "choice",
-   "q": "A trending list is refreshed every second from 1,000,000 events/s, with a 1-minute window. A reviewer asks for an exact event log. What is the better answer?",
-   "options": [
-    "Agree: exactness is always worth it",
-    "Use bucketed counters (say 1-second buckets): 60 numbers per key instead of 60 million records, with an error of at most one bucket, which is invisible in a trending list",
-    "Use tumbling windows, since they are cheaper",
-    "Use a database table and a SQL COUNT per refresh"
-   ],
-   "answer": [
-    1
-   ],
-   "explain": "Approximation is fine when the consumer cannot tell the difference. Reserve the exact log for cases where each event must be individually accounted for, such as billing."
+   "q": "How does the Redis sorted-set approach work for an exact rate limit?",
+   "a": "ZADD the event with its timestamp as score, ZREMRANGEBYSCORE entries at or below now minus W, ZCARD to count, and compare with the threshold. All of it can be one Lua script to be atomic."
+  },
+  {
+   "q": "Sliding versus tumbling: when each?",
+   "a": "Tumbling for per-period reports where each event lands in one window and cost is minimal. Sliding for 'in the last W' questions where the edge must move continuously, such as rate limits and alerting."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain sliding window aggregation and how it differs from tumbling.",
+   "points": [
+    "Window moves with time, events enter and leave",
+    "Maintain only the current aggregate",
+    "Overlapping windows, no boundary blind spot",
+    "Used for rate limiting, trending, anomaly detection"
+   ]
+  },
+  {
+   "q": "Compare an exact event log with time buckets.",
+   "points": [
+    "Log: exact, memory proportional to events in the window",
+    "Buckets: O(W / bucket width) memory, error of one bucket",
+    "Example of sorted set trimming by score",
+    "Pick exactness only when needed"
+   ]
+  },
+  {
+   "q": "Explain which aggregates you can maintain incrementally and how to handle the rest.",
+   "points": [
+    "Add on entry, subtract on expiry",
+    "Invertible: count, sum, average via sum and count",
+    "Max, min and distinct are not invertible",
+    "Combine per-bucket values, sketches or a monotonic deque"
+   ]
   }
  ]
 }

@@ -1,69 +1,61 @@
 {
-  "id": "wait-queue",
-  "title": "Wait Queue",
-  "summary": "A wait queue is the **holding area for work that cannot run yet**: waiting for a free worker, a lock, a rate-limit token, a dependency, or a scheduled time. It is not extra capacity. It converts a temporary excess of demand into **waiting time**, so the real design questions are how long, how many, in what order, and what happens to those who have waited too long.\n\n- **Size and Little's law.** The wait for a newcomer is about `queue length / service rate`. At 100 tasks/s, a queue of 600 means 6 s. If clients give up after 2 s, anything beyond 200 queued items is doomed. **Bound the queue** (reject or shed the excess); an unbounded queue under sustained overload only grows the delay ([load shedding](#/sd/f/load-shedding), [concurrency limiter](#/sd/f/concurrency-limiter)).\n- **Order.** FIFO is fair and predictable. A priority queue serves important work first but needs aging ([prioritized scheduling](#/sd/f/prioritized-scheduling)). When overloaded with deadlines, **LIFO** (newest first) maximizes requests answered in time, and is often used only when the queue is long.\n- **Staleness.** Store each item's deadline and **check it at dequeue**; drop expired items instead of running them.\n- **Blocking vs async.** A blocked thread per waiter is expensive; a queue of callbacks or promises is not.\n- **Visibility.** Alert on queue age, not only length: age is what users feel.\n- **Delay queues** hold items until a time, ordered by due time ([trigger-based invocation](#/sd/f/trigger-based-invocation)); the moving of items from a wait queue into a running set is the [wait / running queues](#/sd/f/wait-running-queues) model.",
-  "drills": [
-    {
-      "type": "number",
-      "q": "A worker pool serves 100 tasks per second. Clients abandon a request after 2 seconds. What is the largest queue length that still lets a newly enqueued task start within the 2-second deadline (ignore its own service time)?",
-      "answer": 200,
-      "unit": "tasks",
-      "tolerance": 0,
-      "explain": "Wait = length / rate, so length = rate x deadline = 100 x 2 = 200. Beyond that, new arrivals are admitted only to be abandoned. A bounded queue of about 200 (or less) makes that explicit by rejecting the rest."
-    },
-    {
-      "type": "choice",
-      "q": "Arrivals are 120 tasks/s and capacity is 100 tasks/s, sustained, with an unbounded FIFO queue. What happens?",
-      "options": [
-        "The queue stabilizes, since the excess is only 20/s",
-        "The queue grows by 20 tasks every second, so waiting time rises without bound (1,200 queued and a 12 s wait after a minute), and memory use grows too",
-        "Throughput rises to 120/s to match demand",
-        "Nothing visible until memory runs out, because latency is unaffected"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "A queue only absorbs bursts. When average demand exceeds capacity, the backlog grows linearly. Waiting time = backlog / 100, so latency climbs from the first second."
-    },
-    {
-      "type": "choice",
-      "q": "A worker dequeues a task whose caller deadline passed 3 seconds ago. What should it do?",
-      "options": [
-        "Run it, since the work has been accepted",
-        "Discard it (optionally recording a metric); nobody is waiting, and running it delays tasks that still matter",
-        "Requeue it at the back of the line",
-        "Run it twice to be safe"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Checking deadlines at dequeue is the cheapest form of load shedding. Without it, a backlog of dead requests keeps the system busy long after the cause of the overload has gone."
-    },
-    {
-      "type": "choice",
-      "q": "A long queue builds under a surge. Almost every request has a 1 s deadline, and the oldest queued items are already 5 s old. Which dequeue order answers the most requests in time?",
-      "options": [
-        "FIFO, since it is the fairest",
-        "LIFO (newest first), at least while the queue is long, with expired items discarded",
-        "Random order",
-        "Shortest queue first"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "The old items have already expired, so serving them first wastes capacity. Serving the newest first answers those whose clients are still waiting, trading fairness for goodput until the queue drains."
-    },
-    {
-      "type": "order",
-      "q": "Put the life of a request in a bounded wait queue in order.",
-      "items": [
-        "The request arrives and the queue is checked for room",
-        "If the queue is full, it is rejected immediately (e.g. 503)",
-        "Otherwise it is enqueued together with its deadline",
-        "A worker slot frees up and the next item is dequeued",
-        "The deadline is checked: expired items are dropped, live ones run"
-      ],
-      "explain": "Rejecting at arrival bounds the delay of everything admitted, and the second deadline check at dequeue handles those that expired while waiting."
-    }
-  ]
+ "id": "wait-queue",
+ "title": "Wait Queue",
+ "explain": "A wait queue is the holding area for work that cannot run yet: waiting for a worker, a lock, a rate-limit token, a dependency or a scheduled time. It does not add capacity; it turns a temporary excess of demand into waiting time. So the real design questions are how long, how many, in what order, and what happens to items that waited too long.",
+ "model": "Knobs of a wait queue:\n\n```\narrivals --> [ bounded queue, each item has a deadline ] --> worker slot frees --> check deadline --> run / drop\n               full? reject immediately (503)\n```\n\n- **Size.** Wait for a newcomer is about `queue length / service rate` (Little's law). At 100 tasks/s, 600 queued means 6 s. If callers give up after 2 s, anything past 200 is doomed, so **bound the queue** and reject or shed the excess ([load shedding](#/sd/f/load-shedding), [concurrency limiter](#/sd/f/concurrency-limiter)).\n- **Order.** FIFO is fair; a priority queue serves important work first but needs aging ([prioritized scheduling](#/sd/f/prioritized-scheduling)); under overload with deadlines, **LIFO** answers the most requests in time.\n- **Staleness.** Store the deadline; check at dequeue; drop expired items.\n- **Blocking vs async.** A thread per waiter is expensive; a queue of callbacks is cheap.\n- **Visibility.** Alert on queue age, not just length.\n\nVariants: delay queues hold items until a due time ([trigger-based invocation](#/sd/f/trigger-based-invocation)); items moving into a running set is [wait / running queues](#/sd/f/wait-running-queues).",
+ "details": [
+  {
+   "q": "100 tasks/s of capacity and callers abandon after 2 s. What is the longest useful queue?",
+   "a": "200 tasks: a newcomer behind 200 waits about 2 s. Beyond that it will be abandoned before it starts, so the work would be wasted. Bound the queue at roughly that length."
+  },
+  {
+   "q": "Arrivals are 120/s, capacity 100/s, unbounded FIFO. What happens?",
+   "a": "The queue grows by 20 per second: after a minute 1,200 are waiting, a 12 s delay, and it keeps growing along with memory use. An unbounded queue under sustained overload only turns throughput loss into latency and eventual failure."
+  },
+  {
+   "q": "A worker dequeues a task whose caller deadline passed 3 s ago. What does it do?",
+   "a": "Discard it, perhaps counting a metric. Nobody is waiting, and running it delays tasks that still matter. That is why the deadline travels with the item."
+  },
+  {
+   "q": "During a surge, requests have 1 s deadlines and the oldest queued items are 5 s old. Which order?",
+   "a": "LIFO (newest first), at least while the queue is long, with expired items dropped. FIFO would serve only stale requests that have already timed out, answering almost nobody in time."
+  },
+  {
+   "q": "Why alert on queue age instead of length?",
+   "a": "Length means different delays at different service rates; age is exactly what the next user will feel. A short queue of stuck items still has high age."
+  },
+  {
+   "q": "How do you implement waiting without a thread per waiter?",
+   "a": "Enqueue a callback, promise or continuation and let a small worker pool drain the queue. Blocking threads costs stack memory and context switches and does not scale to thousands of waiters."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain what a wait queue is and what you must decide when designing one.",
+   "points": [
+    "Holds work that cannot run yet",
+    "Turns excess demand into waiting time, not capacity",
+    "Bound the size, choose order, handle staleness",
+    "Alert on queue age"
+   ]
+  },
+  {
+   "q": "Use Little's law to size a queue for 100 tasks/s and 2 s caller timeout.",
+   "points": [
+    "Wait is about length divided by service rate",
+    "Max useful length is 200",
+    "Reject beyond it rather than queue doomed work",
+    "Check the deadline at dequeue as well"
+   ]
+  },
+  {
+   "q": "Compare FIFO, priority and LIFO ordering for a wait queue under overload.",
+   "points": [
+    "FIFO fair and predictable",
+    "Priority serves important work, needs aging",
+    "LIFO answers most requests within deadline under overload",
+    "Drop expired items whichever order"
+   ]
+  }
+ ]
 }

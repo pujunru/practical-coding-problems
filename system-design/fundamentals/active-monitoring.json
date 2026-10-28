@@ -1,62 +1,67 @@
 {
-  "id": "active-monitoring",
-  "title": "Active Monitoring",
-  "summary": "**Active monitoring** means the monitor **generates its own test traffic** and checks the answer: health-check pings, synthetic transactions (log in, add to cart, check out), probes from several regions, canary requests. **Passive monitoring** only watches what real users and the system already do: error rates, latency percentiles, logs, traces.\n\nEach has a blind spot the other covers:\n- Passive is truthful about real traffic but **silent when there is none**: at 3 a.m. a broken checkout produces no errors because nobody tried to check out.\n- Active gives a constant signal and tests end-to-end paths, but only the paths you thought to probe, and a shallow probe can pass while the real flow is broken.\n\nDesign rules:\n- **Liveness vs readiness.** Liveness answers \"is this process wedged?\" and triggers a restart; readiness answers \"can it take traffic now?\" and removes it from the [load balancer](#/sd/f/load-balancing). Keep dependency checks *out* of liveness: a database blip should not make every pod restart at once.\n- **Depth.** A static `200 OK` proves little. A deep check (touches the database) proves more but can itself cause outages. Add a **synthetic transaction** in addition, run at a low rate against a dedicated test account.\n- **Avoid single-prober false alarms:** probe from several locations and alert only when a quorum of them fails.\n- **Detection time** is roughly `interval x failure threshold`.\n- Probes cost load and can pollute data; mark their traffic and clean up.\n\nActive checks feed [failover](#/sd/f/failover) and alerting on [SLIs](#/sd/f/sli-slo-sla). It is the pull-based counterpart of [heartbeats](#/sd/f/heartbeat-lease), where the monitored side pushes.",
-  "drills": [
-    {
-      "type": "choice",
-      "q": "At 3 a.m. a deployment breaks the checkout flow. The service has dashboards and alerts on error rate and p99 latency, and nobody alerts. Why, and what closes the gap?",
-      "options": [
-        "The alert thresholds are too high; lower the error-rate threshold",
-        "Almost no real traffic exists at 3 a.m., so passive metrics show nothing; a synthetic checkout probe on a schedule would fail and page",
-        "Dashboards cannot see deployments; add deployment markers",
-        "The error rate is computed per region; switch to global"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "With near-zero requests, error rate is undefined or healthy by default. An active probe creates its own traffic, so the signal exists even when users are asleep."
-    },
-    {
-      "type": "choice",
-      "q": "A liveness probe for a web pod calls `/healthz`, which checks the database connection. The database has a 20-second blip. What happens, and what should change?",
-      "options": [
-        "Nothing; this is exactly what liveness is for",
-        "All pods fail liveness and are restarted together, turning a brief dependency blip into a full outage; liveness should check only that the process responds, and readiness may reflect dependencies",
-        "Pods become not-ready and the DB recovers faster",
-        "The database restarts automatically"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Restarting does not repair a database, and a restart storm adds cold-start load. Dependency state belongs in readiness (stop sending traffic) or in a circuit breaker, not in a restart trigger."
-    },
-    {
-      "type": "number",
-      "q": "A probe runs every 10 s and a node is declared unhealthy after 3 consecutive failures. A node breaks just after a successful probe at t = 0. At what time, in seconds, is it declared unhealthy?",
-      "answer": 30,
-      "unit": "s",
-      "tolerance": 0.05,
-      "explain": "Probes at t = 10, 20 and 30 s fail; the third consecutive failure at t = 30 s trips the threshold. Detection time is roughly interval x threshold (20-30 s here, depending on when the failure begins relative to the probe cycle). Lower the interval or threshold for speed, at the cost of more false alarms."
-    },
-    {
-      "type": "choice",
-      "q": "Your uptime checker runs in one data center and pages on-call whenever one probe fails. Pages fire several times a week, always resolving themselves within a minute. What is the most likely improvement?",
-      "options": [
-        "Lengthen the SLA",
-        "Probe from three or more locations and alert only when a majority fail for a few consecutive intervals",
-        "Replace the probe with a ping to the load balancer",
-        "Remove the probe and rely on user complaints"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "A single vantage point conflates its own network trouble with service failure. Multi-location quorum and a consecutive-failure requirement raise precision without losing real incidents."
-    },
-    {
-      "type": "recall",
-      "q": "Contrast active and passive monitoring in three sentences: what each sees, each one's blind spot, and why production setups combine them.",
-      "answer": "Active monitoring sends its own probes or synthetic transactions on a schedule and checks the answer; it detects failures even with no user traffic and exercises end-to-end paths, but covers only what you probe and adds load. Passive monitoring observes real traffic (error rates, latency percentiles, logs, traces), reflecting actual user experience across all paths, but is blind when traffic is low or absent and only reports after users are affected. Production setups combine them: passive metrics drive SLOs and alerting on real impact, active probes catch silent, low-traffic breakage and verify recovery."
-    }
-  ]
+ "id": "active-monitoring",
+ "title": "Active Monitoring",
+ "explain": "Active monitoring means the monitor makes its own test traffic and checks the answer: health pings, synthetic transactions, probes from several regions. Passive monitoring only watches what real users already do. I want both, because passive is blind when nobody is using the system and active only covers the paths I thought to probe.",
+ "model": "Two ways to learn that something is broken, and each covers the other's blind spot.\n\n| | Active (probe) | Passive (observe) |\n| --- | --- | --- |\n| Source | Synthetic traffic you generate | Real traffic: error rate, latency percentiles, logs, traces |\n| Strength | Signal even at 3 a.m.; tests an end-to-end path | Truth about real users and every path they take |\n| Blind spot | Only what you probe; a shallow probe passes while the real flow is broken | Silent when there is no traffic; only reports after users are hurt |\n\nProbe ladder, shallow to deep:\n\n```\nping / TCP connect  ->  GET /healthz  ->  deep check (touches DB)  ->  synthetic transaction\n(host alive)            (process answers)  (dependency works)          (login, add to cart, pay)\n```\n\n- **Liveness** = is this process wedged? Failure restarts it. **Readiness** = can it take traffic now? Failure removes it from the [load balancer](#/sd/f/load-balancing).\n- **Detection time** is about `interval x failure threshold`.\n- Probe from several places and alert on a quorum, so one flaky prober cannot page you.\n- It is the pull-based sibling of [heartbeats](#/sd/f/heartbeat-lease): there the monitored side pushes.",
+ "details": [
+  {
+   "q": "At 3 a.m. a deploy breaks checkout, yet error-rate alerts stay quiet. Why, and what closes the gap?",
+   "a": "Nobody tried to check out, so passive metrics saw no errors. A synthetic checkout run on a schedule against a dedicated test account would fail and page. Passive monitoring needs traffic to have something to say."
+  },
+  {
+   "q": "Should the liveness probe check the database?",
+   "a": "No. If the database blips for 20 seconds and every pod fails liveness, the orchestrator restarts all of them at once and a brief dependency blip becomes a full outage. Liveness checks only that the process responds; dependency health belongs in readiness, which just stops sending traffic."
+  },
+  {
+   "q": "How long until a broken node is declared unhealthy?",
+   "a": "Roughly interval x failure threshold, measured from the last good probe. Probing every 10 s with 3 consecutive failures required means up to about 30 s. Shorter intervals and lower thresholds detect faster but raise false alarms and probe load."
+  },
+  {
+   "q": "Your uptime checker runs in one data center and pages a few times a week, always self-resolving. What do you change?",
+   "a": "Probe from three or more locations and alert only when a majority fail for a few consecutive intervals. A single prober cannot tell 'the service is down' from 'my path to the service is down'."
+  },
+  {
+   "q": "Is a static 200 OK from /healthz enough?",
+   "a": "It proves only that the process can answer. A deeper check that touches the database proves more but can itself cause an outage if it is expensive or if the dependency flaps. A common compromise is a cheap liveness probe, a dependency-aware readiness probe, and a low-rate synthetic transaction for the real flow."
+  },
+  {
+   "q": "What are the costs of probing?",
+   "a": "Probes consume capacity, can create test data (orders, accounts), and can skew metrics. Mark synthetic traffic with a header, use a dedicated test account, clean up after, and exclude it from business dashboards."
+  },
+  {
+   "q": "How do active checks tie into failover?",
+   "a": "They are the detector: consecutive failed probes mark a node unhealthy, which triggers removal from rotation or [failover](#/sd/f/failover), and alerts on the [SLIs](#/sd/f/sli-slo-sla) you promised."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Contrast active and passive monitoring and say why production uses both.",
+   "points": [
+    "Active sends its own probes or synthetic transactions on a schedule",
+    "Passive observes real traffic: error rate, latency percentiles, logs",
+    "Passive is blind with no traffic and only reports after users are hit",
+    "Active covers only what you probe and adds load",
+    "Combine: passive drives SLO alerting, active catches silent breakage and verifies recovery"
+   ]
+  },
+  {
+   "q": "Design the health checks for a web service behind a load balancer.",
+   "points": [
+    "Liveness: process responds, failure restarts it",
+    "Readiness: dependencies usable, failure removes it from the load balancer only",
+    "Keep dependency checks out of liveness to avoid restart storms",
+    "Synthetic transaction at low rate against a test account",
+    "Multi-region probes, alert on quorum, interval x threshold sets detection time"
+   ]
+  },
+  {
+   "q": "Explain the 3 a.m. broken-checkout scenario and how you would have caught it.",
+   "points": [
+    "No traffic means no errors for passive metrics",
+    "Scheduled synthetic checkout fails and pages",
+    "Probe the full end-to-end path, not just the front door",
+    "Mark and clean up the test data"
+   ]
+  }
+ ]
 }

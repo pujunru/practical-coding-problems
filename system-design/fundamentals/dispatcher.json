@@ -1,83 +1,80 @@
 {
-  "id": "dispatcher",
-  "title": "Dispatcher",
-  "summary": "A dispatcher is a **centralized matching and delivery layer between where tasks wait and the workers that run them.** It takes over the questions \"which queue next?\" and \"which worker gets this?\" so workers don't.\n\n**The problem it solves.** With `M` priority queues and `N` workers, each worker polls all queues with its own 80/20 dice. Strictly, \"M x N connections\" overstates it (a Kafka consumer multiplexes topics over one broker connection); the real cost is that **scheduling policy and consumption state (subscriptions, offsets, rebalances) are copied into every worker**, so there is no global fairness, quota or backpressure.\n\n**Five parts:** *queue adapters* (turn Kafka/SQS messages into a Task that remembers its source offset), an *admission buffer* (bounded; pause the partition when full, but keep calling `poll()`), a *scheduler*, *task leases* (`READY -> LEASED -> ACKED`) and an *ack coordinator*.\n\n**Talking to workers:** worker-initiated **long-poll** with capacity (\"I have 2 free slots\"). That gives natural backpressure. The reply carries a stable `task_id` plus a per-delivery `lease_id`; `Complete(task_id, lease_id)` is idempotent, and a stale `lease_id` is refused ([lease](#/sd/f/lease), [fencing](#/sd/f/fencing-token)). Heartbeats extend long leases.\n\n**Starvation.** Strict priority starves the low queue; random 80/20 gives only a long-run average, not a bound on any one task. Real policies add weighted/deficit round robin ([weighted scheduling](#/sd/f/weighted-scheduling)), **aging**, reserved capacity and per-tenant quotas ([prioritized scheduling](#/sd/f/prioritized-scheduling)).\n\n**Kafka offsets.** Commit only the **contiguous completed prefix** of each partition. Commit before handoff loses tasks; commit after the worker's ack is at-least-once (make work idempotent by `task_id`); durable handoff first writes the task to the dispatcher's own store, then commits. HA: replicas in one consumer group, shard ownership, durable lease state, idempotent delivery.",
-  "drills": [
-    {
-      "type": "choice",
-      "q": "500 workers each poll three priority queues themselves using 80/20 weighted dice. A teammate argues for introducing a dispatcher. Which is the strongest justification?",
-      "options": [
-        "It eliminates all connections from workers, so the network cost drops to zero",
-        "It centralizes the scheduling policy and consumption state (fairness, quotas, backpressure, offsets) that is otherwise duplicated and uncoordinated across 500 workers",
-        "It makes Kafka deliver messages faster",
-        "It removes the need for idempotent task handling"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Workers still connect to the dispatcher, and the dispatcher cannot guarantee exactly-once, so idempotency stays. The value is one global place to decide ordering, shares and limits, with few components that understand the message systems."
-    },
-    {
-      "type": "number",
-      "q": "A dispatcher consumes Kafka partition 0, offsets 100 to 105. Workers have completed 100, 101, 103 and 104; 102 and 105 are still running. Using Kafka's convention that a committed offset is the next offset to be read, what offset should the dispatcher commit?",
-      "answer": 102,
-      "unit": "offset",
-      "tolerance": 0,
-      "explain": "Only the contiguous completed prefix (100, 101) may be committed, so the committed offset is 102. Committing 105 would mean that after a crash, 102 is never redelivered: a silent loss."
-    },
-    {
-      "type": "choice",
-      "q": "Workers have 4 slots each and some become slow. Which interaction model gives backpressure for free?",
-      "options": [
-        "The dispatcher pushes tasks round-robin to whichever workers it knows about",
-        "Each worker long-polls the dispatcher with its number of free slots; the dispatcher sends only what fits",
-        "Workers read the Kafka topic directly and commit offsets",
-        "The dispatcher floods tasks and relies on worker timeouts"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "With capacity-based pull, a worker with no free slot sends no request, so nothing is assigned. A blind push has no signal for slowness; its buffers grow in the worker, ahead of any limit."
-    },
-    {
-      "type": "choice",
-      "q": "Worker A leases task T (lease L1), then pauses for 40 s. The lease expires and T is leased to worker B (lease L2). A resumes and sends Complete(T, L1). What should the dispatcher do?",
-      "options": [
-        "Accept it, since A actually finished first",
-        "Reject it as STALE_LEASE; the current lease is L2, and any side effects performed by A still require idempotency by task_id",
-        "Accept both completions and merge the results",
-        "Kill worker B to avoid double work"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "The lease id identifies one delivery attempt; only the current one may change task state. A may already have produced side effects, so the task logic itself must be idempotent; the dispatcher can only keep its own state consistent."
-    },
-    {
-      "type": "order",
-      "q": "Put one task's path through a dispatcher (long-poll model) in order.",
-      "items": [
-        "A worker sends AcquireTask with its available slots",
-        "The scheduler picks a task and atomically changes it from READY to LEASED",
-        "The dispatcher returns the task with task_id, lease_id and a deadline",
-        "The worker heartbeats while running, then sends Complete(task_id, lease_id)",
-        "The dispatcher durably records ACKED, answers CompletionAck, and advances the partition's committed offset if the prefix is complete"
-      ],
-      "explain": "Persisting the ACKED state before confirming to the worker (and only then moving the Kafka offset) maintains the invariant: an offset is committed only after the task is safely owned."
-    },
-    {
-      "type": "choice",
-      "q": "The high-priority queue is never empty. Policy A: each dispatch picks High with probability 0.8, else Low. Policy B: adds aging, so a task's effective priority rises with its waiting time. What does B give that A cannot?",
-      "options": [
-        "A higher total throughput",
-        "A bound on how long any single low-priority task can wait; A only guarantees the long-run 80/20 ratio on average",
-        "Exactly-once delivery",
-        "Lower latency for the High queue"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Probabilistic sampling can, with small probability, starve a specific task for a long time (0.8^20 is about 1% for 20 picks in a row, and across many tasks it happens). Aging or reserved capacity turns 'on average' into 'at most'."
-    }
-  ]
+ "id": "dispatcher",
+ "title": "Dispatcher",
+ "explain": "A dispatcher is a centralized matching and delivery layer between where tasks wait and the workers that run them. It takes over 'which queue next?' and 'which worker gets this?' so workers do not each carry that logic. Workers long-poll it with their free capacity, it hands out leased tasks under a global fairness policy, and it advances upstream offsets only when work is safely done.",
+ "model": "**Without it:** M priority queues, N workers, and each worker polls all queues with its own 80/20 dice. The real cost is not M x N connections (a Kafka consumer multiplexes topics) but that **scheduling policy and consumption state are copied into every worker**: no global fairness, quota or backpressure.\n\n**With it:**\n\n```\nHigh queue --+\n             +--> Dispatcher replicas --lease/retry--> Worker pool\nLow queue  --+     ingress | delivery        <--AcquireTask(slots)-- (long-poll)\n```\n\nFive parts: **queue adapters** (Kafka/SQS to a Task carrying source offset), **admission buffer** (bounded; pause the partition but keep calling `poll()`), **scheduler** (strict priority, weighted or deficit round robin, aging, reserved capacity, tenant quota), **task leases** (`READY -> LEASED -> ACKED`), **ack coordinator**.\n\nProtocol: worker pulls with free slots; reply carries stable `task_id` and per-delivery `lease_id`; worker heartbeats, then idempotent `Complete(task_id, lease_id)`; stale `lease_id` gets `STALE_LEASE` ([lease](#/sd/f/lease), [fencing](#/sd/f/fencing-token)).\n\nKafka offsets: commit only the **contiguous completed prefix** per partition. HA: replicas in one consumer group, shard ownership, durable lease state, idempotent delivery.",
+ "details": [
+  {
+   "q": "500 workers each poll three priority queues with 80/20 dice. What is the strongest argument for a dispatcher?",
+   "a": "It centralizes the scheduling policy and consumption state (fairness, quotas, backpressure, offsets) that is otherwise duplicated and uncoordinated across 500 workers. Saying it removes connections is weak, since Kafka consumers already multiplex."
+  },
+  {
+   "q": "Push or pull between dispatcher and worker?",
+   "a": "Worker-initiated long-poll that states free capacity: workers with no free slot send nothing, so there is natural backpressure, and the dispatcher still decides what to send by priority, aging and tenant quota. Blind push floods slow workers. Start with HTTP/gRPC long-poll; use a bidirectional stream only for very high throughput."
+  },
+  {
+   "q": "Why both a task_id and a lease_id?",
+   "a": "task_id names the logical task and stays across retries; lease_id names one delivery attempt and changes each time. If worker A pauses past its lease and the task moves to B, A's late Complete(T, L1) is refused as STALE_LEASE because the current lease is L2. A's side effects still need idempotency by task_id."
+  },
+  {
+   "q": "Partition 0 has offsets 100 to 105; 100, 101, 103, 104 are done, 102 and 105 running. What offset do you commit?",
+   "a": "102: the next offset to read is the first one not yet continuously completed. Committing 105 would lose 102 on a crash. Track a completion bitmap per partition and only advance the contiguous prefix (the commit frontier)."
+  },
+  {
+   "q": "Commit-before-handoff, commit-after-ack, durable handoff: compare.",
+   "a": "Before handoff can lose tasks if the dispatcher crashes between commit and delivery (at-most-once). After the worker's ack is at-least-once: nothing lost, duplicates possible, so make work idempotent by task_id. Durable handoff writes the task to the dispatcher's own store first, then commits upstream, moving retry responsibility into the dispatcher."
+  },
+  {
+   "q": "How does a dispatcher avoid starving the low-priority queue?",
+   "a": "Random 80/20 only gives a long-run average, not a bound on any one task. Use weighted or deficit round robin, aging so waiting raises priority, reserved capacity for low classes and per-tenant quotas. See [weighted scheduling](#/sd/f/weighted-scheduling) and [prioritized scheduling](#/sd/f/prioritized-scheduling)."
+  },
+  {
+   "q": "What happens on a consumer-group rebalance?",
+   "a": "The old owner stops issuing leases, drains or revokes in-flight tasks, commits the contiguous prefix and releases the partition. The new owner resumes from the committed offset. Epoch fencing on lease and state updates stops the old owner from writing after it lost the partition."
+  },
+  {
+   "q": "How do existing systems relate?",
+   "a": "Temporal's matching service is the closest: workers long-poll for tasks when they have capacity. Kubernetes' scheduler is a dispatcher for pods, with queue sort then filter and score. SQS/RabbitMQ/Celery push priority to the broker or worker side, which leaves worker-side polling and prefetch effects."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Explain what a dispatcher is and what problem it solves, in about a minute.",
+   "points": [
+    "Centralized matching layer between task queues and workers",
+    "Without it every worker copies selection policy and consumption state",
+    "Few dispatchers read queues, workers long-poll one unified API",
+    "Global fairness, quota, backpressure in one place",
+    "Leases, heartbeats, idempotent completion for reliability"
+   ]
+  },
+  {
+   "q": "Walk through one task's path and what the lease and offsets do.",
+   "points": [
+    "Worker sends AcquireTask with free slots",
+    "Scheduler atomically moves READY to LEASED",
+    "Returns task_id, lease_id, deadline; heartbeat while running",
+    "Complete(task_id, lease_id) idempotent, stale lease refused",
+    "ACKED persisted, then contiguous offset prefix committed"
+   ]
+  },
+  {
+   "q": "Explain how the dispatcher avoids starvation and how it stays available.",
+   "points": [
+    "Weighted or deficit round robin, aging, reserved capacity, tenant quotas",
+    "Replicas in one consumer group with partition ownership",
+    "Durable task and lease state",
+    "Idempotent delivery since exactly-once is not promised"
+   ]
+  },
+  {
+   "q": "Defend the choice of at-least-once for a dispatcher.",
+   "points": [
+    "Cannot tell 'not executed' from 'executed but ack lost'",
+    "Commit after durable ack avoids loss",
+    "Duplicates handled by idempotent effects keyed by task_id",
+    "Exactly-once only with effect and offset in one transaction"
+   ]
+  }
+ ]
 }

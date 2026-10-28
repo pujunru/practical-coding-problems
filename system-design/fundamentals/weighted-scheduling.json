@@ -1,63 +1,62 @@
 {
-  "id": "weighted-scheduling",
-  "title": "Weighted Scheduling",
-  "summary": "Weighted scheduling shares capacity **in proportion to weights** instead of strictly favouring one class. Where [strict priority](#/sd/f/prioritized-scheduling) says \"tier 1 first, always\", weighted scheduling says \"tier 1 gets 70%, tier 2 gets 30%\", so no class starves while important classes still get more.\n\n**Weighted random.** Pick the next queue by probability (70/30). Easy and stateless, but you only get the ratio **on average**; a particular low task can wait a long time (the chance that 20 picks in a row go to the 70% queue is 0.7^20, about 0.08%, and with thousands of picks per second that happens often).\n\n**Weighted round robin (WRR).** Deterministic: each cycle serves tier 1 seven times and tier 2 three times (smooth WRR interleaves them). This gives a hard bound on the gap between turns.\n\n**Work-conserving.** If the chosen queue is empty, take from another instead of idling. Shares are then computed over the *non-empty* queues: weights 5:3:2 with the middle queue empty gives 5/7 and 2/7.\n\n**Cost matters.** Weighting by *number of tasks* is only fair if tasks cost about the same. If tier 1 tasks take 100 ms and tier 2 tasks take 1 s, a 70/30 split by count gives tier 2 most of the worker time. **Deficit round robin (DRR)** fixes this: each queue gets a quantum of credit per round, spends it by task cost, and carries the unused remainder over.\n\nWhen to choose which: weighted shares for steady-state fairness among tenants or tiers; strict priority (with limits) for emergency traffic that must always win; both can coexist as \"strict for class 0, weighted for the rest\". The [dispatcher](#/sd/f/dispatcher) is where this policy usually lives.",
-  "drills": [
-    {
-      "type": "number",
-      "q": "Three queues have weights 5:3:2. The middle queue is empty and the scheduler is work-conserving (it never idles while another queue has work). What percentage of dispatches goes to the first queue while both others are backlogged?",
-      "answer": 71.4,
-      "unit": "%",
-      "tolerance": 0.02,
-      "explain": "Only non-empty queues compete, so shares are 5/(5+2) = 71.4% and 2/7 = 28.6%. A non-work-conserving scheduler would waste the middle queue's 30% of slots."
-    },
-    {
-      "type": "number",
-      "q": "Two queues are served 70:30 by task count. Queue A tasks cost 0.1 s of worker time each; queue B tasks cost 1.0 s. Out of 100 dispatches, what percentage of total worker time goes to queue B (the 30%-weight queue)?",
-      "answer": 81.1,
-      "unit": "%",
-      "tolerance": 0.02,
-      "explain": "A: 70 x 0.1 = 7 s. B: 30 x 1.0 = 30 s. B's share = 30 / 37 = 81.1%, despite a weight of 30%. Weighting by count is wrong when costs differ; deficit round robin weights by cost."
-    },
-    {
-      "type": "choice",
-      "q": "A scheduler selects queue 1 with probability 0.7 and queue 2 with probability 0.3 for each dispatch. A product manager asks for a guarantee that a task in queue 2 never waits more than 10 dispatches. What do you say?",
-      "options": [
-        "That is guaranteed, because 30% of dispatches go to queue 2",
-        "Not guaranteed: random choice only gives the ratio on average (the probability of 10 straight misses is 0.7^10, about 2.8%); use deterministic WRR/DRR or reserved slots for a bound",
-        "Raise the weight to 31% to make it guaranteed",
-        "Use strict priority for queue 2"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Probabilistic picks are memoryless, so streaks happen. A deterministic cycle (3 of every 10 dispatches to queue 2) makes the gap bounded. Strict priority for queue 2 would starve queue 1."
-    },
-    {
-      "type": "choice",
-      "q": "Free-tier and premium tenants share a worker pool. Premium should get more throughput, but free users must always make progress. Separately, a 'platform incident' class must preempt everything. Which scheduling combination fits?",
-      "options": [
-        "Strict priority for premium over free, nothing for incidents",
-        "Strict priority for the incident class, plus weighted shares (for example 80/20) between premium and free",
-        "Weighted shares for all three classes, including incidents at 5%",
-        "FIFO across everything"
-      ],
-      "answer": [
-        1
-      ],
-      "explain": "Weighted shares prevent free starvation. Incident traffic is small and must win, so it is a strict top class (with a cap so it cannot starve everyone). Giving it a 5% weight would delay it exactly when it matters."
-    },
-    {
-      "type": "order",
-      "q": "Put one round of deficit round robin over a set of queues in order.",
-      "items": [
-        "Visit the next queue and add its quantum to its deficit counter",
-        "If the queue's head task costs no more than the deficit, dispatch it and subtract the cost",
-        "Repeat on the same queue while its next task still fits in the remaining deficit",
-        "If the queue becomes empty, reset its deficit to zero",
-        "Move on to the next queue"
-      ],
-      "explain": "Unused credit carries over so large tasks eventually fit, which is what lets DRR share worker time by cost rather than by task count. Resetting an empty queue's deficit stops idle queues from banking unlimited credit."
-    }
-  ]
+ "id": "weighted-scheduling",
+ "title": "Weighted Scheduling",
+ "explain": "Weighted scheduling shares capacity in proportion to weights instead of always favouring one class. Strict priority says tier 1 first, always; weighted scheduling says tier 1 gets 70 percent and tier 2 gets 30, so nobody starves while important classes still get more. Random weighted choice gives the ratio only on average; round robin variants give a hard bound.",
+ "model": "Setup: several queues, each with a weight (the user's example: Tier 1 70 percent, Tier 2 30 percent).\n\n| Variant | How | Guarantee |\n| --- | --- | --- |\n| **Weighted random** | Pick queue by probability | Ratio on average only; 0.7^20 is about 0.08 percent chance of 20 straight misses, which happens often at thousands of picks per second |\n| **Weighted round robin** | Each cycle: tier 1 seven times, tier 2 three times (smooth WRR interleaves) | Hard bound on the gap between turns |\n| **Deficit round robin** | Each queue gets a quantum of credit per round, spends it by task cost, carries remainder | Fair by **cost**, not task count |\n\nRules:\n\n- **Work-conserving:** if the chosen queue is empty, serve another; shares are computed over non-empty queues (5:3:2 with the middle empty gives 5/7 and 2/7).\n- **Cost matters:** a 70/30 split by count with 0.1 s tasks vs 1 s tasks gives the 30 percent queue about 81 percent of worker time. Use DRR.\n- Combine: **strict for an emergency class, weighted for the rest.**\n\nCompare [strict priority](#/sd/f/prioritized-scheduling); the policy usually lives in the [dispatcher](#/sd/f/dispatcher).",
+ "details": [
+  {
+   "q": "Weights 5:3:2, the middle queue is empty, scheduler is work-conserving. What share goes to the first queue while the others are backlogged?",
+   "a": "5/7, about 71.4 percent, and 2/7 (28.6 percent) to the third. Weights are renormalised over the non-empty queues."
+  },
+  {
+   "q": "Two queues are served 70:30 by count; A tasks cost 0.1 s, B tasks cost 1.0 s. What share of worker time does B get?",
+   "a": "In 100 dispatches A uses 70 x 0.1 = 7 s and B 30 x 1.0 = 30 s, so B gets 30/37, about 81 percent, despite its 30 percent weight. Weighting by count is only fair when costs are similar; deficit round robin charges by cost."
+  },
+  {
+   "q": "A product manager wants a guarantee that a queue-2 task never waits more than 10 dispatches under 70/30 random choice. Can you promise it?",
+   "a": "No. Random choice gives the ratio only on average; the chance of 10 straight misses is 0.7^10, about 2.8 percent. For a bound use deterministic WRR or DRR, or reserved slots."
+  },
+  {
+   "q": "Free and premium tenants share workers, and a platform-incident class must pre-empt everything. Which combination?",
+   "a": "Strict priority for the incident class, plus weighted shares (say 80/20) between premium and free. Premium gets more, free always progresses, incidents always win."
+  },
+  {
+   "q": "Walk through one round of deficit round robin.",
+   "a": "Visit a queue and add its quantum to its deficit counter; while the head task's cost fits in the deficit, dispatch it and subtract the cost; if the queue empties, reset its deficit to zero; move on. Unused credit carries to the next round."
+  },
+  {
+   "q": "When weighted over strict priority?",
+   "a": "Weighted for steady-state fairness among tenants or tiers where every class must make progress. Strict (with limits) for emergency traffic that must always win. See [prioritized scheduling](#/sd/f/prioritized-scheduling) for the failure modes strict brings."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Compare weighted random, weighted round robin and deficit round robin.",
+   "points": [
+    "Random: right ratio only on average, no bound on a single wait",
+    "WRR: deterministic cycle, bounded gaps",
+    "DRR: credit spent by task cost",
+    "Work-conserving renormalises over non-empty queues"
+   ]
+  },
+  {
+   "q": "Design the scheduling policy for premium, free and incident traffic.",
+   "points": [
+    "Strict priority for incidents",
+    "Weighted shares between premium and free",
+    "Premium gets more but free never starves",
+    "Cost-aware (DRR) if task sizes differ",
+    "Monitor queue age per class"
+   ]
+  },
+  {
+   "q": "Explain why weighting by task count can be unfair and how to fix it.",
+   "points": [
+    "A queue with expensive tasks consumes most worker time",
+    "Example: 70/30 count with 0.1 s vs 1 s gives about 81 percent time to the 30 queue",
+    "Charge by cost with deficit round robin",
+    "Carry unused credit over"
+   ]
+  }
+ ]
 }

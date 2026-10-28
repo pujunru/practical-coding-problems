@@ -1,74 +1,63 @@
 {
  "id": "backfill",
  "title": "Backfill",
- "summary": "A backfill **fills a new destination with data that already existed before you started capturing live changes**: a new index or search cluster, a new column or table, a new shard, a rebalanced partition, a corrected derived value after a bug. History is bulk-copied while production keeps writing, and the hard part is not losing or overwriting those live writes.\n\nA safe recipe:\n\n1. **Start capturing live changes first** (dual write, or a [change feed](#/sd/f/change-feed)) into the destination or a buffer. If you copy first, writes made between the snapshot and the start of capture are missed forever.\n2. **Bulk copy history** in key-ordered chunks using a [cursor](#/sd/f/cursor) (`WHERE id > last ORDER BY id LIMIT n`), saving a checkpoint after each chunk. Avoid `OFFSET`: it gets slower and shifts when rows change.\n3. **Apply writes conditionally on version or timestamp**, so an older copied row never overwrites a newer live write.\n4. **Verify** counts and checksums, then cut over reads.\n\nProperties to demand: **idempotent** chunks (re-running is harmless, see [idempotency](#/sd/f/idempotency)), **resumable** from the checkpoint after a crash, **throttled** so production isn't starved, observable progress, and a way to re-run a range. Time is real: rate-limited copying of a large table can take days, so estimate it first.\n\nRebalancing a partition is a backfill plus a cutover ([rebalance](#/sd/f/rebalance)).",
- "drills": [
+ "explain": "A backfill fills a new destination with data that existed before live capture started: a new index, a new shard, a new column, a corrected derived value. History is bulk-copied while production keeps writing, so the hard part is not losing or overwriting the live writes. The safe order is capture live changes first, then copy history in resumable chunks, with version-checked writes.",
+ "model": "Why harder than a one-time copy: production keeps writing during the copy.\n\nSafe recipe, in order:\n\n```\n1. start capturing live changes     (dual write or change feed -> destination or buffer)\n2. copy history in key-ordered chunks, checkpoint after each (cursor, not OFFSET)\n3. apply writes only if version/timestamp is newer than what destination has\n4. verify counts and checksums\n5. cut reads over\n```\n\nIf you copy first and capture later, every write between snapshot and capture start is lost forever.\n\nProperties to demand:\n\n- **Idempotent** chunks (re-running is harmless, see [idempotency](#/sd/f/idempotency)).\n- **Resumable** from a persisted checkpoint ([cursor](#/sd/f/cursor): `WHERE id > last ORDER BY id LIMIT n`).\n- **Throttled**, so production is not starved.\n- Observable progress and the ability to re-run a range.\n\nSources of live changes: dual writes or a [change feed](#/sd/f/change-feed). A [log-first design](#/sd/f/queue-first-vs-db-first) gets replay for free by rewinding offsets. Rebalancing a partition is a backfill plus cutover ([rebalance](#/sd/f/rebalance)).",
+ "details": [
   {
-   "type": "order",
-   "q": "Put a safe backfill into a new search index in order.",
-   "items": [
-    "Start capturing live changes into the new index (or a buffer)",
-    "Copy existing rows in key-ordered chunks, saving a checkpoint after each",
-    "Apply captured changes on top, only where their version is newer",
-    "Verify counts and checksums against the source",
-    "Cut reads over to the new index"
-   ],
-   "explain": "Capture-first closes the gap between snapshot and live stream. The version check lets history and live data meet without the older copy winning."
+   "q": "A team snapshots the source, copies for two days, then turns on change capture. What is the flaw?",
+   "a": "Every write made between the snapshot and the start of capture is missing from the destination and nothing will ever bring it back. Start capture first, then copy."
   },
   {
-   "type": "choice",
-   "q": "A team snapshots the source table, copies it for two days, and only then turns on change capture. What is the flaw?",
-   "options": [
-    "Every write made between the snapshot and the start of capture is missing from the destination",
-    "Change capture cannot be started after a copy",
-    "Snapshots are not allowed on live tables",
-    "Nothing: the copy finds all changes automatically"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "Capture must begin before (or at) the snapshot point so that every later change is covered by the stream. The reverse order guarantees a hole."
+   "q": "The backfill reads row X at version 5, and before it writes, a live update puts version 6 in the destination. What happens without a guard?",
+   "a": "The older copy overwrites the newer live write. Apply writes conditionally on version or timestamp so a stale copied row never wins."
   },
   {
-   "type": "choice",
-   "q": "The backfill reads row X (version 5) at 10:00:00 and writes it to the destination at 10:00:05. At 10:00:03 a live update (version 6) was already written to the destination. What happens without a version check?",
-   "options": [
-    "The older version 5 overwrites the newer version 6",
-    "Version 6 is kept automatically",
-    "The row is duplicated",
-    "The backfill job stops"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "The bulk copy is a stale view by the time it lands. Make the write conditional (`only if destination version < source version`) so the stale copy loses."
+   "q": "How long does a 2 billion row backfill take at 5,000 rows/s?",
+   "a": "400,000 s, about 4.6 days. Do the arithmetic before promising a date; throttling to protect production makes backfills slow, and long ones need to survive restarts."
   },
   {
-   "type": "number",
-   "q": "A table has 2 billion rows. The backfill is throttled to 5,000 rows per second to protect production. About how many days does it take?",
-   "answer": 4.63,
-   "unit": "days",
-   "tolerance": 0.1,
-   "explain": "2,000,000,000 / 5,000 = 400,000 s; divided by 86,400 s per day is about 4.63 days. Estimate before starting, because the throttle, not the code, sets the schedule."
+   "q": "The job crashes at 60 percent. How do you resume?",
+   "a": "Key-ordered chunks with a persisted checkpoint and idempotent upserts: restart from the last checkpoint and re-copying a chunk is harmless. Offset pagination from page 1, or restarting from scratch, wastes days."
   },
   {
-   "type": "choice",
-   "q": "The backfill job crashes at 60%. Which design lets you resume safely without redoing everything or corrupting data?",
-   "options": [
-    "Key-ordered chunks with a persisted checkpoint cursor and idempotent upserts",
-    "Offset pagination from page 1 again",
-    "Delete the destination and restart",
-    "Run a second copy in parallel and hope they merge"
-   ],
-   "answer": [
-    0
-   ],
-   "explain": "A checkpoint tells you where to resume, and idempotent writes make re-processing the boundary chunk harmless. OFFSET paging is slow on large tables and skips or repeats rows as the table changes."
+   "q": "Why avoid `OFFSET` pagination for bulk copy?",
+   "a": "It gets slower with depth, since the database skips N rows each time, and it shifts when rows are inserted or deleted, causing skips or duplicates. Keyset pagination on an indexed key is stable and constant cost."
   },
   {
-   "type": "recall",
-   "q": "Why is backfill harder than a one-time copy, and what three things make it safe?",
-   "answer": "Because production keeps writing during the copy, so the destination must end up with history and live changes without losing or overwriting either. Start capturing live changes before copying, copy in resumable, throttled, key-ordered chunks with idempotent writes, and apply writes conditionally by version, then verify before cutting over."
+   "q": "How do you verify the backfill before cutting over?",
+   "a": "Compare row counts and checksums per key range between source and destination, sample-diff random rows, and shadow-read from the new store comparing answers before switching live reads."
+  }
+ ],
+ "prompts": [
+  {
+   "q": "Why is backfill harder than a one-time copy, and what makes it safe?",
+   "points": [
+    "Production keeps writing during the copy",
+    "Capture live changes before copying",
+    "Resumable, throttled, key-ordered idempotent chunks",
+    "Version-checked writes so history never overwrites newer data",
+    "Verify, then cut over"
+   ]
+  },
+  {
+   "q": "Walk through backfilling a new search index.",
+   "points": [
+    "Start live capture into the index or a buffer",
+    "Copy existing rows in chunks with checkpoints",
+    "Apply captured changes where version is newer",
+    "Verify counts and checksums",
+    "Cut reads over"
+   ]
+  },
+  {
+   "q": "Estimate and plan a backfill of a very large table.",
+   "points": [
+    "Rows divided by throttled rate gives duration",
+    "Throttle to protect production",
+    "Checkpoint for crash recovery",
+    "Ability to re-run a range and see progress"
+   ]
   }
  ]
 }
