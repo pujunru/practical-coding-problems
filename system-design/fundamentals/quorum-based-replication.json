@@ -1,0 +1,76 @@
+{
+ "id": "quorum-based-replication",
+ "title": "Quorum-Based Replication",
+ "summary": "Quorum-based replication commits an operation once a **majority (or other quorum) of replicas** has it, so progress never depends on any single node. It comes in two flavours that people often mix up.\n\n1. **Tunable quorums (Dynamo style):** no leader; each request chooses W and R with `W + R > N` ([leaderless quorum](#/sd/f/leaderless-quorum)). Highly available; consistency is \"mostly fresh\" and repaired in the background.\n2. **Consensus quorums (Raft / Paxos style):** an elected leader orders a log, and an entry is **committed** when a majority has stored it. Strong consistency and a single history ([consensus](#/sd/f/consensus), [raft](#/sd/f/raft)).\n\nMajority arithmetic: a cluster of N tolerates `floor((N-1)/2)` failures: 3 nodes tolerate 1, 5 tolerate 2, 7 tolerate 3. **An even size buys nothing**: 4 nodes need 3 for a majority and still tolerate only 1, so use odd sizes.\n\nWhy majorities: any two majorities overlap in at least one node, so two disjoint network partitions can never both make progress. That prevents split brain without needing the dead node to confirm it is dead; the minority side simply stops accepting writes.\n\nCosts: each commit waits for the replica that completes the majority, and spreading replicas across regions makes that a cross-region round trip ([multi-region](#/sd/f/multi-region)). Quorums protect against crash faults and partitions, not against corrupted or malicious nodes.",
+ "drills": [
+  {
+   "type": "number",
+   "q": "A consensus group has 7 nodes and commits on a majority. How many nodes can fail while it still commits new entries?",
+   "answer": 3,
+   "unit": "nodes",
+   "tolerance": 0,
+   "explain": "A majority of 7 is 4, so up to 7 - 4 = 3 nodes may be down. The group becomes unavailable (it halts rather than diverging) at the fourth failure."
+  },
+  {
+   "type": "choice",
+   "q": "A team asks for a 4-node consensus group instead of 3 'to be safer'. What do they actually get?",
+   "options": [
+    "The same fault tolerance (1 failure), a larger majority (3), and more replication work; an odd size is better",
+    "Tolerance of 2 failures",
+    "Tolerance of 3 failures",
+    "Double the write throughput"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Majority of 4 is 3, so 2 failures stop progress. That's no better than 3 nodes, whose majority is 2 and which also tolerate 1. Fault tolerance steps up only at odd sizes (3, 5, 7)."
+  },
+  {
+   "type": "choice",
+   "q": "A 5-node cluster is split by a network partition into groups of 3 and 2. Clients reach both sides. What should happen?",
+   "options": [
+    "The group of 3 continues committing; the group of 2 cannot reach a majority and refuses writes",
+    "Both groups continue and merge later",
+    "Both stop",
+    "The group of 2 continues because it contains the old leader"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Only one side can contain a majority. That is the whole point: two sides cannot both commit, so there are never two histories. Having the old leader makes no difference if it can't gather a majority."
+  },
+  {
+   "type": "choice",
+   "q": "Which statements distinguish consensus quorums from Dynamo-style tunable quorums? Select all that apply.",
+   "options": [
+    "Consensus uses an elected leader to order a single log; tunable quorums have no leader",
+    "With W + R > N tunable quorums give the same guarantees as consensus under all failures",
+    "Consensus commits when a majority stores an entry",
+    "Tunable quorums let each request pick its W and R"
+   ],
+   "answer": [
+    0,
+    2,
+    3
+   ],
+   "explain": "Consensus gives a single agreed order and strong consistency; tunable quorums overlap read and write sets but can still be stale (sloppy quorums, concurrent writes) and lack a total order."
+  },
+  {
+   "type": "order",
+   "q": "Order the steps of committing a write in a 5-node majority-quorum (Raft-style) group.",
+   "items": [
+    "The client sends the write to the leader",
+    "The leader appends the entry to its log",
+    "The leader replicates the entry to the followers",
+    "A majority (3 of 5, counting the leader) has stored the entry",
+    "The leader marks it committed, applies it and replies to the client"
+   ],
+   "explain": "Commit means a majority has it. The leader's own copy counts as one of the three. The other two followers may still be catching up."
+  },
+  {
+   "type": "recall",
+   "q": "Why are majority quorums safe against split brain, and what do they cost?",
+   "answer": "Any two majorities overlap, so two disjoint partitions can't both reach one, and only one side commits. The cost: writes wait for a majority round trip, and if a majority is lost the system stops accepting writes rather than risking divergence."
+  }
+ ]
+}

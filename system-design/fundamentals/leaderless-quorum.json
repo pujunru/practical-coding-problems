@@ -1,0 +1,71 @@
+{
+ "id": "leaderless-quorum",
+ "title": "Leaderless Quorum",
+ "summary": "A quorum defines **how many replicas must respond for a read or write to count**, in a replica set with no leader. You do not need everyone, only a minimum number of votes.\n\nWith replication factor **N**, a write waits for **W** acks and a read consults **R** replicas.\n\n**The rule: W + R > N.** Then every read set and every successful write set share at least one replica, so a read sees at least one copy of the newest acknowledged write and, with version comparison, returns it. Example: N = 3, W = 2, R = 2.\n\nTuning:\n\n- **Majority quorum:** W = R = floor(N/2) + 1. Tolerates `floor((N-1)/2)` failures.\n- **W = N, R = 1:** fast reads, but one node down blocks writes.\n- **W = 1, R = N:** fast writes, but reads need every replica.\n- **W + R <= N:** reads may miss the latest write: faster and more available, with eventual consistency only.\n\nWhat a quorum does **not** guarantee, even when W + R > N:\n\n- **Sloppy quorums** (hinted handoff to nodes outside the replica set) count acks that are not on the real replicas.\n- A **failed write** (fewer than W acks) may still land on some replicas.\n- **Concurrent writes** and clock-based LWW can still lose or reorder data.\n- A replica restored from an old backup shrinks the overlap.\n\nThis is not linearizability, and replicas still need [repair](#/sd/f/leaderless-repair). See the [write path](#/sd/f/leaderless-write-path), [read path](#/sd/f/leaderless-read-path) and [quorum-based replication](#/sd/f/quorum-based-replication).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "N = 5 and W = 3. What is the smallest R for which every read set must overlap every successful write set?",
+   "answer": 3,
+   "unit": "replicas",
+   "tolerance": 0,
+   "explain": "Overlap needs W + R > N, so R > 5 - 3 = 2, so R >= 3. With R = 2 the read set could be the two replicas the write missed."
+  },
+  {
+   "type": "number",
+   "q": "N = 5, W = 4, R = 2. What is the largest number of replicas that can be down while both reads and writes still succeed?",
+   "answer": 1,
+   "unit": "replicas",
+   "tolerance": 0,
+   "explain": "Writes need 4 of 5 live replicas (so at most 1 down), while reads need only 2 (so up to 3 down). Both must work: the limit is 1. This configuration has W + R = 6 > 5, but it buys cheap reads with fragile writes."
+  },
+  {
+   "type": "choice",
+   "q": "N = 3, W = 2, R = 1. A write acknowledged by A and B. A client then reads from C alone. What does it get?",
+   "options": [
+    "Possibly the old value: W + R = 3 is not greater than N, so the read set need not overlap the write set",
+    "Always the new value because a write quorum was reached",
+    "An error because R < W",
+    "The new value, since C is the coordinator"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Two of three replicas have the new value, but a single-replica read can land on the third. To guarantee overlap increase R to 2, since W + R must exceed N = 3."
+  },
+  {
+   "type": "choice",
+   "q": "N = 3, W = 2, R = 2 is configured. Which of these can still produce a stale read? Select all that apply.",
+   "options": [
+    "The coordinator counts a hinted write held by a node outside the replica set as one of its W acks (sloppy quorum)",
+    "A write fails with only one ack, but that replica applied it",
+    "A replica is restored from an old backup after acknowledging the latest write",
+    "One replica is merely slow to respond"
+   ],
+   "answer": [
+    0,
+    2
+   ],
+   "explain": "Sloppy quorums, and replicas that lose acknowledged data, remove the overlap the arithmetic assumes. A failed partial write can show up in reads, which is surprising but is not staleness. A slow replica just changes latency."
+  },
+  {
+   "type": "choice",
+   "q": "A read-heavy key-value store with N = 3 gets 99% reads and rare writes. It must keep reads fast and fresh. Which setting is best, and what does it cost?",
+   "options": [
+    "W = 3, R = 1: single-replica reads that are always fresh, but any replica being down blocks writes",
+    "W = 1, R = 1: fastest, and still guarantees fresh reads",
+    "W = 2, R = 2: reads are cheaper than writes",
+    "W = 1, R = 3: cheap writes and cheap reads"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "W + R = 4 > 3 for the first choice, so reads are fresh. Shifting cost to the rare operation is the right instinct; the price is write availability. W = 1, R = 1 does not meet W + R > N."
+  },
+  {
+   "type": "recall",
+   "q": "State the quorum rule, why it works, and two cases where it still does not guarantee a fresh read.",
+   "answer": "If W + R > N, any read set and any acknowledged write set share a replica, so the read sees the newest version among its responses. It can still fail with sloppy quorums, partially applied failed writes, replicas restored from stale backups, or clock-based LWW."
+  }
+ ]
+}

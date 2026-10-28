@@ -1,0 +1,74 @@
+{
+ "id": "rw-replicas",
+ "title": "Read/Write Replicas",
+ "summary": "A read/write split sends **writes to the main database** and **reads to a pool of replicas**. It's the simplest way to scale a read-heavy relational workload and a deployment of [leader-based replication](#/sd/f/leader-based-replication). Two common implementations.\n\n**1. In the ORM or driver (lightest).** Configure two endpoints: the main (`db.myservice.com -> IP1`) and the replica pool (`db-replica.myservice.com -> [IP2, IP3, ...]`). The ORM decides read versus write, and writes only hit the main. When nodes change, the DNS name stays, but its records change. Watch TTLs and long-lived pooled connections, which keep talking to removed nodes.\n\n**2. A proxy (most common).** The database is a service: `MyService -SQL-> DBServiceProxy -> [instances]`. The proxy knows which node is main and routes by statement type. It also routes anything inside a write transaction to main.\n\nThe proxy relies on a registry (such as etcd) and a monitor that checks heartbeats plus leases or active probes:\n\n- A **replica** lost: deregister it so traffic stops going there.\n- The **main** lost: stop accepting writes, make sure the old main is fenced (its lease has lapsed), promote the most caught-up replica, then resume writes. Reads continue meanwhile. Rejecting writes briefly is what prevents split brain.\n\nPitfall: **read-your-writes**. A write followed by a read from a lagging replica looks like data loss, so route a user's recent reads to main or use a position token ([read path](#/sd/f/leader-based-read-path)). See also [failover](#/sd/f/leader-based-failover), [lease](#/sd/f/lease) and [heartbeat + lease](#/sd/f/heartbeat-lease).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "An ORM sends reads to `db-replica.myservice.com`, which resolves to three replica IPs. An operator removes replica 3 and its DNS record, but the app keeps hitting it for minutes. Why?",
+   "options": [
+    "Resolvers cache the old records until the TTL expires, and pooled connections to replica 3 stay open",
+    "DNS cannot represent multiple IPs",
+    "The ORM refuses to reconnect",
+    "Replicas cannot be removed"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "DNS-based membership is only as fresh as the TTL, and a connection pool does not re-resolve for existing connections. Mitigate with short TTLs, connection max-lifetimes and health checks, or use a proxy with explicit membership."
+  },
+  {
+   "type": "choice",
+   "q": "A proxy routes statements by type: SELECT to replicas, everything else to main. A request runs `BEGIN; INSERT ...; SELECT ... ; COMMIT`. Where should the SELECT go?",
+   "options": [
+    "To the main, because it is inside a transaction that has written and must see its own insert",
+    "To any replica, since it is a SELECT",
+    "To the replica with the lowest lag",
+    "To both and take the first answer"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Statement-type routing is not enough. Reads inside a write transaction (and `SELECT ... FOR UPDATE`) must see the transaction's own writes, which replicas can't offer."
+  },
+  {
+   "type": "order",
+   "q": "Order the monitor's actions when the main stops sending heartbeats and its lease lapses.",
+   "items": [
+    "The monitor detects the missing heartbeat and expired lease",
+    "The proxy starts rejecting write requests",
+    "The most caught-up replica is chosen and promoted to main",
+    "The registry (etcd) is updated with the new main",
+    "The proxy resumes write traffic to the new main"
+   ],
+   "explain": "Writes pause while ownership is ambiguous; reads from replicas are unaffected because they do not write. Resuming only after the registry points at the new main prevents two nodes accepting writes."
+  },
+  {
+   "type": "number",
+   "q": "Writes are 1,000/s and reads are 9,000/s. The main handles writes only. Each replica serves 4,000 reads/s (ignore replication apply cost). What is the minimum number of replicas?",
+   "answer": 3,
+   "unit": "replicas",
+   "tolerance": 0,
+   "explain": "9,000 / 4,000 = 2.25, so 3. Adding replicas scales only the 9,000 reads; the main's 1,000 writes/s are unchanged."
+  },
+  {
+   "type": "choice",
+   "q": "A user saves their profile and the next page load reads from a replica that is 800 ms behind. The old profile appears. What is the best fix with the least added load on the main?",
+   "options": [
+    "Pin that user's reads to the main for a short time after a write, or use a log-position token",
+    "Send all reads to the main",
+    "Disable replicas",
+    "Increase DNS TTL"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Only reads that follow the user's own write need the main, so a short pin or a position token targets exactly those. Sending everything to the main throws away the benefit of replicas."
+  },
+  {
+   "type": "recall",
+   "q": "Compare ORM-level and proxy-level read/write splitting in two sentences.",
+   "answer": "ORM-level is lightweight, with the app holding two endpoints and DNS for pool membership, but it relies on DNS TTLs, can't see failures quickly, and every client must implement it. A proxy centralises routing by statement and transaction, membership, and failover with a registry and monitor, at the cost of another hop and component to run."
+  }
+ ]
+}

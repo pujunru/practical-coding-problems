@@ -1,0 +1,77 @@
+{
+ "id": "multi-region",
+ "title": "Multi-Region",
+ "summary": "Requests can land in any region (nearest routing, travel, failover), yet users should see the **same data wherever they land**. That is never free: you pay with **latency** (forward or write synchronously) or accept **short inconsistency** (asynchronous copies).\n\nTwo instincts:\n\n1. **Request goes to the data:** each datum has one home; a request in another region is forwarded. Simple consistency, one extra cross-region hop.\n2. **Data goes to the request:** every region has a copy and reads locally. Low latency, but copies must sync.\n\nReal systems mix: **writes go to the data, reads use the local copy.**\n\n**Home region pattern:** each user has a home region; the small `user -> home` table is replicated everywhere; writes forward to home, reads use the local replica; move the home if the user relocates.\n\nReplication choices, per data type:\n\n- **Single leader + async replicas** (profiles, chats): local reads may lag by hundreds of ms to seconds; a home-region loss can lose the last unreplicated writes. See [leader-based](#/sd/f/leader-based-replication).\n- **Multi-leader + async** (likes, carts): needs mergeable data ([multi-leader](#/sd/f/multi-leader-replication)).\n- **Synchronous cross-region majority** (balances, inventory): no loss and fresh reads, but every write pays a cross-region round trip ([quorum](#/sd/f/quorum-based-replication)).\n\nRead-your-writes across regions: return a version with the write, and let the next read compare it against the local replica's version.\n\nAcross continents (100-300 ms round trips): synchronous within a continent, asynchronous between. Data residency rules may forbid replicas abroad at all.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "Which replication choice best fits each data type? Pick the pairing that is correct.",
+   "options": [
+    "Account balance: synchronous cross-region write; likes counter: multi-leader with mergeable counters; global config changed monthly: single leader, cached everywhere",
+    "Account balance: multi-leader with last-write-wins; likes counter: synchronous write",
+    "Global config: synchronous write on every read; account balance: async replica",
+    "Everything: multi-leader with last-write-wins"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Choose per data type: invariants and money need strong ordering and zero loss; counters can merge; rarely changing config is read-mostly and can be cached widely. LWW on balances would silently lose updates."
+  },
+  {
+   "type": "number",
+   "q": "A user's home region is Virginia. They are in Singapore (230 ms round trip to Virginia, 5 ms to the local replica). A page does one write, which is forwarded to home (commit processing 10 ms), followed by three sequential local reads. Total latency in ms?",
+   "answer": 255,
+   "unit": "ms",
+   "tolerance": 0,
+   "explain": "Write: 230 + 10 = 240 ms. Reads: 3 x 5 = 15 ms. Total 255 ms. The write dominates, which is why you keep the home near where the user usually is and why batching or moving the home helps."
+  },
+  {
+   "type": "order",
+   "q": "Order the path of a write issued in a non-home region under the home-region pattern.",
+   "items": [
+    "The request lands in the nearest region B",
+    "B looks up the user's home region in its local user-to-home table",
+    "B forwards the write to the home region A",
+    "A commits the write and acknowledges it",
+    "A replicates the change asynchronously to B and the other regions"
+   ],
+   "explain": "The lookup table is tiny and replicated everywhere, so finding the home is local. The cost is the forwarded hop; the benefit is a single writer for the user's data."
+  },
+  {
+   "type": "choice",
+   "q": "A user updates their name in region A and the very next request lands in region B, whose replica is still behind, so the old name appears. Which fix targets exactly this case?",
+   "options": [
+    "Return a version with the write; the next read compares it to the local replica's version and waits or forwards to home if the local copy is older",
+    "Make every read go to the home region forever",
+    "Use eventual consistency and tell users to refresh",
+    "Replicate synchronously for all data"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "A version token costs nothing when the replica is already fresh. Sending all reads home is correct but throws away the local-read benefit; sync replication for everything pays latency on every write."
+  },
+  {
+   "type": "number",
+   "q": "The home region replicates asynchronously with an average lag of 2 s. It serves 500 writes/s. If the home region is lost abruptly, about how many acknowledged writes might be lost, assuming steady-state?",
+   "answer": 1000,
+   "unit": "writes",
+   "tolerance": 0.1,
+   "explain": "Roughly lag x rate = 2 s x 500/s = 1,000 writes that were acknowledged but not yet copied. Data that cannot afford this must be written synchronously to another region."
+  },
+  {
+   "type": "choice",
+   "q": "EU law requires EU users' data to stay in the EU. A US-based request from an EU user arrives. What design satisfies this?",
+   "options": [
+    "Keep the EU user's home and all replicas within the EU; the US region forwards reads and writes to the EU, and disaster recovery stays within the EU",
+    "Replicate to the US asynchronously and encrypt it",
+    "Replicate to the US and delete it after 24 hours",
+    "Use multi-leader with the US as a writer"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Residency removes the option of a local replica abroad, so reads also forward, at the cost of a cross-region hop. Disaster recovery must also be inside the boundary, e.g. a second EU region."
+  }
+ ]
+}

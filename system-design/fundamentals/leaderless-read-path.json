@@ -1,0 +1,83 @@
+{
+ "id": "leaderless-read-path",
+ "title": "Leaderless Read Path",
+ "summary": "Leaderless read path: as in the write path, the key gives the partition and the replica set, and a node acts as the request's **coordinator**.\n\nAssume **N = 3, R = 2**.\n\n1. The coordinator asks the replicas for the key (often one full read plus **digest** reads, which return only a hash, from the others; it can also send to all N and take the first R).\n2. It does **not** need to wait for the third replica.\n3. If the R responses carry the **same version**, return it.\n4. If they differ, return the **newest version** and trigger **read repair** ([repair](#/sd/f/leaderless-repair)) to bring the stale replica up to date.\n5. If the versions are **concurrent** (neither descends from the other), a timestamp rule picks one (last-write-wins, which may drop a write) or the coordinator returns **siblings** for the application to merge.\n\nPractical points:\n\n- **Latency = the R-th fastest replica.** If one replica is slow (a GC pause), a fixed choice of replicas makes p99 bad; send to more than R, or retry speculatively after a latency threshold.\n- A read returns the newest of *only the R it saw*. Whether that is the newest overall depends on [quorum](#/sd/f/leaderless-quorum) overlap.\n- Repair on read is free for hot keys and never happens for cold keys.\n\nCompare with the [leader-based read path](#/sd/f/leader-based-read-path), where followers have one clear source of truth.",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "N = 3, R = 2. Replica A returns version 7 and B returns version 7. C has version 5 (not contacted). What should the coordinator do?",
+   "options": [
+    "Return version 7 without waiting for C",
+    "Wait for C and compare",
+    "Return an error because replicas disagree",
+    "Return the average of 7 and 5"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "R responses agree, so the read is complete; C is not part of this read. C will be fixed by background repair or the next read that includes it."
+  },
+  {
+   "type": "choice",
+   "q": "N = 3, R = 2. A returns version 7 and B returns version 5. What happens?",
+   "options": [
+    "Version 7 is returned, and read repair writes 7 to B",
+    "Version 5 is returned because it was majority-agreed",
+    "The read fails",
+    "Version 7 is returned and B is left stale until a restart"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The coordinator picks the highest version among the responses and asynchronously repairs the stale replica. The user sees the newer value without paying for the repair in latency."
+  },
+  {
+   "type": "number",
+   "q": "A value is 1 MB. N = 3 and R = 3. The coordinator fetches the full value from one replica and a 32-byte digest from each of the other two, instead of the full value from all three. Roughly how many MB cross the network to the coordinator?",
+   "answer": 1,
+   "unit": "MB",
+   "tolerance": 0.01,
+   "explain": "1 MB + 2 x 32 B is about 1.00 MB, versus 3 MB if every replica sent the full value. If the digests mismatch, the coordinator falls back to fetching full values to find the newest, so digest reads trade rare extra work for common savings."
+  },
+  {
+   "type": "order",
+   "q": "Order the steps of a leaderless read that detects a stale replica.",
+   "items": [
+    "Client sends the read to a coordinator",
+    "Coordinator requests the value from R replicas",
+    "Coordinator compares the versions in the responses",
+    "Coordinator returns the newest version to the client",
+    "Coordinator writes the newest version to the stale replica in the background"
+   ],
+   "explain": "The client reply comes before the repair finishes. Repair is a side effect, not part of the response path."
+  },
+  {
+   "type": "choice",
+   "q": "Replica A and replica B hold different values for a shopping cart, each created by a separate write that did not know about the other (neither version descends from the other). What should the read return?",
+   "options": [
+    "Both values as siblings (or merge them) so no cart addition is lost",
+    "The one with the later timestamp, always",
+    "The one with the lower node id",
+    "An error, and then drop the cart"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "These are concurrent writes. A timestamp tie-break would silently throw away one of them. Returning siblings, or merging with a data-type-aware rule, preserves both."
+  },
+  {
+   "type": "choice",
+   "q": "The p99 read latency spikes whenever one particular replica in a set pauses for garbage collection, even though R = 2 of 3. The coordinator always contacts the same two replicas. What change helps most?",
+   "options": [
+    "Contact all three and use the first two responses (or retry speculatively on a third after a threshold)",
+    "Raise R to 3",
+    "Lower N to 2",
+    "Cache on the client indefinitely"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "A fixed choice of replicas inherits the slowest member's latency. Hedging the request over the third replica makes the read wait for the two fastest. Raising R to 3 makes things worse."
+  }
+ ]
+}

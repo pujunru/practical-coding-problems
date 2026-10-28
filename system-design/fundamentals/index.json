@@ -126,8 +126,114 @@
    "title": "Sharding & Partitioning",
    "concepts": [
     {
+     "id": "sharding",
+     "title": "Sharding",
+     "drills": 6
+    },
+    {
+     "id": "partitioning",
+     "title": "Partitioning",
+     "drills": 6
+    },
+    {
      "id": "consistent-hashing",
      "title": "Consistent Hashing",
+     "drills": 6
+    },
+    {
+     "id": "hash-bucketing",
+     "title": "Bucketing (Fixed Hash Slots)",
+     "drills": 6
+    },
+    {
+     "id": "token-rebalancing",
+     "title": "Token Rebalancing",
+     "drills": 6
+    },
+    {
+     "id": "salting",
+     "title": "Salting and Desalting",
+     "drills": 6
+    },
+    {
+     "id": "geo-cell",
+     "title": "Geo Cells",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "replication",
+   "title": "Replication",
+   "concepts": [
+    {
+     "id": "leader-based-replication",
+     "title": "Leader-Based Replication",
+     "drills": 5
+    },
+    {
+     "id": "leader-based-write-path",
+     "title": "Leader-Based Write Path",
+     "drills": 6
+    },
+    {
+     "id": "leader-based-read-path",
+     "title": "Leader-Based Read Path",
+     "drills": 6
+    },
+    {
+     "id": "leader-based-consistency",
+     "title": "Leader-Based Consistency",
+     "drills": 6
+    },
+    {
+     "id": "leader-based-failover",
+     "title": "Leader-Based Failover",
+     "drills": 6
+    },
+    {
+     "id": "multi-leader-replication",
+     "title": "Multi-Leader Replication",
+     "drills": 6
+    },
+    {
+     "id": "leaderless-replication",
+     "title": "Leaderless Replication",
+     "drills": 6
+    },
+    {
+     "id": "leaderless-write-path",
+     "title": "Leaderless Write Path",
+     "drills": 6
+    },
+    {
+     "id": "leaderless-read-path",
+     "title": "Leaderless Read Path",
+     "drills": 6
+    },
+    {
+     "id": "leaderless-repair",
+     "title": "Leaderless Repair",
+     "drills": 6
+    },
+    {
+     "id": "leaderless-quorum",
+     "title": "Leaderless Quorum",
+     "drills": 6
+    },
+    {
+     "id": "quorum-based-replication",
+     "title": "Quorum-Based Replication",
+     "drills": 6
+    },
+    {
+     "id": "rw-replicas",
+     "title": "Read/Write Replicas",
+     "drills": 6
+    },
+    {
+     "id": "multi-region",
+     "title": "Multi-Region",
      "drills": 6
     }
    ]

@@ -1,0 +1,76 @@
+{
+ "id": "multi-leader-replication",
+ "title": "Multi-Leader Replication",
+ "summary": "In multi-leader replication **several nodes accept writes**, typically one leader per region or datacenter, and each forwards its writes to the others **asynchronously**. Each leader is the leader for its local clients and a follower of the other leaders.\n\nWhy use it: **local write latency** (a Singapore user writes in Singapore rather than crossing an ocean), **regional autonomy** (a region survives a link outage), and offline-capable clients. Why not use it to scale writes in one datacenter: the price is high.\n\nThe price is **write conflicts**. Two leaders can accept different updates to the same record before either sees the other's. You must pick a strategy:\n\n1. **Avoid:** route all writes for a record to its home leader ([multi-region](#/sd/f/multi-region)).\n2. **Converge:** deterministic rules such as last-write-wins by timestamp (silently drops writes and depends on clocks), or **mergeable data types** (counters, sets, CRDTs).\n3. **Resolve:** keep both versions and let the application or user merge them.\n\nOther hazards: with an all-to-all topology, updates can arrive out of causal order (an update before the insert it modifies); use version vectors. Circular and star topologies need loop prevention, and a failed hub or link blocks propagation.\n\nCompare with [single-leader](#/sd/f/leader-based-replication) (no conflicts, one write location) and [leaderless](#/sd/f/leaderless-replication).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "A Singapore user writes to a database. With a single leader in Virginia, the client round trip is 230 ms. With a multi-leader deployment, a leader in Singapore is 5 ms away. Commit processing is 3 ms in both cases and cross-region replication is asynchronous (off the critical path). What is the multi-leader write latency, in ms?",
+   "answer": 8,
+   "unit": "ms",
+   "tolerance": 0,
+   "explain": "5 ms network + 3 ms processing = 8 ms. The single-leader write costs 230 + 3 = 233 ms. That latency gap is the main reason to run multi-leader across regions."
+  },
+  {
+   "type": "choice",
+   "q": "Region A and region B each accept a write to the same profile field at nearly the same time. Which is a problem multi-leader has that single-leader does not?",
+   "options": [
+    "Concurrent writes accepted by different leaders conflict and need a resolution strategy",
+    "Writes are slower than reads",
+    "Followers cannot read",
+    "The log cannot be replayed"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "A single leader serialises writes so a conflict can't exist at all. With multiple leaders each accepts its write independently, and the conflict is found only when the changes meet, after both have been acknowledged."
+  },
+  {
+   "type": "choice",
+   "q": "Region A sets `x = 1` at true time 1000.000 s. Region B receives it, a user there overwrites with `x = 2` at true time 1000.210 s, but B's clock is 300 ms slow, so it stamps the write 999.910. Using last-write-wins by timestamp, what is the final value on all replicas, and what is the problem?",
+   "options": [
+    "x = 1: the later, deliberate overwrite is silently discarded because of clock skew",
+    "x = 2: the later write always wins",
+    "Both values are kept",
+    "The system detects the conflict and rejects both writes"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "LWW trusts timestamps, so the skewed clock makes the earlier write win even though the user in B had seen it and replaced it. The lost write was acknowledged to the user. Causality-aware versions (version vectors) detect that the second write is a descendant of the first."
+  },
+  {
+   "type": "choice",
+   "q": "Which data types fit multi-leader replication well because concurrent updates can be merged without loss? Select all that apply.",
+   "options": [
+    "A likes counter",
+    "A set of shopping-cart items where adds and removes are tracked",
+    "A bank balance with an overdraft rule",
+    "A document edited with a mergeable CRDT"
+   ],
+   "answer": [
+    0,
+    1,
+    3
+   ],
+   "explain": "Counters, sets and CRDTs have merge rules that converge. A balance with an invariant (cannot go below zero) cannot be maintained by independent writers who each see only their own view, so it needs a single writer or synchronous coordination."
+  },
+  {
+   "type": "order",
+   "q": "Order the life cycle of a write in a two-leader deployment.",
+   "items": [
+    "Client writes to its nearest leader",
+    "That leader commits locally and acknowledges the client",
+    "The change is shipped asynchronously to the other leader",
+    "The other leader detects whether it conflicts with a concurrent local change",
+    "A resolution rule makes both leaders converge to the same value"
+   ],
+   "explain": "The client is acknowledged before the other region knows about the write, so conflicts are detected after the fact and the system must converge without the client present."
+  },
+  {
+   "type": "recall",
+   "q": "State the three strategies for conflicts in multi-leader replication and one weakness of each.",
+   "answer": "Avoid (route a record's writes to one home leader; loses local-write latency for remote users), converge (LWW or mergeable types; LWW drops writes and trusts clocks), resolve (keep siblings and merge in the application; pushes complexity onto the app and users)."
+  }
+ ]
+}

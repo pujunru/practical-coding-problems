@@ -1,0 +1,70 @@
+{
+ "id": "leader-based-consistency",
+ "title": "Leader-Based Consistency",
+ "summary": "With asynchronous followers a reader can see **stale** data. That is not random: it is a handful of precise anomalies, each with a cheap targeted fix. Replication lag is simply how many committed writes a follower has not yet applied.\n\n| Anomaly | What the user sees | Fix |\n| --- | --- | --- |\n| Not read-your-writes | Posts a comment, refreshes, it is gone | Read your own recent writes from the leader, or by position token |\n| Non-monotonic reads | The second refresh is older than the first | Pin a user to one follower |\n| Not consistent prefix | An answer shows up before its question | Keep causally related writes in one partition, or carry causal metadata |\n\nAlso keep apart:\n\n- **Durability vs freshness.** Synchronous replication to one follower guarantees that follower has the write; a read from a *different*, async follower can still be stale.\n- **Linearizability** (every read sees the latest committed write) needs reads from a leader that has confirmed its leadership; plain follower reads cannot give it.\n- Lag grows whenever the arrival rate exceeds a follower's apply rate; it only shrinks when the follower has spare capacity.\n\nRoute reads accordingly in the [read path](#/sd/f/leader-based-read-path); the commit modes are in the [write path](#/sd/f/leader-based-write-path); the weakest end of the spectrum is [eventual consistency](#/sd/f/eventual-consistency).",
+ "drills": [
+  {
+   "type": "choice",
+   "q": "A user posts a comment, the page reloads from a follower, and the comment is missing. A minute later it appears. Which guarantee was violated?",
+   "options": [
+    "Read-your-writes",
+    "Monotonic reads",
+    "Consistent prefix",
+    "Durability"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The user's own write was not visible to their own subsequent read. The write was durable and committed; the follower simply had not applied it yet. Monotonic reads is about two reads going backwards, not a read missing a write."
+  },
+  {
+   "type": "choice",
+   "q": "A user refreshes a feed twice. The first response includes a post. The second, served by a different follower, does not. Which guarantee was violated, and what is the cheapest fix?",
+   "options": [
+    "Monotonic reads; route each user's reads to the same follower (for example by hashing the user id)",
+    "Read-your-writes; read everything from the leader",
+    "Consistent prefix; add more followers",
+    "None; this is always acceptable"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Time went backwards for that user because two followers have different lag. Sticky routing is cheap and sufficient. Reading everything from the leader would also work but gives up the follower capacity."
+  },
+  {
+   "type": "number",
+   "q": "A leader commits 2,000 writes/s. A follower can apply only 1,800 writes/s. Starting from zero lag, how many writes is the follower behind after 10 minutes?",
+   "answer": 120000,
+   "unit": "writes",
+   "tolerance": 0,
+   "explain": "The backlog grows by 2,000 - 1,800 = 200 writes/s, and 200 x 600 s = 120,000. The lag never shrinks until arrival drops below apply capacity, so a follower that is permanently slower than the write rate falls forever behind."
+  },
+  {
+   "type": "number",
+   "q": "Continuing: at that point the write rate drops to 1,000 writes/s and the follower still applies 1,800/s. How many seconds does it take to catch up (backlog 120,000)?",
+   "answer": 150,
+   "unit": "s",
+   "tolerance": 0,
+   "explain": "Net drain rate is 1,800 - 1,000 = 800 writes/s, so 120,000 / 800 = 150 s. Catch-up is only fast when there is spare apply capacity."
+  },
+  {
+   "type": "choice",
+   "q": "Question and answer posts are stored on different shards, each replicated asynchronously. A reader sees 'Because of 3 am deploys.' before the question that it answers. What is the anomaly and a sound fix?",
+   "options": [
+    "A consistent prefix violation; put causally related writes (a thread) on one partition, or attach causal dependencies",
+    "Read-your-writes; read from the leader",
+    "Monotonic reads; pin the user to a follower",
+    "Lost update; add a lock"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "The two writes replicate at different lag, so the reader sees an effect before its cause. Within a single partition the log order prevents this. Across partitions you need co-location or explicit causal metadata."
+  },
+  {
+   "type": "recall",
+   "q": "Give a one-line fix for each of: read-your-writes, monotonic reads, consistent prefix violations.",
+   "answer": "Read-your-writes: read your own recent writes from the leader or by log-position token. Monotonic reads: pin the user to one follower. Consistent prefix: keep causally related writes in one partition, or carry causal dependencies."
+  }
+ ]
+}

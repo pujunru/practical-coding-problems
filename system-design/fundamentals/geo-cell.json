@@ -1,0 +1,74 @@
+{
+ "id": "geo-cell",
+ "title": "Geo Cells",
+ "summary": "A geo cell is a **fixed-address tile of the map**. A function maps a latitude and longitude to a cell id (geohash, S2, H3, or a plain grid), so \"where is this\" becomes an ordinary key. That is the note's point: any mapping that reduces a big problem to a small one is sharding, and a cell id is simply a shard key for space.\n\nHow it is used:\n\n- **Index:** store each object under its cell id. A \"nearby\" query computes the cells covering the search circle, reads those cells, then filters by exact distance.\n- **Always include the neighbors.** A point near a cell edge has neighbors in the next cell. If the cell side is at least the radius, the query circle touches at most 9 cells (the center cell and its 8 neighbors).\n- **Cell size** is the knob: smaller cells mean fewer false candidates but more cells per query and more keys.\n- **Shard by cell:** cell ids (or prefixes) are the partition key. Dense cities create hot cells, so use *hierarchical* cells (quadtree-style, S2 levels) and subdivide busy cells adaptively.\n\nCaveats: lat/lng near the poles and the date line need a library that handles them. Prefix-based cells are discontinuous, so two points 10 m apart across a major boundary may share no prefix, which is why neighbors must be queried and you cannot rely on prefix search alone.\n\nUse cases: ride matching, nearby search, geo-fencing; see [sharding](#/sd/f/sharding) and [partitioning](#/sd/f/partitioning).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "Space is divided into square cells with a side of 1 km. A user searches within a radius of 1 km. In the worst case, how many cells can the query circle overlap?",
+   "answer": 9,
+   "unit": "cells",
+   "tolerance": 0,
+   "explain": "The circle extends one full cell width in every direction from a point inside the center cell, reaching into the neighbors on every side, including the diagonal ones (for a point at the middle of its cell, a diagonal neighbor's nearest corner is only about 0.7 km away). So 3 x 3 = 9 cells at most. Reading only the center cell would miss nearby results across an edge."
+  },
+  {
+   "type": "choice",
+   "q": "Two cabs are 10 m apart, on either side of a major cell boundary, and their geohashes share no common prefix. What does this imply for a nearby-search design?",
+   "options": [
+    "Prefix search alone misses nearby points; the query must also read the neighboring cells",
+    "Geohash is unusable for geo search",
+    "The cabs must be re-hashed with a longer prefix",
+    "Each prefix should be on a separate datacenter"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Cell ids are a linearization of 2D space, and any linearization has seams. Use the cell and its neighbors (or a covering of cells), then filter by true distance."
+  },
+  {
+   "type": "choice",
+   "q": "90% of ride requests come from three downtown cells at the current cell size, so their shards are overloaded. What is the best fix?",
+   "options": [
+    "Use hierarchical cells and subdivide the busy cells into smaller child cells (adaptive resolution)",
+    "Increase the size of all cells globally",
+    "Route all requests to one big shard",
+    "Round-robin requests over all shards"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Uniform cells assume uniform density, and cities are not. Splitting only the hot cells (quadtree or S2 levels) spreads load where it is needed. Larger cells would make the hot cell hotter; round-robin loses the locality that the cell id provides."
+  },
+  {
+   "type": "order",
+   "q": "Order the steps of a 'nearby drivers' query.",
+   "items": [
+    "Convert the rider's lat/lng to a cell id",
+    "Compute the covering cells (the cell and its neighbors for the radius)",
+    "Look up each covering cell's shard and fetch its drivers in parallel",
+    "Filter candidates by exact distance",
+    "Sort and return the closest drivers"
+   ],
+   "explain": "Cells prune the search space cheaply, but they only produce candidates: exact distance filtering must still happen, since cells are squares and the search area is a circle."
+  },
+  {
+   "type": "choice",
+   "q": "Which statement best explains why a geo cell is a kind of sharding?",
+   "options": [
+    "It maps an unbounded space to a bounded key so each node can own a subset of the data and queries touch only a few of them",
+    "It replicates data to nearby nodes",
+    "It encrypts locations into opaque ids",
+    "It gives each user a private database"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Cell id = shard key for space. The same mechanism reduces the problem size in other domains too (user id, tenant id, time bucket)."
+  },
+  {
+   "type": "recall",
+   "q": "Why is the cell size a trade-off, and how do you choose it?",
+   "answer": "Small cells give precise candidates but force a query to read many cells and create many keys; large cells mean few reads but many false candidates and hot cells in dense areas. Pick a size near the typical search radius (so a query touches about 9 cells) and refine adaptively where density demands it."
+  }
+ ]
+}

@@ -1,0 +1,74 @@
+{
+ "id": "leaderless-write-path",
+ "title": "Leaderless Write Path",
+ "summary": "Leaderless write path: the key determines the **partition**, the partition determines the **replica set**, and the request lands on some node that is only the **coordinator** for this request.\n\nAssume replication factor **N = 3**.\n\n1. The client sends the write to a coordinator.\n2. The coordinator stamps the value with **version metadata** (a timestamp, or a version vector) and sends it to **all N** replicas in parallel.\n3. It **waits for W acknowledgments** (say W = 2 of 3), and returns success.\n4. The remaining replicas apply it whenever they respond. If one is down, another node may hold a **hint** for it ([hinted handoff](#/sd/f/leaderless-repair)).\n\nConsequences that interviewers like:\n\n- **Latency = the W-th fastest replica.** One slow replica is simply outvoted. Raising W to N makes the slowest replica the floor and any outage a failure.\n- **Fewer than W acks means the write failed, not rolled back.** Replicas that did apply it keep it, so a \"failed\" write can later become visible. Callers must treat the outcome as unknown and use idempotent retries.\n- **Send to all N, wait for W**, so the others stay current without extra repair.\n- Concurrent writes from different coordinators resolve by version comparison, not by arrival time.\n\nHow W combines with reads is the subject of [quorum](#/sd/f/leaderless-quorum) and the [read path](#/sd/f/leaderless-read-path). Compare with the [leader-based write path](#/sd/f/leader-based-write-path).",
+ "drills": [
+  {
+   "type": "order",
+   "q": "Order the steps of a leaderless write with N = 3 and W = 2.",
+   "items": [
+    "The client sends the write to any node, which becomes the coordinator",
+    "The coordinator versions the value and sends it to all three replicas in parallel",
+    "Two replicas persist it and acknowledge",
+    "The coordinator returns success to the client",
+    "The third replica applies the write later, or is repaired later"
+   ],
+   "explain": "The reply does not wait for the third replica, but the write was still sent to it. Waiting happens at the ack stage, not the send stage."
+  },
+  {
+   "type": "number",
+   "q": "N = 3, W = 2. Replica latencies for this write are A 4 ms, B 9 ms and C 120 ms (network + persist). What is the write latency seen by the client, in ms? (Ignore coordinator overhead.)",
+   "answer": 9,
+   "unit": "ms",
+   "tolerance": 0,
+   "explain": "The coordinator needs 2 acks, so the second fastest decides: 9 ms. With W = 3 it would be 120 ms, which is why W is set below N."
+  },
+  {
+   "type": "choice",
+   "q": "N = 3, W = 2. The write reaches replica A, which acknowledges. B and C are unreachable and time out. What happens, and what is true of A afterward?",
+   "options": [
+    "The client gets a failure, but A keeps the value, so a later read might return it",
+    "The write is rolled back from A automatically",
+    "The client gets success because one replica has it",
+    "A deletes the value when it learns the write failed"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Leaderless writes are not atomic across replicas and there is no rollback. A failed write may be partly applied; clients should retry with the same idempotency key or version so the outcome converges."
+  },
+  {
+   "type": "choice",
+   "q": "Why does the coordinator send the write to all N replicas rather than only to W of them?",
+   "options": [
+    "Waiting for W bounds latency, while sending to all keeps every replica current and lets any W respond; sending to only W would make a single slow replica block the write",
+    "Because W is always equal to N",
+    "To avoid needing version metadata",
+    "Because replicas cannot be skipped by design"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Choosing W replicas up front means a slow or dead choice stalls the write. Sending to all and accepting the first W acks tolerates N - W failures without waiting for anyone in particular."
+  },
+  {
+   "type": "choice",
+   "q": "Two coordinators receive writes to the same key concurrently and use last-write-wins timestamps. Coordinator 2's clock is 2 s behind. Writer 2 writes about 1 s later in real time. Which value do the replicas keep?",
+   "options": [
+    "Writer 1's value: its timestamp is later by the skewed clock, so writer 2's newer write is silently dropped",
+    "Writer 2's value because it was really later",
+    "Both values",
+    "Neither: the replicas reject both"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Writer 2's stamp is about 1 s earlier than writer 1's (2 s behind, but 1 s later in real time). LWW makes a pure clock decision; if lost writes are unacceptable use version vectors and merge siblings."
+  },
+  {
+   "type": "recall",
+   "q": "Why is a leaderless write that 'failed' (fewer than W acks) not necessarily absent from the system?",
+   "answer": "There is no rollback or atomic commit across replicas, so any replica that applied the write keeps it. A later read or repair may spread it, so the client must treat a failure as unknown and retry idempotently."
+  }
+ ]
+}

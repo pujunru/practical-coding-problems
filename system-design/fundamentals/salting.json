@@ -1,0 +1,76 @@
+{
+ "id": "salting",
+ "title": "Salting and Desalting",
+ "summary": "Salting breaks up a **hot key** by writing it under several artificial keys, then **desalting** by merging the pieces. It is divide and conquer in two layers.\n\n**Layer 1: salt.** A processor appends a random salt (`0 … S-1`) to the key: `item_123` becomes `item_123_0`, `item_123_1`, … Now the hot item spreads over up to *S* partitions instead of one.\n\n**Layer 2: desalt and aggregate.** A second processor strips the salt and merges all partial results for `item_123` into the final value.\n\n```\nevents(item_123) --salt--> item_123_k --partial agg per salt--> strip salt --> merge --> item_123\n```\n\nRules of thumb:\n\n- Pick `S` from load: `S ≥ hot key rate / capacity of one partition`, with headroom. Salt **only the hot keys** when you can identify them; everything else stays cheap to read.\n- It works when the partials are **mergeable**: sum, count, max, min, set union, and sketches such as HyperLogLog. It does not work for exact medians or averages of averages.\n- Reads become **scatter-gather** over `S` keys, so you trade read cost for write throughput.\n- Random salt gives up per-key ordering; if the same entity needs ordered processing, use a deterministic salt (such as `hash(user_id) % S`).\n\nIt is the standard fix for the skew that [sharding](#/sd/f/sharding) always produces. Compare with an adaptive [split](#/sd/f/token-rebalancing).",
+ "drills": [
+  {
+   "type": "number",
+   "q": "One item receives 90,000 writes/s. A single partition can safely handle 10,000 writes/s, and you want expected load per salted key to be at most half of that to leave headroom. Salts are uniformly random. What is the minimum salt count S?",
+   "answer": 18,
+   "unit": "salts",
+   "tolerance": 0,
+   "explain": "Target per salted key: 5,000 writes/s. 90,000 / 5,000 = 18. With S = 9 the expected load is exactly 10,000/s, the limit, and any random imbalance would overload a partition."
+  },
+  {
+   "type": "choice",
+   "q": "A video's view events are salted into 16 sub-keys. Which final results can the desalting step compute correctly just by merging the 16 partial results? Select all that apply.",
+   "options": [
+    "Total view count (sum of partial counts)",
+    "Maximum watch time (max of partial maxima)",
+    "Unique viewers (sum of each salt's distinct count)",
+    "Number of events in the last hour (sum of per-salt window counts)"
+   ],
+   "answer": [
+    0,
+    1,
+    3
+   ],
+   "explain": "Sums, counts and maxima merge exactly. Distinct counts do not: the same viewer can appear under several salts, so summing overcounts. Use set union or a mergeable sketch such as HyperLogLog."
+  },
+  {
+   "type": "order",
+   "q": "Order the stages of a salted aggregation pipeline.",
+   "items": [
+    "An event for `item_123` arrives",
+    "Layer 1 appends a random salt, producing `item_123_k`",
+    "Events are partitioned by the salted key and partially aggregated",
+    "Layer 2 strips the salt and groups partials by `item_123`",
+    "The partials are merged into the final value for `item_123`"
+   ],
+   "explain": "Salt before the shuffle spreads the load, then desalting happens after partial aggregation, so only S small partial values (not the raw events) reach the single final key."
+  },
+  {
+   "type": "choice",
+   "q": "A chat system salts message writes per conversation with a random salt. Users now see messages in the wrong order. What is the cause and the better design?",
+   "options": [
+    "Random salt scatters one conversation across partitions with no shared order; use a deterministic salt (for example hash(sender) % S) or order by an explicit sequence number",
+    "The salt count is too low",
+    "Salts must be removed on write",
+    "Reads should happen before writes"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Ordering is a per-key property that random salting deliberately destroys. If order matters, either keep a single partition per key, or carry a sequence number or timestamp and sort during the gather step."
+  },
+  {
+   "type": "choice",
+   "q": "A catalog has 10 million items; 12 of them are hot. A read of any item must be a single lookup when possible. How should you apply salting?",
+   "options": [
+    "Salt only the 12 hot items, keep a small hot-key list, and gather their S sub-keys on read",
+    "Salt all 10 million items with S = 16",
+    "Do not salt; add more replicas",
+    "Randomly salt reads but not writes"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Salting everything multiplies read cost by 16 for no benefit on cold keys. Salting only what is known to be hot (detected by sampling, or flagged) keeps the common path at one lookup. Replicas do not help write hotspots."
+  },
+  {
+   "type": "recall",
+   "q": "Explain salting and desalting to an interviewer in three sentences, including its cost.",
+   "answer": "A hot key is written under `key_0 … key_{S-1}` using a random suffix, spreading its writes over S partitions; a second stage strips the suffix and merges the partial results into the final value. This only works for mergeable aggregates, and the cost is that every read must gather S pieces."
+  }
+ ]
+}

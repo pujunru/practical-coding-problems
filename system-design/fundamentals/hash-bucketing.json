@@ -1,0 +1,76 @@
+{
+ "id": "hash-bucketing",
+ "title": "Bucketing (Fixed Hash Slots)",
+ "summary": "Bucketing is sharding with an **indirection table**: hash the key into one of a **fixed, large number of buckets** (slots), and keep a separate table that says which node owns each bucket. Each instance only serves the key set (the buckets) assigned to it.\n\n```\nslot = hash(key) % 16384          // never changes\nowner = slotTable[slot]           // changes when you rebalance\n```\n\nRedis Cluster is the textbook example: `CRC16(key) mod 16384`, with slots assigned to nodes.\n\nCompare with `hash(key) % N`, where N is the *node* count:\n\n- Adding a node changes N and remaps nearly every key. With buckets the hash never changes; you **reassign whole buckets** and migrate just their keys.\n- The bucket count is the **upper bound on parallelism** (you cannot have more nodes than buckets) and the **granularity** of rebalancing, so choose it far above the expected node count.\n- The table must be stored and distributed; clients or a proxy cache it and are redirected when it changes.\n\nVersus [consistent hashing](#/sd/f/consistent-hashing): a ring derives ownership from positions implicitly, buckets store it explicitly, which makes manual and balanced assignment easy. Related keys can be forced into one bucket with a hash tag, such as `{user42}:cart` and `{user42}:profile`, so multi-key operations stay on one node.",
+ "drills": [
+  {
+   "type": "number",
+   "q": "A 4-node cluster owns 16,384 slots evenly (4,096 each). A fifth node joins and the slots are rebalanced evenly across 5 nodes by moving the minimum possible. About how many slots move in total? (Round to the nearest whole slot.)",
+   "answer": 3277,
+   "unit": "slots",
+   "tolerance": 0.01,
+   "explain": "Evenly, each node should end with 16,384 / 5 = 3,276.8 slots. The new node must receive all of those, about 3,277, taken from the four old nodes (about 819 each). Only about 20% of slots, and so about 20% of keys, move; with `hash % N` roughly 80% would."
+  },
+  {
+   "type": "choice",
+   "q": "Why choose 16,384 buckets rather than exactly as many buckets as nodes?",
+   "options": [
+    "Many small buckets give fine-grained, even rebalancing and room to grow; buckets = nodes would leave no unit smaller than a node",
+    "The hash function requires a power of two",
+    "Fewer buckets would make lookups slower",
+    "Buckets must outnumber keys"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Buckets are the unit you move. With buckets = nodes, adding a node would change the bucket count and remap everything again, which is the problem buckets exist to avoid. The bucket count also caps how many nodes you can ever use."
+  },
+  {
+   "type": "order",
+   "q": "Order the steps to move one slot from node A to node B without downtime.",
+   "items": [
+    "Mark the slot as migrating on A and importing on B",
+    "Copy the slot's keys from A to B in batches",
+    "During the copy, serve keys A still has and redirect requests for keys that already moved to B",
+    "Update the slot table so B owns the slot",
+    "Delete the slot's data from A"
+   ],
+   "explain": "Ownership flips in the table only after the data is on B; while moving, requests for keys that have already left A are redirected. Deleting from A last leaves a safe fallback."
+  },
+  {
+   "type": "choice",
+   "q": "A service runs `MGET cart:17 cart:18` on a hash-slot cluster and gets a cross-slot error. The two keys hash to different slots on different nodes. What is the cleanest fix?",
+   "options": [
+    "Make the keys share a hash tag, like `{user7}:cart:17`, so only the tagged part is hashed and both keys land in the same slot",
+    "Raise the number of slots",
+    "Add replicas",
+    "Disable hashing for these keys"
+   ],
+   "answer": [
+    0
+   ],
+   "explain": "Multi-key commands need all keys on one node. A hash tag hashes only the braces' content, deliberately co-locating related keys. The cost is that a very large tag value can create a hot slot."
+  },
+  {
+   "type": "choice",
+   "q": "Which statements about fixed hash buckets versus a consistent-hash ring are true? Select all that apply.",
+   "options": [
+    "Buckets keep ownership in an explicit table that clients or a proxy must keep current",
+    "A ring derives ownership from token positions, so no separate assignment table is needed for placement",
+    "With buckets, adding a node moves keys because the hash function changes",
+    "Buckets allow hand-picking which node gets which share of the key space"
+   ],
+   "answer": [
+    0,
+    1,
+    3
+   ],
+   "explain": "Fixed buckets never change the hash; only the table changes, so adding a node does not rehash keys. The explicit table is both the cost (it must be distributed) and the benefit (you can balance it exactly)."
+  },
+  {
+   "type": "recall",
+   "q": "In your own words: what is the difference between `hash(key) % N` and `hash(key) % B` + a bucket-to-node table?",
+   "answer": "In the first, N is the node count, so changing nodes remaps almost all keys. In the second, B is a fixed large bucket count, so a key's bucket never changes; scaling reassigns buckets between nodes through the table and migrates only those buckets' data."
+  }
+ ]
+}
