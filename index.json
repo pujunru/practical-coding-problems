@@ -5,7 +5,61 @@
       "id": "rate-limiter",
       "title": "Rate Limiter",
       "difficulty": "Medium",
-      "tags": ["design", "sliding-window", "hash-map"]
+      "tags": [
+        "design",
+        "sliding-window",
+        "hash-map"
+      ]
+    },
+    {
+      "id": "banking-system",
+      "title": "Banking System",
+      "difficulty": "Medium",
+      "tags": [
+        "design",
+        "simulation",
+        "sorting"
+      ]
+    },
+    {
+      "id": "in-memory-database",
+      "title": "In-Memory Database",
+      "difficulty": "Medium",
+      "tags": [
+        "design",
+        "hash-map",
+        "ttl"
+      ]
+    },
+    {
+      "id": "time-based-kv-store",
+      "title": "Time-Based Key-Value Store",
+      "difficulty": "Medium",
+      "tags": [
+        "design",
+        "binary-search",
+        "versioning"
+      ]
+    },
+    {
+      "id": "credit-ledger",
+      "title": "GPU Credit Ledger",
+      "difficulty": "Hard",
+      "tags": [
+        "design",
+        "simulation",
+        "event-ordering"
+      ]
+    },
+    {
+      "id": "spreadsheet",
+      "title": "Spreadsheet",
+      "difficulty": "Hard",
+      "tags": [
+        "design",
+        "parsing",
+        "graph"
+      ]
     }
   ]
 }

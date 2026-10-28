@@ -1,0 +1,571 @@
+{
+ "levels": [
+  {
+   "title": "Credits and charges",
+   "cases": [
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "charge",
+      "balance",
+      "charge",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       100
+      ],
+      [
+       2,
+       30
+      ],
+      [
+       3
+      ],
+      [
+       4,
+       80
+      ],
+      [
+       5
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      true,
+      70,
+      false,
+      70
+     ],
+     "example": true,
+     "explanation": "A charge that would overdraw is rejected as a whole."
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "add",
+      "charge",
+      "charge",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       10
+      ],
+      [
+       2,
+       15
+      ],
+      [
+       3,
+       25
+      ],
+      [
+       4,
+       1
+      ],
+      [
+       5
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      null,
+      true,
+      false,
+      0
+     ],
+     "example": true
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "balance",
+      "charge",
+      "add",
+      "charge",
+      "add",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       1
+      ],
+      [
+       2,
+       0
+      ],
+      [
+       3,
+       5
+      ],
+      [
+       4,
+       5
+      ],
+      [
+       5,
+       7
+      ],
+      [
+       6
+      ]
+     ],
+     "expected": [
+      null,
+      0,
+      true,
+      null,
+      true,
+      null,
+      7
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Expiring credits",
+   "cases": [
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "balance",
+      "balance",
+      "charge"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       50,
+       10
+      ],
+      [
+       9
+      ],
+      [
+       10
+      ],
+      [
+       11,
+       1
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      50,
+      0,
+      false
+     ],
+     "example": true,
+     "explanation": "A grant added at 1 that expires at 10 can be spent during [1, 10)."
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "add",
+      "charge",
+      "balance",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       30,
+       20
+      ],
+      [
+       2,
+       30,
+       10
+      ],
+      [
+       3,
+       30
+      ],
+      [
+       15
+      ],
+      [
+       20
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      null,
+      true,
+      30,
+      0
+     ],
+     "example": true,
+     "explanation": "Charges spend the grant that expires first. The charge used the grant expiring at 10, so the one expiring at 20 is intact at 15."
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "add",
+      "charge",
+      "balance",
+      "balance",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       50,
+       10
+      ],
+      [
+       2,
+       100
+      ],
+      [
+       3,
+       60
+      ],
+      [
+       4
+      ],
+      [
+       10
+      ],
+      [
+       1000
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      null,
+      true,
+      90,
+      90,
+      90
+     ]
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "charge",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       10,
+       5
+      ],
+      [
+       5,
+       10
+      ],
+      [
+       5
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      false,
+      0
+     ]
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "add",
+      "add",
+      "charge",
+      "balance",
+      "balance",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       5,
+       10
+      ],
+      [
+       2,
+       5,
+       10
+      ],
+      [
+       3,
+       5,
+       4
+      ],
+      [
+       3,
+       7
+      ],
+      [
+       4
+      ],
+      [
+       9
+      ],
+      [
+       10
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      true,
+      8,
+      8,
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Out-of-order events",
+   "cases": [
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "charge",
+      "charge",
+      "balance",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       10,
+       100
+      ],
+      [
+       20,
+       80
+      ],
+      [
+       15,
+       50
+      ],
+      [
+       17
+      ],
+      [
+       25
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      true,
+      true,
+      50,
+      50
+     ],
+     "example": true,
+     "explanation": "Events are applied in timestamp order, whatever order they arrive in. The charge at 15 lands first, so at 20 only 50 is left and the charge of 80 is skipped."
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "charge",
+      "add",
+      "balance",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       5,
+       10
+      ],
+      [
+       1,
+       10
+      ],
+      [
+       6
+      ],
+      [
+       4
+      ]
+     ],
+     "expected": [
+      null,
+      false,
+      null,
+      0,
+      10
+     ],
+     "example": true,
+     "explanation": "When it arrived, the charge at 5 had nothing to spend. Once the earlier credit is known, replaying the timeline lets it succeed."
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "charge",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       5,
+       10
+      ],
+      [
+       5,
+       10
+      ],
+      [
+       5
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      true,
+      0
+     ]
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "charge",
+      "add",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       5,
+       10
+      ],
+      [
+       5,
+       10
+      ],
+      [
+       5
+      ]
+     ],
+     "expected": [
+      null,
+      false,
+      null,
+      0
+     ]
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "charge"
+     ],
+     "args": [
+      [],
+      [
+       1,
+       10,
+       5
+      ],
+      [
+       5,
+       10
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      false
+     ]
+    },
+    {
+     "ops": [
+      "CreditLedger",
+      "add",
+      "add",
+      "charge",
+      "charge",
+      "add",
+      "balance",
+      "balance",
+      "balance",
+      "balance"
+     ],
+     "args": [
+      [],
+      [
+       20,
+       40,
+       30
+      ],
+      [
+       2,
+       25,
+       12
+      ],
+      [
+       25,
+       30
+      ],
+      [
+       10,
+       20
+      ],
+      [
+       8,
+       15
+      ],
+      [
+       11
+      ],
+      [
+       12
+      ],
+      [
+       26
+      ],
+      [
+       31
+      ]
+     ],
+     "expected": [
+      null,
+      null,
+      null,
+      true,
+      true,
+      null,
+      20,
+      15,
+      25,
+      15
+     ]
+    }
+   ]
+  }
+ ]
+}
