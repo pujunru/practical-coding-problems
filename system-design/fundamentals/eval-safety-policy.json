@@ -1,0 +1,77 @@
+{
+  "id": "eval-safety-policy",
+  "title": "Safety & Policy",
+  "summary": "**Product:** any model deployment that must follow safety, privacy and authorization rules under normal, borderline and adversarial use. Two sides must be measured together: **violations** (it did something it must not) and **over-refusal** (it refused something it should help with). Lowering one by raising the other is not progress.\n\n**What to measure**\n- **Harm and policy violation rate** on clearly disallowed requests, weighted by severity.\n- **Over-refusal rate** on benign and borderline requests; **safe completion** (a helpful partial answer within limits).\n- **Privacy and data exfiltration**: PII, secrets, system prompt, cross-user data.\n- **Authorization**: no high-risk external action without permission.\n- **Prompt injection** success rate via user text, files, web pages, tool outputs.\n- **Consistency** across paraphrase, languages, encodings and multi-turn pressure.\n\n**How to measure:** labelled prompt sets with graders (rules for objective leaks, judges for fuzzy policy, humans for uncertain cases) plus **red-teaming**. Keep a **holdout** set separate from attack templates you tuned against.\n\n**Failure modes:** overfitting to known jailbreaks, refusal inflation, policy gaps in other languages, regressions after a system-prompt edit, one severe incident hidden in a good average.\n\n**Choosing metrics:** set hard gates per severe category (rate with confidence bound, not a lone average), report violation and over-refusal side by side, send judge-uncertain cases to humans, and rerun the full critical suite after every policy or prompt change. See [tool-using agents](#/sd/f/eval-tool-agent) for authorization checks and [conversational assistants](#/sd/f/eval-conversational) for judge calibration.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "A model is tested on 500 clearly harmful prompts and 500 benign-but-borderline prompts. It complies with 15 of the harmful ones and refuses 60 of the benign ones. What is the over-refusal rate on the benign set, in percent?",
+      "answer": 12,
+      "unit": "%",
+      "tolerance": 0,
+      "explain": "60 / 500 = 12%. The violation rate is 15/500 = 3%. A policy change that cut violations by refusing more would hide a regression in usefulness unless both are reported."
+    },
+    {
+      "type": "number",
+      "q": "You test a model on n independent harmful prompts and observe zero violations. Using the rule of three (95% upper confidence bound on the rate ≈ 3/n), about how many prompts do you need to claim the true violation rate is below 0.5%?",
+      "answer": 600,
+      "unit": "prompts",
+      "tolerance": 0.05,
+      "explain": "3 / n <= 0.005 gives n >= 600. 'Zero failures in 50 tests' only supports a bound near 6%, so severe-category gates need large, fresh test sets."
+    },
+    {
+      "type": "choice",
+      "q": "Your safety score improves from 97% to 99% after tightening the system prompt. Which additional result must you check before shipping?",
+      "options": [
+        "Latency of the first token",
+        "Number of parameters",
+        "Tone of the refusal messages",
+        "Over-refusal and helpfulness on benign and borderline requests, because the improvement may come from refusing more"
+      ],
+      "answer": [
+        3
+      ],
+      "explain": "A model that refuses everything has a perfect safety score. Report violation and over-refusal on matched sets and look at the trade-off."
+    },
+    {
+      "type": "choice",
+      "q": "The team tunes defences against a library of 200 known jailbreak templates and reports a 1% attack success rate on that library. What is the main evaluation weakness?",
+      "options": [
+        "The library is too large",
+        "The result is measured on the same data used to tune, so it overfits; keep a holdout of unseen attacks and keep adding fresh red-team material",
+        "Attack success rate cannot be measured",
+        "1% is too low to be real"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Defences that memorise templates fail on paraphrases and new strategies. A held-out, regularly refreshed attack set measures generalization."
+    },
+    {
+      "type": "choice",
+      "q": "In a month of evaluation, 9,990 of 10,000 prompts were handled correctly, but one response leaked another user's account number. Reported average safety: 99.9%. What is the right release treatment?",
+      "options": [
+        "Ship: 99.9% passes",
+        "Average it with other months",
+        "Treat the leak as a separate severe-category failure with its own zero-tolerance gate, investigate the root cause, and rerun the critical suite",
+        "Count it only if two reviewers saw it"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "Averages hide rare, severe incidents. Privacy and authorization failures need independent gates and individual incident review."
+    },
+    {
+      "type": "order",
+      "q": "Put the release process after a system-prompt or policy change in order.",
+      "items": [
+        "Rerun the full critical safety suite, including a fresh holdout set",
+        "Compare violation and over-refusal per category and slice with the previous version",
+        "Send judge-uncertain samples to human review",
+        "Apply the hard gates for severe categories (pass or block)",
+        "Ship and monitor refusals, appeals and reports"
+      ],
+      "explain": "Policy and prompt edits can regress unrelated categories, so the whole critical suite reruns. Uncertain judge verdicts should reach humans, not be forced into pass or fail."
+    }
+  ]
+}

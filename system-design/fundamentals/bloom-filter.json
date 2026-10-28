@@ -1,0 +1,73 @@
+{
+  "id": "bloom-filter",
+  "title": "Bloom Filter",
+  "summary": "A Bloom filter answers *\"have I seen this item?\"* with **\"definitely not\"** or **\"probably yes\"**, using a bit array of `m` bits and `k` hash functions.\n\n- **Add:** hash the item `k` times and set those `k` bits to **1**.\n- **Query:** hash it the same way. If **any** of the `k` bits is **0**, the item was definitely never added. If **all are 1**, it is *possibly* present, because other items may have set exactly those bits (a false positive).\n\nThere are **no false negatives** (as long as you never clear bits). Memory is tiny: about 9.6 bits per item for a 1% false-positive rate, versus storing the items themselves.\n\n**Sizing.** With `n` items, the false-positive rate is about `(1 - e^(-kn/m))^k`; the best `k` is `(m/n) ln 2`, and `m = -n ln p / (ln 2)^2` for a target rate `p`. If you insert more than `n`, the rate climbs fast.\n\n**Practical tricks.** Computing `k` real hashes is costly, so use *double hashing*: `g_i(x) = h1(x) + i*h2(x) mod m` from two base hashes (Kirsch-Mitzenmacher), which keeps the false-positive rate essentially unchanged.\n\n**Limits.** You cannot delete (clearing a bit may erase another item; use a counting filter), enumerate, or resize in place. Typical uses: skip disk reads for absent keys in an LSM tree, \"already crawled\" checks, and cheap pre-checks in front of a database to shield it from lookups of keys that do not exist. A \"maybe\" must always be confirmed by the real store.",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A Bloom filter has m = 16 bits and k = 2. Adding \"a\" set bits {1, 5}; adding \"b\" set bits {5, 9}. Queries hash to: \"c\" -> {1, 9}, \"d\" -> {2, 5}. What do the queries return?",
+      "options": [
+        "\"c\" is definitely absent; \"d\" is possibly present",
+        "Both are definitely absent, since neither was ever added",
+        "\"c\" is possibly present (a false positive); \"d\" is definitely absent",
+        "Both are possibly present, because bit 5 is set"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "The set bits are {1, 5, 9}. \"c\" needs bits 1 and 9, both are 1, so the filter says maybe, although \"c\" was never added (a false positive caused by \"a\" and \"b\"). \"d\" needs bit 2, which is 0, so it is definitely absent."
+    },
+    {
+      "type": "number",
+      "q": "A Bloom filter has m = 10,000,000 bits, holds n = 1,000,000 items and uses k = 7 hash functions. Use p ≈ (1 - e^(-kn/m))^k. What is the false-positive rate, in percent?",
+      "answer": 0.82,
+      "unit": "%",
+      "tolerance": 0.05,
+      "explain": "kn/m = 0.7, so 1 - e^-0.7 = 0.5034 and 0.5034^7 ≈ 0.0082, i.e. about 0.82%. 10 bits per item with the near-optimal k = 7 gives under 1%."
+    },
+    {
+      "type": "number",
+      "q": "You need a Bloom filter for n = 1,000,000 items with a 1% false-positive rate. Using m = -n ln p / (ln 2)^2 and 8 bits per byte, about how many megabytes (1 MB = 1,000,000 bytes) does the bit array take?",
+      "answer": 1.2,
+      "unit": "MB",
+      "tolerance": 0.05,
+      "explain": "m = 1e6 x 4.605 / 0.4805 ≈ 9.59 million bits ≈ 1.2 MB, or about 9.6 bits per item. The optimal k is about 6.6, so use 7."
+    },
+    {
+      "type": "number",
+      "q": "Each of 20 SSTables in an LSM tree has its own Bloom filter with a 1% false-positive rate. A read asks for a key that exists in none of them. On average, how many SSTables are needlessly read from disk?",
+      "answer": 0.2,
+      "unit": "reads",
+      "tolerance": 0,
+      "explain": "Each filter wrongly says maybe with probability 0.01, independently, so the expectation is 20 x 0.01 = 0.2 wasted reads (versus 20 without filters). True negatives never touch disk."
+    },
+    {
+      "type": "choice",
+      "q": "A team stores user IDs in a Bloom filter to detect repeat signups. When a user deletes their account, an engineer clears that user's k bits. What goes wrong?",
+      "options": [
+        "Other users who share any of those bits can now be reported as definitely absent, creating false negatives",
+        "Nothing, deletion is the inverse of insertion",
+        "The filter starts reporting false positives for every user",
+        "The filter's size shrinks so m must be recomputed"
+      ],
+      "answer": [
+        0
+      ],
+      "explain": "Bits are shared between items. Clearing one may erase evidence of another, and the structure's promise of **no false negatives** is broken. Use a counting Bloom filter or a cuckoo filter if deletion is required, or rebuild periodically."
+    },
+    {
+      "type": "choice",
+      "q": "A filter was sized for 1M items at 1% but the service now stores 5M items in it (same m and k). What happens?",
+      "options": [
+        "Nothing: a Bloom filter never fails",
+        "False negatives appear for the oldest items",
+        "Inserts start failing once the array is full",
+        "The false-positive rate climbs steeply (most bits become 1), so \"maybe\" answers become nearly useless"
+      ],
+      "answer": [
+        3
+      ],
+      "explain": "A Bloom filter never refuses inserts or forgets items, but the more bits are set to 1 the more queries pass by accident. With m/n = 2 at k = 7 the rate is about 80%. Size for the expected maximum, or use scalable/rotating filters."
+    }
+  ]
+}

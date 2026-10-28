@@ -1,0 +1,75 @@
+{
+  "id": "runc",
+  "title": "runc",
+  "summary": "**runc** is the low-level runtime behind Docker, containerd and Kubernetes that turns a container image into a running Linux **process** (not a thread, not a VM) walled in by two kernel features:\n\n- **Namespaces** change *what the process can see*: its own process tree (pid), mounts and root filesystem (mnt), network stack (net), hostname (uts), IPC, users (user).\n- **cgroups** limit *how much it can use*: CPU, memory, number of processes, I/O.\n\nrunc layers more on top: dropped capabilities, a seccomp syscall filter, AppArmor or SELinux, and a read-only or overlay root filesystem.\n\n**Isolation boundary:** the process still makes ordinary syscalls into the **shared host kernel**. The boundary is the kernel's own enforcement, so one kernel or runtime vulnerability (a namespace bug, a runc escape such as CVE-2019-5736) can reach the host and every neighbour.\n\n**Overhead:** essentially native. Start-up is tens of milliseconds, there is no guest kernel and no extra memory, so density is the highest of the options.\n\n**Pick it** for your own or semi-trusted code, CI jobs and microservices. **Do not rely on it alone** for hostile multi-tenant code; step up to [gVisor](#/sd/f/gvisor), a microVM, or a [WASM](#/sd/f/wasm) runtime. See also [tenant isolation](#/sd/f/tenant-isolation) and [native sandboxes](#/sd/f/native-sandboxes).",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A container runs a fork bomb and starves the node of process slots. Which isolation mechanism should have prevented this?",
+      "options": [
+        "A pid namespace, since it hides other processes",
+        "A seccomp filter on `open`",
+        "The pids cgroup limit, which caps how many processes the container can create",
+        "The mount namespace"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "Namespaces control visibility, cgroups control consumption. A pid namespace gives the container its own numbering but does not by itself bound how many processes it may create."
+    },
+    {
+      "type": "choice",
+      "q": "You run customer-submitted code in runc containers with the default seccomp profile. What is the main residual risk compared with a VM?",
+      "options": [
+        "Every syscall still goes to the shared host kernel, so a kernel vulnerability reachable from allowed syscalls can lead to host compromise",
+        "The container cannot use the network",
+        "Containers cannot be limited in CPU",
+        "Images are unsigned"
+      ],
+      "answer": [
+        0
+      ],
+      "explain": "The attack surface is the host kernel interface (hundreds of syscalls, even with a filter). A VM adds a hardware-enforced boundary and a separate guest kernel."
+    },
+    {
+      "type": "choice",
+      "q": "Which statements about a standard runc container are true? Select all that apply.",
+      "options": [
+        "It shares the host's kernel",
+        "Without a user namespace, uid 0 inside is uid 0 on the host (though with reduced capabilities)",
+        "Its memory use can be capped with cgroups",
+        "It boots its own kernel, so a kernel bug inside stays inside"
+      ],
+      "answer": [
+        0,
+        1,
+        2
+      ],
+      "explain": "Containers are processes, not machines. The last statement describes a VM. Rootless containers or user namespaces map uid 0 to an unprivileged host uid to shrink this risk."
+    },
+    {
+      "type": "number",
+      "q": "A node has 64 GiB of RAM, 2 GiB reserved for the OS and agents, and each sandbox gets a hard memory limit of 512 MiB (cgroup). Ignoring per-container overhead, what is the maximum number of sandboxes by memory limit?",
+      "answer": 124,
+      "unit": "sandboxes",
+      "tolerance": 0,
+      "explain": "(64 - 2) GiB x 1024 / 512 MiB = 62 x 2 = 124. Density this high is runc's advantage; a VM-per-sandbox design would pay a guest-kernel overhead each."
+    },
+    {
+      "type": "order",
+      "q": "Order these by increasing strength of the boundary against a kernel exploit (weakest first).",
+      "items": [
+        "Plain process running as a non-root user",
+        "runc container with seccomp and dropped capabilities",
+        "gVisor (user-space kernel intercepting syscalls)",
+        "MicroVM with its own guest kernel on hardware virtualization"
+      ],
+      "explain": "Each step puts more between the untrusted code and the host kernel: a filtered syscall interface, then a reimplemented one, then a separate kernel behind the hypervisor. Cost and overhead rise in the same order."
+    },
+    {
+      "type": "recall",
+      "q": "What exactly do namespaces and cgroups each do for a container, and why is runc alone not enough for hostile code?",
+      "answer": "Namespaces limit what the process can see (pids, mounts, network, hostname, users); cgroups limit what it can consume (CPU, memory, pids, I/O). The process still runs on the shared host kernel, so a kernel or runtime bug reachable through allowed syscalls can break out. For hostile multi-tenant code add gVisor, a microVM, or a WASM runtime."
+    }
+  ]
+}

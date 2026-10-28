@@ -1,0 +1,71 @@
+{
+  "id": "eval-structured-extraction",
+  "title": "Structured Extraction",
+  "summary": "**Product:** read unstructured text (contracts, invoices, emails) and fill a fixed JSON schema: entities, fields, relations, events. The output is checkable, so evaluate with **reference-based scoring against gold fields**, not with a judge, except for free-text fields.\n\n**Layers to measure**\n1. **Schema validity**: parse rate and schema-validation rate. This is a hard gate, but it says nothing about correctness.\n2. **Per-field precision and recall**: precision = correct values / values emitted; recall = correct values / gold values. Report **micro-F1 and macro-F1**, plus P0 fields separately, so a rare critical field cannot hide in the average.\n3. **Exactness after normalization**: dates, money, units, phone numbers are normalized first, then compared exactly. Free-text fields use a similarity or judge metric.\n4. **Null handling**: when the document lacks a field the model must output null, not invent a plausible value. Track the hallucinated-extraction rate.\n5. **Grounding**: can each value be traced to a span in the source?\n\n**Failure modes:** invented values, wrong entity (two similarly named parties), list order or duplication, ambiguous formats (03/04 as March 4 or April 3), long inputs with the field at the end, OCR noise.\n\n**Choosing metrics:** validity is necessary, correctness is what matters; gate the critical fields individually. Compare [summarization](#/sd/f/eval-summarization), where there is no single gold string.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "Gold has 40 non-null fields and 10 fields that should be null. The model correctly extracts 36 of the 40; gets 2 of them wrong (wrong value) and omits 2; and also fills 4 of the 10 should-be-null fields with invented values. What is the field-level precision (correct / non-null values emitted), to two decimals?",
+      "answer": 0.86,
+      "unit": "",
+      "tolerance": 0.01,
+      "explain": "Emitted non-null values = 36 correct + 2 wrong + 4 invented = 42. Precision = 36/42 = 0.857. Recall is 36/40 = 0.90, which would look fine on its own; the invented values only show in precision and in the null-handling metric."
+    },
+    {
+      "type": "number",
+      "q": "Same experiment: of the 10 fields where the document contains no value, the model filled 4. What is the hallucinated-extraction rate on the should-be-null fields, as a decimal?",
+      "answer": 0.4,
+      "unit": "",
+      "tolerance": 0,
+      "explain": "4 / 10 = 0.4. Null handling is a separate P0 metric because precision and recall averaged over all fields would dilute it."
+    },
+    {
+      "type": "number",
+      "q": "Model A returns schema-valid JSON 100% of the time and gets 85% of fields right. Model B returns valid JSON 92% of the time and, when valid, gets 95% of fields right. Count an invalid output as all fields wrong. What is B's end-to-end field accuracy, as a decimal?",
+      "answer": 0.874,
+      "unit": "",
+      "tolerance": 0.005,
+      "explain": "0.92 x 0.95 = 0.874, which beats A's 0.85 even though A is always valid. Schema validity is a gate, not a quality score; also check whether invalid outputs can be retried or repaired, which changes the comparison."
+    },
+    {
+      "type": "choice",
+      "q": "The field \"tax_id\" appears in only 2% of documents, while \"invoice_total\" appears in 100%. Which reporting protects the rare, critical field?",
+      "options": [
+        "Micro-F1 over all fields, since it uses all predictions",
+        "Overall field accuracy",
+        "Macro-F1 over fields plus a separate P0 gate on tax_id's own precision and recall",
+        "Schema validity rate"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "Micro averaging is dominated by frequent fields. A rare critical field must have its own metric and threshold."
+    },
+    {
+      "type": "choice",
+      "q": "The model returns the date \"03/04/2026\" and the gold value is \"2026-04-03\". Which comparison is most defensible?",
+      "options": [
+        "Normalize both with an explicit, documented format convention (e.g. DD/MM/YYYY for this source) and compare the canonical values",
+        "Exact string match: they differ, so wrong",
+        "Ask an LLM judge whether the two look similar",
+        "Count it as correct because the digits are the same"
+      ],
+      "answer": [
+        0
+      ],
+      "explain": "Dates, amounts and units need canonicalization before exact match, and the source convention must be stated because 03/04 is ambiguous. A looser fuzzy match would also pass genuinely wrong dates."
+    },
+    {
+      "type": "order",
+      "q": "Put the scoring of one extracted document in order.",
+      "items": [
+        "Parse the output and validate it against the schema",
+        "Normalize values (dates, amounts, units, whitespace, case)",
+        "Compare each field with gold, with null and list rules",
+        "Check that extracted values are grounded in source spans",
+        "Aggregate per-field precision and recall into micro/macro scores and P0 gates"
+      ],
+      "explain": "Validation comes first because an unparseable output has no fields to compare. Normalization must precede comparison, or format differences count as errors."
+    }
+  ]
+}

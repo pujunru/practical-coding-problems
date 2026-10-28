@@ -1,0 +1,68 @@
+{
+  "id": "user-context",
+  "title": "User Context",
+  "summary": "User context is the **bundle of known facts about a user at request time**, evaluated by **exact rules**: `country in [US, CA] AND plan == \"pro\" AND app_version >= 4.2`. Typical attributes: identity and account (plan, tenant, role), environment (country, locale, device, app version) and recent behaviour (segments, last seen).\n\nUse it for decisions that must be **precise, deterministic and explainable**: feature flags, entitlements, pricing tiers, experiments, routing, content targeting. Contrast with an [item embedding](#/sd/f/item-embedding): an embedding says *\"this is probably similar\"*; a rule says *\"this is true or not\"*. You cannot enforce \"block sanctioned countries\" with a nearest neighbour.\n\nDesign rules:\n- **Build one immutable snapshot per request** and evaluate every rule against it, so decisions are consistent within the request.\n- **Define missing values.** Unknown is not false. For permissive rules (grants) fail closed; say so explicitly.\n- **Precedence:** decide between first-match-wins (ordered list) and all-matching, and log which rule fired and the context version used.\n- **Freshness:** attributes have a TTL; cache them, but know which ones may be stale (a just-upgraded plan).\n- **Stable bucketing** for experiments: hash a stable id (see [hash bucketing](#/sd/f/hash-bucketing)).\n- **Privacy:** pass only the attributes a rule needs; do not log raw PII.",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A product must restrict a feature to users in a list of approved countries. Which is the right tool?",
+      "options": [
+        "A rule on the user-context attribute `country`, evaluated exactly",
+        "Embed users and show the feature to anyone whose vector is near an approved user",
+        "A k-means cluster of users, enabling the feature for the largest clusters",
+        "A Bloom filter of all users in the approved countries"
+      ],
+      "answer": [
+        0
+      ],
+      "explain": "This is a compliance-style yes/no decision, so it needs exact, auditable matching. A similarity or clustering approach can be wrong for individual users, and a Bloom filter admits false positives."
+    },
+    {
+      "type": "number",
+      "q": "Rules are evaluated in order with first-match-wins: (1) plan == \"enterprise\"; (2) country in [DE, FR] AND device == \"mobile\"; (3) country == \"DE\". A user is on the free plan, in DE, on mobile. Which rule number decides?",
+      "answer": 2,
+      "unit": "",
+      "tolerance": 0,
+      "explain": "Rule 1 fails (free plan). Rule 2 matches (DE and mobile), so evaluation stops; rule 3 also matches but is never reached. Order is part of the policy."
+    },
+    {
+      "type": "number",
+      "q": "A team wants to pre-compute a decision for every combination of 5 attributes with 4 possible values each. How many combinations is that?",
+      "answer": 1024,
+      "unit": "combinations",
+      "tolerance": 0,
+      "explain": "4^5 = 1,024, and it grows exponentially with every attribute. Evaluating rules against the one user's context at request time avoids enumerating segments."
+    },
+    {
+      "type": "choice",
+      "q": "A rule grants a discount when `signup_source != \"affiliate\"`. A user's `signup_source` is missing because the profile service timed out. What should the evaluator do under a fail-closed convention for grants?",
+      "options": [
+        "Treat missing as \"not affiliate\" and grant the discount",
+        "Crash the request",
+        "Grant the discount and fix it up later",
+        "Treat the comparison as unknown, so the rule does not match and the discount is not granted; record the missing attribute"
+      ],
+      "answer": [
+        3
+      ],
+      "explain": "Missing does not mean different from the value. For permissive rules, unknown means no grant; for restrictive (deny) rules the safe convention is the opposite, so state it per rule type."
+    },
+    {
+      "type": "order",
+      "q": "Put the handling of a request with user context in order.",
+      "items": [
+        "Authenticate the caller",
+        "Load attributes and build an immutable context snapshot",
+        "Evaluate the rules in priority order",
+        "Apply the first matching rule's decision",
+        "Log the decision with the rule id and context version"
+      ],
+      "explain": "Building the snapshot first means all rules see the same facts. Logging the rule and context version makes the decision reproducible."
+    },
+    {
+      "type": "recall",
+      "q": "When would you use user-context rules rather than an embedding-based approach, and what must you define for missing attributes?",
+      "answer": "Use rules when the decision has to be exact, explainable and auditable: entitlements, feature flags, compliance, experiment targeting. Use embeddings for fuzzy relevance (recommendations, search). For missing attributes, define whether unknown counts as match, no match, or error per rule type (fail closed for grants), and log which attribute was missing."
+    }
+  ]
+}

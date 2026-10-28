@@ -1,0 +1,71 @@
+{
+  "id": "similarity-search",
+  "title": "Similarity Search",
+  "summary": "Similarity search finds the **nearest vectors to a query vector**: the k closest items under cosine, dot product or Euclidean distance (see [similarity](#/sd/f/similarity)).\n\n**Exact (brute force).** Compare the query with every vector: `n x d` multiply-adds. Perfectly accurate, fine up to roughly a million vectors or when batched on a GPU, hopeless at hundreds of millions per query.\n\n**Approximate nearest neighbour (ANN)** trades a little recall for big speedups. Common index families:\n- **IVF** (inverted file): cluster vectors with [k-means](#/sd/f/k-means) into `nlist` cells; at query time scan only the `nprobe` cells whose centroids are closest. More probes = higher recall, more work.\n- **HNSW**: a layered proximity graph; greedy walks from coarse to fine layers. Very fast and accurate, memory hungry, slower to build.\n- **PQ** (product quantization): compress vectors into short codes to cut memory; often combined with IVF.\n\n**Recall@k** = fraction of the true top-k that the index returns. You tune parameters (`nprobe`, HNSW `ef`) until recall meets the target at an acceptable latency.\n\n**Gotchas.** Metadata filters (\"in stock\", tenant id) interact badly with ANN: filtering *after* a top-k can leave nothing, so use filtered traversal or pre-filter. Updates and deletes degrade or fragment indexes. Always [re-rank](#/sd/f/top-k-ranking) the candidates when precision matters.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "Brute-force search: 10,000,000 vectors of 768 dimensions. Counting one multiply-add per dimension per vector for a dot product, how many billion multiply-adds does one query need?",
+      "answer": 7.68,
+      "unit": "billion",
+      "tolerance": 0.01,
+      "explain": "10,000,000 x 768 = 7.68e9. At roughly 1e10 simple operations per second per core that is already most of a second for one query, which is why ANN indexes exist."
+    },
+    {
+      "type": "number",
+      "q": "An IVF index holds 1,000,000 vectors in nlist = 1,000 cells, assumed equal-sized (1,000 vectors each). A query compares itself with all 1,000 centroids, then scans the nprobe = 10 closest cells. How many distance computations in total?",
+      "answer": 11000,
+      "unit": "distance computations",
+      "tolerance": 0,
+      "explain": "1,000 centroid comparisons + 10 cells x 1,000 vectors = 11,000, about 1.1% of the 1,000,000 a brute-force scan needs."
+    },
+    {
+      "type": "number",
+      "q": "The true 5 nearest neighbours of a query are {a, b, c, d, e}. The ANN index returns {a, c, x, e, y}. What is recall@5, as a decimal?",
+      "answer": 0.6,
+      "unit": "",
+      "tolerance": 0,
+      "explain": "Three of the five true neighbours (a, c, e) were returned: 3 / 5 = 0.6. The extras x and y are not credited in recall; they would lower precision."
+    },
+    {
+      "type": "choice",
+      "q": "An IVF index with nprobe = 1 misses a true neighbour that lies just across a cell boundary from the query. What is the cheapest fix?",
+      "options": [
+        "Switch to a different distance metric",
+        "Increase the embedding dimension",
+        "Rebuild the index with k = 1 cell",
+        "Raise nprobe so more nearby cells are scanned, accepting extra latency"
+      ],
+      "answer": [
+        3
+      ],
+      "explain": "The neighbour sits in a cell the query never probes. Probing more cells restores it at roughly linear extra cost. A single cell is exact search again."
+    },
+    {
+      "type": "choice",
+      "q": "A marketplace search retrieves the top 10 neighbours from the ANN index and then removes items that are out of stock. Only 2% of the catalogue is in stock. What is the likely result?",
+      "options": [
+        "Almost always 10 results, since ANN is accurate",
+        "Usually zero or very few results, because the unfiltered top 10 rarely contains in-stock items; filter during the search or over-fetch",
+        "Exactly 2 results every time",
+        "The in-stock items are returned in a better order"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Post-filtering keeps 2% of 10, i.e. about 0.2 items on average. Use filter-aware traversal, pre-filtered partitions, or fetch far more candidates and filter after."
+    },
+    {
+      "type": "order",
+      "q": "Put an IVF query in order.",
+      "items": [
+        "Embed the query",
+        "Compare it with the cell centroids",
+        "Pick the nprobe closest cells",
+        "Scan the vectors in those cells and keep the k best",
+        "Return (or re-rank) those k candidates"
+      ],
+      "explain": "The coarse centroid step prunes most of the data; accuracy depends on picking enough cells."
+    }
+  ]
+}

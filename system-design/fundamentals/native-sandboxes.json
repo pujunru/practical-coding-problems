@@ -1,0 +1,81 @@
+{
+  "id": "native-sandboxes",
+  "title": "Native Sandboxes",
+  "summary": "A **native sandbox** is isolation built into the operating system's own security model. The classic example is the **macOS/iOS App Sandbox**: the app is an ordinary process running as the logged-in user, but the kernel's **mandatory access control** (TrustedBSD MAC, enforced by Apple's `sandbox.kext`, a.k.a. Seatbelt) checks every sensitive operation against a profile. **Default deny**; extra abilities (camera, network client, a user-chosen folder) are granted as explicit **entitlements**.\n\nDifference from containers: namespaces change *what the process sees*; a MAC sandbox keeps the normal view but changes *what it is allowed to do*. Apple first used it to confine system daemons (Spotlight's `mds`, network-facing services) so a compromised daemon could not roam the OS, then for all App Store apps.\n\nLinux equivalents are building blocks: **seccomp-bpf** (syscall filter), **Landlock** (file access rules), **AppArmor/SELinux**; Windows has AppContainer; browsers sandbox each renderer process this way.\n\n**Overhead:** near zero, with no guest kernel, no extra memory.\n\n**Boundary:** the shared kernel's policy enforcement. A kernel bug or an over-broad entitlement defeats it, and writing a precise profile is hard.\n\n**Pick it** to confine a helper process, daemon, desktop app, or a coding agent's shell on a developer machine. For multi-tenant cloud code use [gVisor](#/sd/f/gvisor), a microVM or [WASM](#/sd/f/wasm); compare with [runc](#/sd/f/runc).",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "What is the key conceptual difference between a Linux container (runc) and a macOS-style MAC sandbox?",
+      "options": [
+        "The MAC sandbox runs its own kernel; the container does not",
+        "The container changes what the process can see (own pid tree, mounts, network); the MAC sandbox keeps the normal view but checks every operation against an allow policy",
+        "The container is stronger because it uses hardware virtualization",
+        "They are the same mechanism with different names"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Namespaces virtualise the view; MAC policies restrict permissions. Both share the host kernel. Neither runs a separate kernel, which is what a VM does."
+    },
+    {
+      "type": "choice",
+      "q": "A sandboxed macOS app needs to read a file the user picks in an Open dialog, but is otherwise denied the home directory. How does it get access?",
+      "options": [
+        "It calls setuid(0)",
+        "It disables the sandbox profile at runtime",
+        "The user's selection via the system file picker extends the app's sandbox to that file (or it holds a matching entitlement)",
+        "It spawns an unsandboxed child process"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "Default deny plus explicit grants is the model: entitlements for broad capabilities, user-mediated grants for specific files. A sandboxed process cannot lift its own restrictions, and children inherit them."
+    },
+    {
+      "type": "choice",
+      "q": "You run customer-submitted code for many tenants on Linux servers in the cloud. Is a native OS sandbox (seccomp or Landlock rules) enough on its own?",
+      "options": [
+        "Usually no: it narrows what each process can do, but the shared kernel remains the boundary, and policies are easy to get wrong; combine with a container, gVisor or a microVM",
+        "Yes, it is stronger than a VM",
+        "Yes, as long as the process runs as root",
+        "No, because syscall filters cannot be applied to child processes"
+      ],
+      "answer": [
+        0
+      ],
+      "explain": "Native sandboxes are excellent hardening layers and for confining helpers. For hostile multi-tenant workloads you want a stronger, separately maintained boundary. (Filters are in fact inherited by children.)"
+    },
+    {
+      "type": "choice",
+      "q": "Which situations are a good fit for a native sandbox? Select all that apply.",
+      "options": [
+        "Confining a network-facing system daemon so a compromise cannot read the rest of the machine",
+        "Letting a desktop app handle untrusted documents with only the permissions it needs",
+        "Giving each of 10,000 cloud tenants a fully isolated runtime with its own kernel",
+        "Restricting a coding agent's shell commands to a project directory on a developer laptop"
+      ],
+      "answer": [
+        0,
+        1,
+        3
+      ],
+      "explain": "These all confine a process on a host you control, at near-zero cost. Per-tenant kernels require virtualization (microVMs)."
+    },
+    {
+      "type": "order",
+      "q": "Put the life of an operation in a sandboxed macOS app in order.",
+      "items": [
+        "The kernel loads the app's sandbox profile when the process starts",
+        "The app asks the kernel to do something (open a file, connect)",
+        "The kernel's MAC hook evaluates the profile and entitlements",
+        "If allowed, the operation proceeds; otherwise it fails (e.g. EPERM)"
+      ],
+      "explain": "The decision is made in the kernel on every sensitive call, not by the app, so the app cannot opt out."
+    },
+    {
+      "type": "recall",
+      "q": "Describe a native sandbox in one or two sentences and one case where it is the right choice and one where it is not.",
+      "answer": "A native sandbox is OS-enforced mandatory access control: the process runs normally (same user, same kernel) but the kernel denies by default and allows only what its profile or entitlements permit. Right for confining system daemons, desktop apps and a coding agent's tools on a machine you control, at near-zero overhead; not enough alone for hostile multi-tenant cloud code, where the shared kernel is the weak point."
+    }
+  ]
+}

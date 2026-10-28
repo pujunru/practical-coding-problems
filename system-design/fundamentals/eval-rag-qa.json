@@ -1,0 +1,77 @@
+{
+  "id": "eval-rag-qa",
+  "title": "RAG Question Answering",
+  "summary": "**Product:** answer questions from a controlled knowledge base by retrieving passages and generating a grounded answer. The key rule: **evaluate retrieval and generation separately**, otherwise you cannot tell *did not find it* from *found it but answered wrong*.\n\n**Retrieval layer**\n- **Recall@k**: does the gold evidence appear in the top-k? (Reference-based, needs labelled evidence.)\n- **Context precision**: how much of the retrieved context is relevant.\n- **MRR / nDCG**: how high the evidence ranks.\n\n**Generation layer**\n- **Correctness** against a reference answer (judge or fact match).\n- **Faithfulness**: is each claim supported by the *retrieved* context? A correct answer from the model's memory is still unfaithful and breaks when the KB changes.\n- **Citation correctness**: does the cited passage really support the sentence? Existing is not supporting.\n- **Abstention**: no evidence means say so.\n\n**Failure modes:** gold not retrieved, stale or conflicting documents, truncated context, answer ignoring context, fabricated or mismatched citations, confident answer to an unanswerable question, access-controlled documents leaking.\n\n**Choosing metrics:** use failure attribution to decide what to fix (retrieval vs prompt vs model), keep P0 metrics as separate gates, and slice by answerable/unanswerable and multi-hop questions. Retrieval quality depends on [similarity search](#/sd/f/similarity-search) and [embeddings](#/sd/f/item-embedding); the answer side resembles [summarization](#/sd/f/eval-summarization) faithfulness.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "Five test queries have their gold passage at ranks 1, 3, 2, not retrieved, and 5. What is the mean reciprocal rank (MRR), to two decimals? (Reciprocal rank is 0 when the passage is not retrieved.)",
+      "answer": 0.41,
+      "unit": "",
+      "tolerance": 0.02,
+      "explain": "(1 + 1/3 + 1/2 + 0 + 1/5) / 5 = 2.033/5 = 0.407. MRR rewards putting evidence first, which matters when the prompt only fits a few passages."
+    },
+    {
+      "type": "number",
+      "q": "On 200 questions, 40 answers fail the eval. Your trace analysis shows: in 24 the gold passage was not in the retrieved top-k, in 10 it was retrieved but the answer is still wrong, and in 6 the answer is right but cites a passage that does not support it (a failure by the citation metric). What percentage of failures come from the retrieval layer?",
+      "answer": 60,
+      "unit": "%",
+      "tolerance": 0,
+      "explain": "24 / 40 = 60%. This points to retrieval work (chunking, embedding, hybrid search, reranking) before prompt tuning. Without separate retrieval metrics you could not see this."
+    },
+    {
+      "type": "choice",
+      "q": "An answer matches the reference answer exactly, but the retrieved passages do not contain the facts; the model used what it memorised in training. How should it score?",
+      "options": [
+        "Full marks, because correctness is what the user sees",
+        "Incorrect, since it did not use retrieval",
+        "Not scoreable",
+        "Correct but unfaithful: it will fail when the KB is newer than the model, and should be flagged by the faithfulness metric"
+      ],
+      "answer": [
+        3
+      ],
+      "explain": "In RAG the contract is *answer from the provided evidence*. Correct-by-memory answers hide retrieval bugs and become wrong or leak out-of-scope knowledge later."
+    },
+    {
+      "type": "choice",
+      "q": "The system cites \"[Doc 7, section 3]\" for a claim, and that section exists. A reviewer says the citation is fine because the link opens. What is the issue?",
+      "options": [
+        "Nothing, an opening link is a valid citation",
+        "Citation correctness requires that the cited text entails the claim; an existing but irrelevant section is a mis-citation and should be checked by a claim-to-passage entailment test",
+        "Citations should never be used",
+        "Only the document title needs to match"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Citations are evidence. Measure the share of claims whose cited passages actually support them, not whether the reference resolves."
+    },
+    {
+      "type": "choice",
+      "q": "Your test set only contains questions that the knowledge base can answer, and the system scores 94%. What risk remains?",
+      "options": [
+        "None, the test is complete",
+        "Latency",
+        "It may confidently fabricate answers to unanswerable questions, so add unanswerable and partially answerable slices and measure the abstention rate",
+        "Embedding dimension"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "Real users ask questions the KB cannot answer. Reward the system for saying evidence is insufficient, and watch for over-abstention on answerable questions."
+    },
+    {
+      "type": "order",
+      "q": "Put the debugging of one wrong RAG answer in order.",
+      "items": [
+        "Check whether the gold document is in the index at all",
+        "Check whether retrieval returned it in the top-k, and at what rank",
+        "Check whether it survived into the prompt (not truncated or filtered)",
+        "Check whether the answer is faithful to the context",
+        "Check whether the citations support the claims"
+      ],
+      "explain": "Each step eliminates one layer. If the evidence is missing at step 1 or 2, no prompt change will help."
+    }
+  ]
+}

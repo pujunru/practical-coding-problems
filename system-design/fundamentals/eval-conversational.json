@@ -1,0 +1,70 @@
+{
+  "id": "eval-conversational",
+  "title": "Conversational Assistant",
+  "summary": "**Product:** a multi-turn assistant (support, writing help, personal assistant) that must track context and the user's goal across a conversation. Open-ended replies cannot be exact-matched, so evaluation uses **rubric-driven judges on whole transcripts, plus programmatic checks and human review** to calibrate the judge.\n\n**What to measure**\n- **Task completion** at conversation level, not just whether each reply sounds good.\n- **Context retention and consistency**: earlier facts and constraints still respected; no self-contradiction.\n- **Instruction following and hierarchy**: current request, standing preferences, system rules.\n- **Clarification quality**: asks when a key condition is missing, does not ask when a safe assumption is enough.\n- **Repair**: after a correction, does it fix the issue and keep it fixed?\n- **Honesty about actions**: never claims something was done when it was not.\n- **Efficiency**: turns to resolution, repetition rate, latency.\n\n**Failure modes:** forgetting a constraint from turn 2 at turn 9, apologising but repeating the mistake, over-asking, sycophancy, drifting persona, false completion claims.\n\n**How to generate conversations:** replaying fixed logs breaks as soon as the assistant says something different, so use a simulated user (scripted persona and goal) for interactive runs and keep fixed logs for regression.\n\n**Choosing metrics:** score full transcripts; calibrate the judge against human labels (agreement above chance, e.g. Cohen's kappa) before trusting it; make safety and false-completion zero-tolerance. Compare [tool-using agents](#/sd/f/eval-tool-agent), where actions can be verified.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "30 test conversations contain a user correction. In 21 of them the assistant's next reply fixes the issue and the fix is still respected 3 turns later; in 3 it fixes it but the error comes back later; in 6 it never fixes it. What is the persistent repair success rate, as a decimal?",
+      "answer": 0.7,
+      "unit": "",
+      "tolerance": 0,
+      "explain": "21 / 30 = 0.7. Counting the 3 fixes that regressed as successes (24/30 = 0.8) would hide exactly the failure users hate: apologising and repeating the mistake."
+    },
+    {
+      "type": "number",
+      "q": "An LLM judge and a human both label 100 transcripts pass/fail. Both pass: 60. Both fail: 20. Judge pass, human fail: 15. Judge fail, human pass: 5. Observed agreement is 0.80. Chance agreement from the marginals is 0.575 (judge passes 75%, human passes 65%). What is Cohen's kappa, to two decimals?",
+      "answer": 0.53,
+      "unit": "",
+      "tolerance": 0.02,
+      "explain": "kappa = (0.80 - 0.575) / (1 - 0.575) = 0.529. Raw 80% agreement sounds good but chance explains a lot of it; kappa of about 0.5 is moderate, so refine the rubric or use the judge only for triage. The judge is also lenient (it passes 15 transcripts a human fails)."
+    },
+    {
+      "type": "choice",
+      "q": "At turn 2 the user says \"I'm vegetarian.\" At turn 9 the assistant suggests a steak restaurant. A per-turn scorer rates every individual reply as fluent and helpful. What does this show?",
+      "options": [
+        "Per-turn scoring misses cross-turn failures; score full transcripts against constraints stated earlier",
+        "The per-turn scorer is correct; each reply is fine on its own",
+        "The user should repeat their preferences",
+        "Only the last turn matters"
+      ],
+      "answer": [
+        0
+      ],
+      "explain": "Context retention is a property of the conversation. Build test cases with an early constraint and a late trigger, and let the judge see the whole transcript."
+    },
+    {
+      "type": "choice",
+      "q": "You want to test how the assistant handles a user who changes their requirements mid-conversation. Why is replaying recorded user turns against the new model a weak design?",
+      "options": [
+        "Recorded logs cannot contain corrections",
+        "Replaying is always cheaper and equally valid",
+        "Logs are too short",
+        "Once the new model replies differently, the recorded user turns no longer fit, so the conversation stops making sense; use a simulated user that reacts to the assistant's actual replies"
+      ],
+      "answer": [
+        3
+      ],
+      "explain": "Fixed logs measure how the model reacts to the old model's context. Interactive scenarios need a user simulator with a goal and persona, optionally plus a fixed regression set."
+    },
+    {
+      "type": "choice",
+      "q": "A user asks, \"Book me a table for Friday.\" Two assistants differ: A asks \"Which restaurant, time and party size?\" in four separate turns; B assumes a restaurant and time and books. What does a good conversation-level eval reward?",
+      "options": [
+        "Always B, because it finishes fastest",
+        "Neither extreme: asking only for the missing critical conditions in one turn when a safe assumption is not possible, and not guessing irreversible details",
+        "Always A, because asking is safer",
+        "The longest conversation"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Over-asking hurts turns-to-resolution; guessing can cause wrong, hard-to-undo actions. Evaluate with paired slices where clarification is needed vs where a default is fine."
+    },
+    {
+      "type": "recall",
+      "q": "List four conversation-level metrics and say why a transcript-level judge needs human calibration.",
+      "answer": "Task completion, turns to resolution, repair success after correction, repetition rate (asking for known info), cross-turn consistency, false-completion claims. A transcript-level judge is itself a model with biases (length, leniency, position), so compare its labels with human labels on a sample (agreement beyond chance, e.g. kappa), inspect disagreements, and only then trust it for regression gating."
+    }
+  ]
+}

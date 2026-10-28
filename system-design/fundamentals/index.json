@@ -649,6 +649,141 @@
      "drills": 6
     }
    ]
+  },
+  {
+   "id": "hashing-filters",
+   "title": "Hashing & Filters",
+   "concepts": [
+    {
+     "id": "common-hashing",
+     "title": "Common Hashing",
+     "drills": 6
+    },
+    {
+     "id": "bloom-filter",
+     "title": "Bloom Filter",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "ranking",
+   "title": "Ranking & Scoring",
+   "concepts": [
+    {
+     "id": "top-k-ranking",
+     "title": "Top-K Ranking",
+     "drills": 6
+    },
+    {
+     "id": "weighted-event-scoring",
+     "title": "Weighted Event Scoring",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "representation",
+   "title": "Representation & Similarity",
+   "concepts": [
+    {
+     "id": "item-embedding",
+     "title": "Item Embedding",
+     "drills": 5
+    },
+    {
+     "id": "similarity",
+     "title": "Similarity",
+     "drills": 6
+    },
+    {
+     "id": "similarity-search",
+     "title": "Similarity Search",
+     "drills": 6
+    },
+    {
+     "id": "user-context",
+     "title": "User Context",
+     "drills": 6
+    },
+    {
+     "id": "k-means",
+     "title": "K-Means Clustering",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "sandboxing",
+   "title": "Sandboxing",
+   "concepts": [
+    {
+     "id": "runc",
+     "title": "runc",
+     "drills": 6
+    },
+    {
+     "id": "gvisor",
+     "title": "gVisor",
+     "drills": 6
+    },
+    {
+     "id": "wasm",
+     "title": "WASM",
+     "drills": 6
+    },
+    {
+     "id": "native-sandboxes",
+     "title": "Native Sandboxes",
+     "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "llm-eval",
+   "title": "LLM Eval Matrices",
+   "concepts": [
+    {
+     "id": "eval-classification-routing",
+     "title": "Classification & Routing",
+     "drills": 6
+    },
+    {
+     "id": "eval-structured-extraction",
+     "title": "Structured Extraction",
+     "drills": 6
+    },
+    {
+     "id": "eval-summarization",
+     "title": "Summarization",
+     "drills": 6
+    },
+    {
+     "id": "eval-rag-qa",
+     "title": "RAG Question Answering",
+     "drills": 6
+    },
+    {
+     "id": "eval-conversational",
+     "title": "Conversational Assistant",
+     "drills": 6
+    },
+    {
+     "id": "eval-code-generation",
+     "title": "Code Generation",
+     "drills": 6
+    },
+    {
+     "id": "eval-tool-agent",
+     "title": "Tool-Using Agent",
+     "drills": 6
+    },
+    {
+     "id": "eval-safety-policy",
+     "title": "Safety & Policy",
+     "drills": 6
+    }
+   ]
   }
  ]
 }
