@@ -1,0 +1,144 @@
+{
+ "id": "prime-video-home",
+ "title": "Design the Prime Video Home Page",
+ "prompt": "Design the backend that builds a streaming service's home page: a vertical stack of horizontally scrolling rows (\"Continue watching\", \"Because you watched X\", \"Top 10 in your country\", \"Included with Prime\"). Rows and the titles in them differ for every viewer, and the page must open quickly on TVs, phones and the web.\n\nAssume **100 million daily active viewers** who open the home page about 3 times a day, a catalogue of around 100,000 titles, and availability that depends on country and subscription.",
+ "clarify": [
+  "How personalised is the page: per user, per household profile, or per segment?",
+  "What is the latency target for the first rows, and may we load the lower rows lazily?",
+  "Which rows must be real-time (continue watching) and which can be precomputed daily?",
+  "How do licensing windows and regions restrict what may appear?",
+  "What should the page show when personalisation fails, and for a brand-new user?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Return an ordered list of rows, each with ordered titles and artwork\n- Rows personalised per profile; \"continue watching\" reflects a stream started minutes ago\n- Filter by country, subscription, maturity rating and licensing window\n- Support experiments (new row logic, row order, artwork)\n\n**Non-functional**\n- First screen p99 < 300 ms; the page degrades, never fails\n- Recommendation freshness measured in hours, except playback state in seconds\n- Handles evening peaks several times the daily average",
+  "estimation": "- Page loads: 100M × 3 = 300M/day ≈ **3.5k/s** avg, with an evening peak of perhaps 5× ≈ 17k/s\n- Full page: 30 rows × 20 titles × ~200 B = ~120 KB, so return only the first ~6 rows eagerly (**~24 KB**) and lazy-load the rest\n- Precomputed ids: 100M profiles × 30 rows × 20 ids × 8 B ≈ **480 GB**, a manageable sharded KV store\n- Catalogue metadata: 100k titles × ~5 KB = **500 MB**, so every service host can cache it all in memory",
+  "api": "```\nGET /v1/home?profile=&device=&rows=0-5  → {rows:[{row_id, title, items:[{title_id, art_url, progress?}]}], next_rows_token}\nGET /v1/home/rows?token=                → next batch of rows\n```\n- `device` selects layout and artwork sizes.\n- Rows are returned as ids plus a thin projection; the heavy metadata sits in the catalogue cache, and images come from the CDN by URL.",
+  "data": "- **Precomputed recs:** `home:{profile}` → ordered rows of title ids, written by an offline pipeline (batch ranking, refreshed every few hours).\n- **Playback state:** `watch_progress(profile, title_id, position, updated_at)`, a fast KV store written by the player; the source for continue watching.\n- **Catalogue:** `titles(title_id, metadata, artwork[], ratings)` and `availability(title_id, country, plan, start, end)`, replicated read-only to every region.\n- **Experiment config** and the row definitions.",
+  "design": "```\nclient ─▶ CDN/edge ─▶ home BFF ─┬▶ rec store (precomputed rows)\n                                 ├▶ playback-state svc  (continue watching)\n                                 ├▶ trending/regional svc (top 10)\n                                 ├▶ catalogue + availability cache\n                                 └▶ experiment svc\n offline: viewing logs ─▶ batch ranking/embeddings ─▶ rec store\n```\n- The BFF (backend-for-frontend) calls the row services in parallel with a hard deadline, merges the rows, filters by availability, enriches titles, and returns.\n- Per-user pages are not edge-cacheable, but the catalogue, artwork and region-wide rows are.",
+  "deepdives": "- **Offline vs online split.** Computing recommendations per request across 100k titles is too costly; precompute candidate rows per profile in batch. At request time only do the cheap, time-sensitive work: inject continue watching, apply availability filters, reorder rows by recent context. Trade-off: precomputed rows can be hours stale; mitigate by blending in a small \"fresh\" row from recent events.\n- **Filtering without empty rows.** Licensing windows expire between batch runs, so a stored row may reference unavailable titles. Filter at serve time and over-provision each row (store 40, show 20); if a row falls below a minimum, drop it. Region differences make the precomputed list a superset, filtered per country.\n- **Resilience.** Each row source has its own timeout (e.g. 80 ms); a slow or failed source just omits that row. If the recommendation store fails, serve a popular-in-region page from cache. Keep a last-known-good page per profile for the cold path. Load shedding sheds lower rows first.\n- **Artwork and experiments.** Choose the thumbnail variant per title per viewer from precomputed options (a small bandit job), and assign experiment arms by hashing profile id so a viewer stays in one arm.\n- **Cold start.** New profiles get regional popularity rows plus genre rows from the onboarding quiz.",
+  "wrapup": "- The page is an assembly job: precomputed personalisation merged with a few real-time sources by a thin BFF that guarantees a response by a deadline.\n- Trade-offs: freshness vs cost of precomputation, personalisation vs cacheability, completeness vs latency.\n- Next: live content rows, multi-region failover, personalised ranking within rows."
+ },
+ "rubric": [
+  {
+   "text": "Estimates page-load rate and the payload size, and chooses lazy loading of lower rows",
+   "keywords": [
+    "qps",
+    "/s",
+    "lazy",
+    "kb",
+    "payload"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Splits offline precomputation of per-profile rows from a thin online assembly step",
+   "keywords": [
+    "offline",
+    "precompute",
+    "batch",
+    "online"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses a backend-for-frontend that calls row sources in parallel with deadlines and merges results",
+   "keywords": [
+    "bff",
+    "backend-for-frontend",
+    "parallel",
+    "deadline",
+    "timeout"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Keeps continue watching fresh from playback state rather than from the batch recommendations",
+   "keywords": [
+    "continue watching",
+    "playback",
+    "progress",
+    "real-time",
+    "fresh"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Applies availability filters (country, plan, licensing window, maturity) at serve time, and over-provisions rows",
+   "keywords": [
+    "licens",
+    "availability",
+    "region",
+    "filter",
+    "over-provision",
+    "superset"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Defines graceful degradation: per-source timeouts, fallback to regional popular rows or last-known-good page",
+   "keywords": [
+    "fallback",
+    "degrad",
+    "timeout",
+    "last-known-good",
+    "popular"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Caches catalogue metadata widely and serves artwork through a CDN; recognises per-user pages are not edge-cacheable",
+   "keywords": [
+    "cdn",
+    "catalogue",
+    "catalog",
+    "cache",
+    "edge"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses cold start for new users or profiles",
+   "keywords": [
+    "cold start",
+    "cold-start",
+    "new user",
+    "popular",
+    "onboarding"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Supports A/B experiments with deterministic assignment and artwork personalisation",
+   "keywords": [
+    "experiment",
+    "a/b",
+    "bandit",
+    "artwork",
+    "hash"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Collects viewing events into a pipeline that retrains/refreshes recommendations",
+   "keywords": [
+    "events",
+    "log",
+    "pipeline",
+    "retrain",
+    "embedding"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "item-embedding",
+  "user-context",
+  "top-k-ranking",
+  "timeout",
+  "load-shedding",
+  "client-side-cache",
+  "data-locality",
+  "multi-region"
+ ]
+}

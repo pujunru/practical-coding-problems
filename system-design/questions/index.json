@@ -1,6 +1,100 @@
 {
  "categories": [
   {
+   "title": "Social & real-time communication",
+   "questions": [
+    {
+     "id": "twitter",
+     "title": "Design X / Twitter",
+     "difficulty": "Easy",
+     "companies": [
+      "Meta",
+      "Uber"
+     ]
+    },
+    {
+     "id": "instagram",
+     "title": "Design Instagram",
+     "difficulty": "Easy",
+     "companies": [
+      "Meta",
+      "Amazon",
+      "Microsoft",
+      "X"
+     ]
+    },
+    {
+     "id": "messaging-app",
+     "title": "Design a Messaging App",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta",
+      "Uber",
+      "TikTok",
+      "Amazon",
+      "Google",
+      "LinkedIn"
+     ]
+    },
+    {
+     "id": "news-feed",
+     "title": "Design the Facebook News Feed",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta"
+     ]
+    },
+    {
+     "id": "slack",
+     "title": "Design Slack",
+     "difficulty": "Medium",
+     "companies": [
+      "OpenAI"
+     ]
+    },
+    {
+     "id": "live-comments",
+     "title": "Design a Live Commenting System",
+     "difficulty": "Medium",
+     "companies": [
+      "Meta"
+     ]
+    },
+    {
+     "id": "nearby-friends",
+     "title": "Design Nearby Friends",
+     "difficulty": "Hard",
+     "companies": [
+      "Amazon",
+      "Meta",
+      "Google",
+      "Uber"
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Media, content & storage",
+   "questions": [
+    {
+     "id": "review-aggregator",
+     "title": "Design a Book Review Aggregator",
+     "difficulty": "Easy",
+     "companies": [
+      "Amazon"
+     ]
+    },
+    {
+     "id": "prime-video-home",
+     "title": "Design the Prime Video Home Page",
+     "difficulty": "Medium",
+     "companies": [
+      "Amazon"
+     ]
+    }
+   ]
+  },
+  {
    "title": "Distributed infrastructure",
    "questions": [
     {

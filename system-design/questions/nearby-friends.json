@@ -1,0 +1,151 @@
+{
+ "id": "nearby-friends",
+ "title": "Design Nearby Friends",
+ "prompt": "Design a feature that lets opted-in users see which of their friends are currently close by, with approximate distance, and updates as people move. Think of the Facebook Nearby Friends feature or the friend map in a location-sharing app.\n\nAssume **100 million opted-in users**, up to **10 million sharing their location at the same time**, each phone reporting every 30 seconds, and an average of about 400 friends per user.",
+ "clarify": [
+  "What counts as nearby (for example 5 miles), and is the radius fixed or user-configurable?",
+  "Is it only mutual friends, and can users pause sharing or share with a subset?",
+  "How fresh must a friend's position be: seconds or a minute?",
+  "Do we keep location history, or only the latest position?",
+  "Do we show distance only, or the exact map position? (Privacy and consent differ.)"
+ ],
+ "minutes": 60,
+ "reference": {
+  "requirements": "**Functional**\n- Opted-in user sees friends within a radius, with distance and last-updated time\n- The list updates as friends move\n- Pause, stop and per-friend sharing controls\n\n**Non-functional**\n- A friend's move is visible within a few seconds\n- Handle very high write volume with small payloads\n- Privacy: location is sensitive, so expire quickly, authorise every read\n- Battery and bandwidth friendly clients; losing one update is harmless since another arrives soon",
+  "estimation": "- Location updates: 10M sharers / 30 s ≈ **333k updates/s**\n- Fanout: with ~10% of 400 friends online and sharing ≈ 40 relevant friends, 333k × 40 ≈ **13.3M friend-notifications/s** before distance filtering\n- Current positions: 10M × ~100 B ≈ **1 GB** in memory, trivial\n- Subscriptions: 10M users × 40 online friends = **400M** subscriptions; at ~100 B each ≈ 40 GB of pub/sub state\n- History if stored: 333k × 100 B ≈ 33 MB/s ≈ 2.9 TB/day, so keep it short-lived or sample it",
+  "api": "```\nWS /v1/nearby\n  C→S  loc     {lat, lng, ts}                       every ~30 s, or on large movement\n  S→C  friend  {friend_id, approx_dist, ts}         pushed when a nearby friend moves\n  C→S  init → S→C  snapshot [{friend_id, dist, ts}] on connect\nPOST /v1/nearby/settings {sharing: on|off, allow: [friend_ids]}\n```\n- WebSocket because both directions are frequent; the server returns a distance bucket or coarse position, not a precise coordinate, unless the friend agreed.",
+  "data": "- **Current location (hot):** `loc:{user_id} → {lat, lng, ts}` in Redis with a **TTL of ~10 min**; expiry doubles as \"went offline\".\n- **Friend graph:** `friends(user_id, friend_id)` in a sharded database, cached per user on connect.\n- **History (optional):** `loc_history(user_id, ts, lat, lng)` in a wide-column store with TTL, partitioned by user.\n- **Settings/consent:** relational, cached.\n- Geo index (only if used): `cell_id → set of user_ids`, where `cell_id` is a geohash or S2 cell.",
+  "design": "```\nphone ─ws▶ WS server ─▶ location service ─▶ Redis (current loc, TTL)\n               ▲                  │ publish to user's channel\n               │ subscribe        ▼\n               └──── Redis pub/sub: channel per user (one subscriber per online friend)\n```\n- On connect: load the friend list, read each friend's last location from Redis, send a snapshot with distances.\n- Subscribe to each online sharing friend's channel. On a publish, compute the distance and push to the phone only if it is within the radius.\n- The WS server holds sockets and does the distance filtering; Redis is a dumb relay.",
+  "deepdives": "- **Per-user channels vs geo cells.** The friend set is small and known (400), so subscribing to friends' channels is exact and needs no spatial index; the price is fanout equal to online friends, even the far-away ones, filtered on arrival. A cell approach (publish to the cell, subscribe to your own cell plus neighbours) fits strangers or huge friend lists, but then every update is checked against a friends bitmap, and cell borders need the neighbour ring. Choose cells when friends outnumber a city's worth of users in each cell; otherwise per-user channels. A hybrid: friend channels, and drop the update before publish if the user is stationary.\n- **Update rate.** 30 s is a ceiling for the product, not for the radio. Skip an update when the user moved < 50 m; back off while stationary; send less when the battery is low. Dropping updates is safe because each carries absolute coordinates, so the next one repairs it.\n- **Scaling Redis pub/sub.** 13.3M messages/s at roughly 100k messages/s per node needs ~130 nodes. Shard channels by `user_id` with consistent hashing, and use a registry (ZooKeeper/etcd) to hand the ring to WS servers. Adding or removing a node requires clients to resubscribe in a controlled wave.\n- **Privacy.** Authorise subscriptions against the current friend graph and consent flags; unfriend and pause take effect immediately; TTL deletes stale coordinates; return distance buckets, not coordinates.",
+  "wrapup": "- It is a high-volume, low-value-per-message stream, so the design favours cheap in-memory state, best-effort delivery and client-side adaptive rates.\n- Trade-offs: friend channels (exact, fanout-heavy) vs geo cells (spatial index, border handling); freshness vs battery.\n- Next: multi-region sharding of the ring, ghost/pause modes, ranking by recency."
+ },
+ "rubric": [
+  {
+   "text": "Computes update rate (users / interval) and the friend-fanout rate, and sizes in-memory state",
+   "keywords": [
+    "333",
+    "qps",
+    "/s",
+    "fanout",
+    "13"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Keeps only the latest location in a fast store with a TTL, with TTL expiry meaning offline",
+   "keywords": [
+    "ttl",
+    "redis",
+    "latest",
+    "expire"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses WebSocket connections for bidirectional, frequent updates",
+   "keywords": [
+    "websocket",
+    "persistent"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Fans out via a pub/sub channel per user (or equivalent) and filters by distance on arrival",
+   "keywords": [
+    "pub/sub",
+    "pubsub",
+    "channel per user",
+    "subscribe",
+    "filter"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Compares friend-channel fanout with a geo-cell index (geohash/S2) and states when each fits",
+   "keywords": [
+    "geohash",
+    "s2",
+    "cell",
+    "quadtree",
+    "neighbor"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles cell-boundary issues if using cells (querying neighbouring cells)",
+   "keywords": [
+    "neighbor",
+    "neighbour",
+    "boundary",
+    "border",
+    "adjacent"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Reduces update volume: movement threshold, adaptive interval, battery awareness",
+   "keywords": [
+    "threshold",
+    "adaptive",
+    "battery",
+    "stationary",
+    "backoff"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Argues dropped updates are harmless because messages carry absolute positions",
+   "keywords": [
+    "absolute",
+    "idempotent",
+    "next update",
+    "lossy",
+    "best-effort"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Scales the pub/sub tier: shard by user with consistent hashing and a coordinator for ring membership",
+   "keywords": [
+    "consistent hash",
+    "ring",
+    "zookeeper",
+    "etcd",
+    "shard"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses privacy: opt-in, per-friend consent, authorise subscriptions, expiry, coarse distance",
+   "keywords": [
+    "privacy",
+    "consent",
+    "opt-in",
+    "authoriz",
+    "authoris",
+    "coarse"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Decides on history storage (optional, TTL or sampled) separate from the hot path",
+   "keywords": [
+    "history",
+    "cassandra",
+    "wide-column",
+    "retention"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "geo-cell",
+  "websocket-patterns",
+  "consistent-hashing",
+  "fanout",
+  "heartbeat-lease",
+  "rate-limiter",
+  "sharding",
+  "partition-expansion"
+ ]
+}

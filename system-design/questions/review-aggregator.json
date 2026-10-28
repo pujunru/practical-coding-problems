@@ -1,0 +1,151 @@
+{
+ "id": "review-aggregator",
+ "title": "Design a Book Review Aggregator",
+ "prompt": "Design a service that collects reader reviews and star ratings for books and shows, for each book, an overall rating, a rating histogram and a list of reviews that can be sorted and paged. Reviews come from users of our own site and from a few partner sources that publish batches of their reviews.\n\nAssume **10 million books**, **200 million reviews**, **50 million daily active users** who each open about 4 book pages a day, and **500 thousand** new reviews a day.",
+ "clarify": [
+  "Is one user limited to one review per book, and can they edit or delete it?",
+  "Are ratings separate from review text, and are star-only ratings allowed?",
+  "How are external sources combined: do we weight them, deduplicate, or show them separately?",
+  "How fresh must the average rating be after a new review: instantly or within a minute?",
+  "What sort orders are required (newest, most helpful, highest, lowest) and do we need search or spam filtering?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Submit, edit and delete a review (1–5 stars + optional text)\n- Book page: average rating, count, histogram, paged reviews\n- Sort reviews by helpful, newest, rating; vote reviews helpful\n- Ingest reviews from partner sources\n\n**Non-functional**\n- Book pages are read-heavy and must be fast (p99 < 150 ms)\n- Aggregates may lag by seconds but must converge to the exact value\n- Fake and duplicate reviews must be limited",
+  "estimation": "- Reads: 50M × 4 = 200M book-page views/day ≈ **2.3k/s** avg\n- Writes: 500k reviews/day ≈ **6/s** avg, ~10× at release spikes\n- Storage: 200M reviews × ~1 KB = **200 GB**, so one sharded database is enough\n- Aggregates: 10M books × (sum, count, 5 buckets) ≈ 80 B → **0.8 GB**, fully cacheable\n- Read:write ≈ 400:1, so precompute everything the page needs",
+  "api": "```\nPUT    /v1/books/{id}/review      {rating, text}   → 200   (upsert, one per user)\nDELETE /v1/books/{id}/review                       → 204\nGET    /v1/books/{id}             → {title, avg, count, histogram[5]}\nGET    /v1/books/{id}/reviews?sort=helpful&cursor=&limit=20\nPOST   /v1/reviews/{rid}/helpful                   → 204\n```\n- `PUT` as upsert on `(book_id, user_id)` makes retries idempotent and enforces one review per user.\n- Cursor pagination keyed on the sort field plus review id.",
+  "data": "- `reviews(book_id, user_id, rating, text, created_at, helpful_count, source, status)` — primary key `(book_id, user_id)`, sharded by `book_id`; secondary index `(book_id, helpful_count desc, review_id)` for sorting.\n- `book_stats(book_id, rating_sum, rating_count, h1…h5)` — the aggregate row.\n- `helpful_votes(review_id, voter_id)` unique, to prevent double votes.\n- External: `source_reviews(source, source_review_id → review_id)` as a dedupe map.\n- Search/long-tail: text index in a search cluster, fed asynchronously.",
+  "design": "```\nclient ─▶ API ─▶ review service ─▶ reviews DB ──(change feed)──▶ stats updater ─▶ book_stats\n                       │                                              │\n                       └─ spam check                                  └▶ cache invalidate\nclient ─▶ API ─▶ cache (book page) ─miss▶ book_stats + top reviews\npartner batch ─▶ ingest job ─▶ normalise, dedupe ─▶ review service\n```\n- Write: validate, upsert the review, then emit a change event carrying `old_rating` and `new_rating`.\n- Read: book summary comes from a cache of `book_stats`; the review list from an indexed query with the first page cached.",
+  "deepdives": "- **Maintaining the average.** Recomputing `AVG()` over a popular book's reviews on each write does not scale. Keep `sum` and `count` and apply a **delta** from the change event (new: +r; edit: +(new−old); delete: −r). Applying deltas at-least-once would double count, so consume the change feed in order per book, or tag deltas with the review version and ignore replays. Periodically reconcile against a full scan to heal drift.\n- **Hot books.** A new bestseller can receive hundreds of writes a second on one stats row. Absorb them by batching deltas in the updater for a second, or by splitting the counter into N sub-counters summed on read. Trade-off: slight read cost vs write contention.\n- **Showing a fair rating.** A book with one 5-star review should not outrank one with thousands at 4.7, so sort or rank by a smoothed score such as a Bayesian average: `(C·m + sum) / (C + count)` where `m` is the global mean and `C` a prior weight.\n- **Combining sources.** Normalise scales to 1–5, dedupe by source id and by (user, text hash), keep `source` visible, and weight or exclude low-trust sources. Ingest is idempotent through the dedupe map.\n- **Abuse.** Verified-purchase or verified-reader flags, per-user rate limits, and an async classifier that sets `status=held`.",
+  "wrapup": "- Because the workload is read-heavy, the design precomputes aggregates and first pages, and treats the review table as the source of truth.\n- Trade-offs: delta updates (fast, needs idempotency) vs recompute (simple, slow); exact vs smoothed rating.\n- Next: personalised ordering, translation, moderation tooling."
+ },
+ "rubric": [
+  {
+   "text": "Estimates read and write rates and concludes the workload is heavily read-dominated",
+   "keywords": [
+    "qps",
+    "/s",
+    "read-heavy",
+    "400:1",
+    "reads"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Enforces one review per user per book with a composite key and idempotent upsert",
+   "keywords": [
+    "upsert",
+    "unique",
+    "composite",
+    "idempoten",
+    "one review"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Stores review rows in a sharded store keyed by book_id with an index supporting sort orders",
+   "keywords": [
+    "shard",
+    "book_id",
+    "index",
+    "sort"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Maintains rating_sum and rating_count (and histogram) incrementally instead of recomputing the average",
+   "keywords": [
+    "sum",
+    "count",
+    "incremental",
+    "delta",
+    "histogram"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Handles edits and deletes by applying new minus old rating, and avoids double-counting on retried events",
+   "keywords": [
+    "old_rating",
+    "new minus old",
+    "replay",
+    "at-least-once",
+    "dedup",
+    "version"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Mitigates hot books: batching counter updates or sharded counters",
+   "keywords": [
+    "hot",
+    "batch",
+    "sharded counter",
+    "contention"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses cursor-based pagination and caches the first page and aggregates",
+   "keywords": [
+    "cursor",
+    "cache",
+    "first page",
+    "pagination"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a smoothed score such as a Bayesian average so few-review books are not over-ranked",
+   "keywords": [
+    "bayesian",
+    "smooth",
+    "prior",
+    "weighted"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Ingests partner reviews with normalisation, source tracking and deduplication",
+   "keywords": [
+    "partner",
+    "normali",
+    "dedup",
+    "source",
+    "ingest"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Reconciles aggregates periodically against the source of truth to correct drift",
+   "keywords": [
+    "reconcil",
+    "drift",
+    "recompute",
+    "backfill"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Addresses spam and fake reviews: verified flags, rate limits, async moderation",
+   "keywords": [
+    "spam",
+    "fake",
+    "verified",
+    "moderat",
+    "rate limit"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "time-bucket-counter",
+  "cache-invalidation",
+  "idempotency",
+  "change-feed",
+  "sharding",
+  "cursor",
+  "eventual-consistency",
+  "backfill"
+ ]
+}

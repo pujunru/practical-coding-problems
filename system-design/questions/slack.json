@@ -1,0 +1,150 @@
+{
+ "id": "slack",
+ "title": "Design Slack",
+ "prompt": "Design a team chat product organised into workspaces. Each workspace has public and private channels, direct messages, threads, file sharing and full-text message search. Members must only ever see data they are allowed to see.\n\nAssume **30 million daily active users** across several hundred thousand workspaces, about **100 messages per user per day**, channels with up to **100,000 members**, and workspaces with up to 500,000 users.",
+ "clarify": [
+  "Are channels public, private or both, and can guests or external organisations join?",
+  "What are the largest channel and workspace sizes?",
+  "How fresh must search results be, and is search across all channels or only joined ones?",
+  "Do we need unread counts, mentions, threads, edits and deletes with audit/retention rules?",
+  "Is data isolation per customer a hard requirement (enterprise, regional residency)?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Workspaces, public/private channels, DMs, threads, mentions, reactions\n- Real-time delivery, unread badges, edits and deletes\n- Search messages and files, limited to what the caller may read\n- Admin controls and retention policies\n\n**Non-functional**\n- Delivery < 1 s to online members\n- Hard tenant isolation: no cross-workspace leakage, even through bugs or search\n- Heavy tenants must not starve small ones\n- Searchable within a few seconds of sending",
+  "estimation": "- Messages: 30M × 100 = 3B/day ≈ **35k writes/s** avg\n- Storage: 3B × ~300 B = **900 GB/day** ≈ 330 TB/year before replication; the search index adds roughly the same again\n- Large-channel fanout: a message in a 100k-member channel, if pushed to everyone, is 100k deliveries, but only the ~10% online and connected matter\n- Read-state: one cursor per (user, channel) pair; 30M users × ~30 channels ≈ **900M cursors** × ~24 B ≈ 22 GB, easily cached",
+  "api": "```\nPOST /v1/channels/{id}/messages {client_id, text, thread_ts?}   → {msg_id}\nGET  /v1/channels/{id}/messages?before=&limit=\nPOST /v1/channels/{id}/read     {last_read_msg_id}\nGET  /v1/search?q=&workspace=&cursor=\nWS   /rt   (events: message, reaction, channel_updated, presence)\n```\n- The token is **scoped to one workspace**; every call checks `workspace_id` and channel membership.\n- Sending goes over HTTP POST, receiving over WebSocket, which keeps the write path load-balanceable.",
+  "data": "- Every table carries `workspace_id`, and it is in every index.\n- `channels(workspace_id, channel_id, type, name)`; `channel_members(channel_id, user_id)` **and** `user_channels(user_id, channel_id)` (denormalised both ways: fanout needs the first, \"my sidebar\" needs the second).\n- `messages(channel_id, msg_id, user_id, text, thread_ts, deleted_at)` sharded by `channel_id`, clustered by `msg_id` (Snowflake: time + shard + sequence).\n- `read_cursor(user_id, channel_id, last_read_msg_id)`.\n- Files in object storage with access checked via a signed, short-lived URL.",
+  "design": "```\nclient ─ws▶ gateway ─┐                     ┌─▶ search indexer ─▶ search cluster\nclient ─http▶ API ─▶ message service ─▶ msg store\n                        │  └▶ pub/sub ─▶ gateways hosting members ─▶ clients\n                        └▶ notification svc ─▶ push for offline members\nsearch: client ─▶ search API ─▶ index shard(workspace) + membership filter\n```\n- **Message path:** write to the store (durable), then publish an event; gateways with subscribed members forward it; an indexer and the notification service consume the same event.\n- Gateways only hold connections; they ask the channel service which channels a user has.",
+  "deepdives": "- **Channel fanout by size.** For DMs and small channels, publish per recipient. For large channels, publish once to the channel and let each gateway that hosts a member subscribe and fan out locally; only online members are pushed. Offline members get no write at all: when they return, they compare their `read_cursor` to the channel's latest id to compute unread state. Trade-off: unread counts are derived at read time (or by lazy counters) instead of maintained per member.\n- **Search with permissions.** Index per workspace (or route by `workspace_id`), and filter by the channels the caller can read. Resolve that set at query time from membership (cached) rather than baking ACLs into documents, since membership changes constantly. Private-channel messages must stay hidden after a user leaves, so a delete or removal needs a cheap filter path, not reindexing. Index lag of seconds is acceptable.\n- **Tenancy and hotspots.** `workspace_id` in every key and token scope is the first line of defence, with per-workspace rate limits against noisy neighbours. Shard messages by `channel_id`, not workspace, so one giant tenant spreads across shards; keep metadata and search routed by workspace. Big enterprises can get a dedicated cell.\n- **Deletes and retention.** Soft-delete first, then a retention job removes the text, index entries and files.",
+  "wrapup": "- The split is: messages sharded by channel, membership and read-state kept as small cursors, search as an eventually consistent derived index.\n- Trade-offs: push vs pull per channel size, query-time ACL filtering vs index-time, workspace vs channel sharding.\n- Next: threads, presence, edits and compliance export."
+ },
+ "rubric": [
+  {
+   "text": "Estimates write rate, storage growth and notes the search index adds substantially to it",
+   "keywords": [
+    "qps",
+    "/s",
+    "tb",
+    "gb/day",
+    "index"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Puts workspace_id in every table, key and index, and scopes auth tokens to a workspace",
+   "keywords": [
+    "workspace_id",
+    "tenant",
+    "scoped",
+    "isolation"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Models channel membership both ways (channel to users, user to channels) and explains why",
+   "keywords": [
+    "channel_members",
+    "user_channels",
+    "denormal",
+    "both"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Shards messages by channel and uses time-sortable ids (Snowflake) for ordering and pagination",
+   "keywords": [
+    "shard",
+    "channel_id",
+    "snowflake",
+    "time-sortable"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Delivers in real time over WebSocket gateways via pub/sub, persisting before publishing",
+   "keywords": [
+    "websocket",
+    "pub/sub",
+    "pubsub",
+    "gateway",
+    "persist"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Switches fanout strategy by channel size: per-recipient for small, per-channel subscription for large",
+   "keywords": [
+    "threshold",
+    "large channel",
+    "small channel",
+    "per-channel",
+    "adaptive"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Derives unread state from per-user read cursors instead of writing to every member",
+   "keywords": [
+    "read cursor",
+    "unread",
+    "last_read",
+    "cursor"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Builds search as an asynchronous derived index, per workspace, with eventual freshness",
+   "keywords": [
+    "elasticsearch",
+    "inverted index",
+    "indexer",
+    "search index",
+    "eventual"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Enforces permissions in search by filtering on channels the caller can read at query time",
+   "keywords": [
+    "acl",
+    "permission",
+    "membership filter",
+    "private channel",
+    "filter"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Addresses noisy neighbours: per-workspace rate limits, cells/dedicated shards for large tenants",
+   "keywords": [
+    "noisy",
+    "rate limit",
+    "cell",
+    "dedicated"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Covers deletes, edits and retention propagating to the index and files",
+   "keywords": [
+    "retention",
+    "soft delete",
+    "delete",
+    "edit",
+    "tombstone"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "tenant-isolation",
+  "websocket-patterns",
+  "fanout",
+  "sharding",
+  "cursor",
+  "cell",
+  "rate-limiter",
+  "eventual-consistency"
+ ]
+}

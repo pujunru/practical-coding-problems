@@ -1,0 +1,148 @@
+{
+ "id": "messaging-app",
+ "title": "Design a Messaging App",
+ "prompt": "Design a mobile-first messaging app like WhatsApp or Signal. Users send text and small media to one other person or to a group, see when a message was sent, delivered and read, and expect messages sent while they were offline to arrive when they reconnect. Conversations should be private from the service operator.\n\nAssume **100 million daily active users** sending about **40 messages a day** each, with groups of up to 256 members.",
+ "clarify": [
+  "1:1 and group chats both? What is the maximum group size?",
+  "Do we need delivered/read receipts, typing indicators and last-seen presence?",
+  "Must the same account work on several devices, and is history synced between them?",
+  "Is end-to-end encryption required, and what does that mean for server-side search and backups?",
+  "How long does the server keep undelivered messages, and what is the delivery latency target?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Send text/media to a user or a group; receive in real time\n- Sent / delivered / read receipts\n- Offline delivery; sync across a user's devices\n- Message history on-device; server holds only what is undelivered\n\n**Non-functional**\n- Median delivery < 200 ms when both online\n- No message lost once the server has acknowledged it; no duplicates shown\n- Order preserved within a conversation\n- End-to-end encrypted: the server cannot read content",
+  "estimation": "- Messages: 100M × 40 = 4B/day ≈ **46k/s** avg, ~3× peak ≈ 140k/s\n- Payload ~100 B (ciphertext + envelope) → **400 GB/day** transiting, but the server keeps data only until delivery\n- Receipts: each message produces ~2 receipts (delivered, read) → total events ≈ **3×**, ≈ 140k/s avg\n- Connections: assume 20% of DAU online = **20M** sockets; at 500k per gateway ≈ **40 gateways** (plus headroom)\n- Group fanout: 256 members means one send becomes up to 255 deliveries, so cap group size and fan out through the server, not the sender",
+  "api": "```\nWebSocket (per device)\n  C→S  send   {client_msg_id, conv_id, ciphertexts[{device_id, blob}]}\n  S→C  ack    {client_msg_id, server_msg_id, seq}\n  S→C  deliver {conv_id, seq, sender, blob}      C→S  ack {conv_id, seq}\n  C→S  receipt {conv_id, upto_seq, type: delivered|read}\nHTTP: POST /keys (upload key bundle), GET /keys/{user} (fetch prekeys), POST /media\n```\n- `client_msg_id` is the idempotency key: a retry after a dropped ack returns the same `server_msg_id`.\n- Large media is uploaded encrypted to blob storage; the message carries the key and URL.",
+  "data": "- `conversations(conv_id, type, members[])`; group membership changes are versioned.\n- `inbox(device_id, seq, conv_id, blob)` — a **per-device queue**, partitioned by `device_id`, with a TTL (e.g. 30 days). A message exists on the server until every addressed device acks it.\n- `seq` is a per-conversation monotonically increasing number assigned by the server, giving ordering and gap detection.\n- `presence:{user}` in Redis with a TTL refreshed by heartbeats; `session:{device} → gateway` routing table.\n- Public keys and prekeys in a key directory.",
+  "design": "```\nsender ─ws▶ gateway A ─▶ chat service ─▶ inbox store (write first)\n                              │\n                              ├─▶ routing table → gateway B ─ws▶ recipient device\n                              └─▶ push service (APNs/FCM) if offline\nrecipient ack ─▶ delete inbox row ─▶ delivered receipt back to sender\n```\n- **Order of operations:** durably write the inbox row, then try the live push, then the mobile push notification. Persistence gives correctness; the live path gives speed.\n- Gateways are stateless; connection location is just a lookup.",
+  "deepdives": "- **Delivery guarantees.** Transport is at-least-once: the sender retries until the server ack, the server retries until the device ack. Duplicates are removed by `client_msg_id` on the server and by `seq` on the device. This yields effectively-once display without distributed transactions. Ordering is per-conversation only, via `seq`; global order is neither needed nor affordable.\n- **Groups.** Fan out on the server: write one inbox row per recipient device (small groups) so each device can ack independently and receipts are per device. For the 256 cap this is cheap; a million-member broadcast channel would instead share one stored message and have members pull by cursor.\n- **Offline and reconnect.** The client sends its last acked `seq` per conversation, the server drains the inbox; reconnect uses exponential backoff with jitter so a gateway crash does not trigger a stampede. Presence updates write on state change, never on every heartbeat.\n- **End-to-end encryption.** Each device publishes a key bundle; the sender encrypts a copy per recipient device (a double-ratchet session for 1:1, sender keys for groups). The server is a blind relay, so it can route by metadata but cannot search or moderate content, and backups need a user-held key. Cost: group membership changes require key rotation.",
+  "wrapup": "- Correctness comes from the durable per-device inbox plus acks; WebSockets only make it fast.\n- Trade-offs: per-device fanout (simple receipts, more writes) vs shared message; E2E privacy vs server features like search.\n- Next: media pipeline, read-receipt privacy, multi-region gateways and message edit/delete."
+ },
+ "rubric": [
+  {
+   "text": "Estimates message rate, concurrent connections and gateway count",
+   "keywords": [
+    "qps",
+    "/s",
+    "concurrent",
+    "gateway",
+    "connections"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses persistent connections (WebSocket) with stateless gateways and a routing lookup from user/device to gateway",
+   "keywords": [
+    "websocket",
+    "stateless",
+    "routing",
+    "gateway"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Persists the message in a per-recipient/device inbox before attempting live delivery",
+   "keywords": [
+    "inbox",
+    "persist",
+    "durab",
+    "before"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Defines delivery semantics: ack from server and device, retries, deduplication by client message id",
+   "keywords": [
+    "ack",
+    "at-least-once",
+    "dedup",
+    "idempoten",
+    "client_msg_id",
+    "client message id"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Orders messages per conversation with a server-assigned sequence number, and does not claim global ordering",
+   "keywords": [
+    "sequence",
+    "seq",
+    "per-conversation",
+    "monotonic"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Covers sent/delivered/read receipts as ack events flowing back to the sender",
+   "keywords": [
+    "receipt",
+    "delivered",
+    "read"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles offline users: queue with TTL, sync from last seen sequence on reconnect, mobile push notification",
+   "keywords": [
+    "offline",
+    "push notification",
+    "apns",
+    "fcm",
+    "reconnect",
+    "cursor"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains group fanout on the server and the group size trade-off",
+   "keywords": [
+    "group",
+    "fanout",
+    "fan-out",
+    "256"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Supports multi-device accounts with independent acks per device",
+   "keywords": [
+    "multi-device",
+    "per-device",
+    "device"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Explains end-to-end encryption: key bundles, per-device encryption, blind server, and the consequences for search/backup",
+   "keywords": [
+    "end-to-end",
+    "e2e",
+    "double ratchet",
+    "sender key",
+    "prekey",
+    "signal"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Presence/typing handled with heartbeats and TTL, avoiding a write per heartbeat",
+   "keywords": [
+    "presence",
+    "heartbeat",
+    "ttl"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "websocket-patterns",
+  "idempotency",
+  "cursor",
+  "server-log",
+  "fanout",
+  "heartbeat-lease",
+  "backoff-jitter",
+  "sharding"
+ ]
+}

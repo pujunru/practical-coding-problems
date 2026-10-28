@@ -1,0 +1,142 @@
+{
+ "id": "live-comments",
+ "title": "Design a Live Commenting System",
+ "prompt": "Design the live comment stream under a broadcast video. Viewers post short comments and everyone watching sees new comments appear within a second or two. Late joiners see recent comments, and the comments remain attached to the video for replay afterwards.\n\nAssume a single popular stream can have **1 million concurrent viewers** and **5,000 new comments per second** at its peak, with many thousands of streams live at once.",
+ "clarify": [
+  "Must every viewer see every comment, or is a representative sample acceptable on huge streams?",
+  "Do comments need to be strictly ordered, or is approximate order fine?",
+  "Is moderation required before display (spam filter, blocked words, banned users)?",
+  "Do replies, reactions and pinned comments count, or only flat text?",
+  "What happens after the stream: are comments replayed in sync with the video?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Post a short comment to a live stream (auth required)\n- Everyone watching sees new comments in near real time\n- Late joiners get the latest N comments\n- Comments are stored and replayable by video time\n\n**Non-functional**\n- Delivery latency 1–2 s end to end\n- A viral stream must not hurt other streams (isolation)\n- Writes are bursty and spam-prone; protect the system\n- Availability over strict consistency: dropping some comments on overload is acceptable",
+  "estimation": "- Hot stream: 1M viewers, 5,000 comments/s\n- Naive fanout: 5,000 × 1M = **5 billion deliveries/s**, which is impossible and also unreadable by a human\n- Humans read ~20 comments/s at most, so cap what each viewer receives at 20/s: 1M × 20 = 20M comment-deliveries/s, batched as one frame per viewer per second\n- Bandwidth: 20 comments × 100 B = 2 KB/viewer/s × 1M = **2 GB/s ≈ 16 Gbps** for this one stream\n- Gateways: 1M connections at ~100k per host ≈ **10 gateways** for the stream; storage: 5,000/s × 150 B ≈ 0.75 MB/s ≈ 65 GB/day for a stream this hot",
+  "api": "```\nPOST /v1/streams/{id}/comments   {client_id, text}    → 202 {comment_id}\nGET  /v1/streams/{id}/comments?around=<video_ts>&limit=50   (late joiners, replay)\nSSE/WS /v1/streams/{id}/live      ← batched frames: {comments[], server_ts}\n```\n- `202` because the comment is accepted for moderation and fanout, not yet delivered.\n- Server-Sent Events fit well: traffic is one-way server to client, it works over plain HTTP/2 and reconnects with `Last-Event-ID`.",
+  "data": "- `comments(stream_id, comment_id, user_id, text, video_offset_ms)` in a wide-column or partitioned store, keyed by `stream_id` and ordered by `comment_id` (time-sortable). A very hot stream is further bucketed by time window to avoid one giant partition.\n- Recent window: per stream a capped list of the latest ~200 comments in Redis for late joiners.\n- Moderation state: per-user mute/ban set and a blocked-terms list.\n- Stream → gateway subscriptions are held in the pub/sub layer, not in the database.",
+  "design": "```\nviewer ─POST▶ API ─▶ rate limit ─▶ moderation ─▶ comment queue (partition by stream_id)\n                                                    │\n                          ┌─────────────────────────┤\n                          ▼                         ▼\n                    store (history)         stream aggregator (sample/batch ≤20/s)\n                                                    │ publish\n                                       pub/sub topic per stream\n                                    ┌────────┴────────┐\n                                gateway 1 … gateway N ─▶ 100k viewers each\n```\n- A **fanout tree**: one aggregator per stream feeds N gateways, each fanning out to its local viewers. Posting never touches viewer connections directly.",
+  "deepdives": "- **Fan-out at one million viewers.** The cost is viewers × rate, so cut the rate. The aggregator batches per 500 ms to 1 s window and, above ~20 comments/s, samples (prefer comments from followed accounts, verified users and high-quality ones). Every viewer gets the same frame, so it is built once, published once per gateway, and written to each socket. Trade-off: not every comment is seen live; all remain in storage.\n- **Push transport and scale.** SSE/WebSocket keeps a connection per viewer; the alternative is polling a CDN-cached \"latest comments\" object every 2 s, which scales to huge audiences via cache but adds latency and request volume. Use a hybrid: polling for cold or massive streams, push for the rest. Reconnect with jitter and resume from the last comment id.\n- **Ordering and hot partitions.** Time-sortable ids give approximate order; strict order across servers is unnecessary since only the aggregator decides frame order. A hot stream gets its own queue partition(s) and aggregator, so it cannot starve small streams.\n- **Abuse.** Per-user rate limits (e.g. 1 comment per second), spam classifiers inline, shadow-banning so spammers do not learn they were blocked.",
+  "wrapup": "- The central idea is to bound per-viewer delivery with batching and sampling, then fan out through a tree of aggregators and gateways.\n- Trade-offs: completeness vs readability and cost, push vs CDN polling, inline vs async moderation.\n- Next: reactions, pinned comments, multi-region gateways, replay sync with video time."
+ },
+ "rubric": [
+  {
+   "text": "Does the fanout arithmetic (comments/s × viewers) and concludes naive delivery is infeasible",
+   "keywords": [
+    "5 billion",
+    "fanout",
+    "viewers",
+    "per second",
+    "/s"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Caps and batches per-viewer delivery: sampling or rate-limiting what each client receives",
+   "keywords": [
+    "sampl",
+    "batch",
+    "cap",
+    "20/s",
+    "per second"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Decouples posting from delivery with a queue partitioned by stream",
+   "keywords": [
+    "queue",
+    "kafka",
+    "partition",
+    "decouple"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a fanout tree: aggregator per stream, then gateways each serving a share of connections",
+   "keywords": [
+    "aggregator",
+    "gateway",
+    "tree",
+    "pub/sub",
+    "pubsub"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Chooses a transport and justifies it: SSE or WebSocket push, possibly with CDN-cached polling for huge streams",
+   "keywords": [
+    "sse",
+    "server-sent",
+    "websocket",
+    "polling",
+    "long poll"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Provides late-joiner catch-up from a capped recent-comments cache",
+   "keywords": [
+    "recent",
+    "late join",
+    "capped",
+    "last n",
+    "catch-up"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Stores comments durably, keyed by stream and a time-sortable id, with video offset for replay",
+   "keywords": [
+    "video offset",
+    "replay",
+    "time-sortable",
+    "wide-column",
+    "cassandra"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles hot streams: isolation, dedicated partitions/aggregators, time-bucketed partitions",
+   "keywords": [
+    "hot",
+    "isolat",
+    "bucket",
+    "skew"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Covers abuse protection: rate limiting, spam/moderation inline, shadow ban",
+   "keywords": [
+    "rate limit",
+    "spam",
+    "moderat",
+    "shadow"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Accepts best-effort delivery under overload (shed load rather than fail), and handles reconnect with resume ids",
+   "keywords": [
+    "shed",
+    "best-effort",
+    "drop",
+    "reconnect",
+    "last-event-id",
+    "jitter"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "fanout",
+  "websocket-patterns",
+  "batching",
+  "rate-limiter",
+  "load-shedding",
+  "backoff-jitter",
+  "partitioning",
+  "polling"
+ ]
+}

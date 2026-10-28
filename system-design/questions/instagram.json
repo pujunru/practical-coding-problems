@@ -1,0 +1,139 @@
+{
+ "id": "instagram",
+ "title": "Design Instagram",
+ "prompt": "Design a photo-sharing social network. Users upload photos (and short videos), follow other users, and browse a feed and profile pages full of images. This question focuses on getting large media in, storing it cheaply and serving it fast anywhere in the world.\n\nAssume **500 million daily active users**, about **100 million uploads a day** (averaging 2 MB each as originals), and each user viewing roughly 50 images a day.",
+ "clarify": [
+  "Are photos only in scope, or also videos, stories and carousels?",
+  "What are the maximum upload size and the supported formats?",
+  "How soon after uploading must a photo be visible, and may it appear before processing finishes?",
+  "Which resolutions must we serve (thumbnail, feed, full)? Do we keep the original forever?",
+  "Is feed ranking in scope? (Assume a simple follow-based feed so we can focus on media.)"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Upload a photo with caption and tags; delete it\n- View a profile grid and a feed of followed users' posts\n- Like and comment (light scope)\n\n**Non-functional**\n- Never lose an acknowledged upload (durability of originals)\n- Image loads are the hot path: p95 < 300 ms worldwide, served from a CDN\n- Uploads are bursty and large, so they must bypass the app servers\n- Storage cost dominates: tiering and compression matter",
+  "estimation": "- Uploads: 100M/day ≈ **1.2k uploads/s** avg\n- Stored per photo: 2 MB original + ~1 MB of resized renditions = ~3 MB → **300 TB/day** ≈ 110 PB/year\n- Views: 500M × 50 = 25B images/day ≈ **290k image requests/s** avg\n- Egress: at ~150 KB per served rendition, 25B × 150 KB ≈ 3.75 PB/day ≈ **43 GB/s** (about 350 Gbps) — only viable if the CDN absorbs ≥95%\n- Metadata is tiny by comparison: 100M rows/day × ~500 B = 50 GB/day",
+  "api": "```\nPOST /v1/media/uploads        {size, content_type, sha256}  → {upload_id, presigned_urls[]}\nPUT  <presigned url>          (bytes, multipart chunks)     → 200 + ETag\nPOST /v1/posts                {upload_id, caption}          → 201 {post_id}  (status=processing)\nGET  /v1/feed?cursor=         → {posts[{post_id, urls{thumb,feed,full}}], next}\n```\n- The client uploads straight to object storage; the API only hands out short-lived, scoped URLs and records the post.\n- Chunked uploads allow resume on flaky mobile networks.",
+  "data": "- `posts(post_id, author_id, caption, media_key, status, created_at)` — a sharded relational or wide-column table; `status` goes `uploading → processing → ready`.\n- `media(media_key, sha256, width, height, renditions[])` — pointers into object storage.\n- Blobs: originals in object storage (S3-style, 11 nines durability, cross-region replication); renditions under `media_key/size.webp`.\n- `follows`, `likes` as in any social app; the feed is a list of post ids, never of bytes.",
+  "design": "```\nclient ─▶ API ─▶ posts DB\n  │\n  └─(presigned PUT)─▶ object store ─▶ event ─▶ queue ─▶ image workers\n                                                     (resize, strip EXIF,\n                                                      moderate, hash)\nviewer ─▶ CDN ─(miss)─▶ image-origin / object store\n```\n- Upload completes, an event triggers workers that generate renditions, scan for policy violations and flip the post to `ready`.\n- URLs are immutable (content-hash in the path), so CDN entries never need invalidation; deleting a post removes the DB row and purges the key.",
+  "deepdives": "- **Upload path.** Presigned multipart upload keeps 2 MB blobs off the API tier. Orphans (uploads never attached to a post) are swept by a lifecycle rule. Dedupe via `sha256` avoids storing the same file twice. Trade-off: the post is acknowledged before processing, so show a placeholder or hold publication until `ready`.\n- **Renditions: eager vs lazy.** Eager generation (e.g. 4 sizes) costs storage for photos nobody sees; on-demand resizing at the CDN origin saves space but adds first-view latency and compute. Compromise: eagerly make thumbnail and feed sizes, lazily make the rest, cache aggressively.\n- **CDN and tiering.** Popularity is heavily skewed. Keep recent and hot media in the CDN and standard storage; move photos untouched for months to infrequent-access tiers, and keep only the original plus one rendition. Origin shielding collapses cache misses from many edges into one fetch.\n- **Consistency of the pointer.** Write the blob before the DB row (a dangling row is worse than an orphan blob).",
+  "wrapup": "- Media dominates both storage and bandwidth, so the design keeps bytes off app servers (presigned uploads, CDN) and metadata in a small, sharded store.\n- Trade-offs: eager vs lazy renditions, storage tier cost vs retrieval latency, publish-before-processing vs after.\n- Next: stories with TTL, video transcoding, feed ranking, ML moderation."
+ },
+ "rubric": [
+  {
+   "text": "Estimates upload rate, daily storage growth, and read egress, showing the CDN is mandatory",
+   "keywords": [
+    "tb",
+    "pb",
+    "gb/s",
+    "egress",
+    "qps"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uploads go directly to object storage via presigned URLs, not through app servers",
+   "keywords": [
+    "presigned",
+    "pre-signed",
+    "direct upload",
+    "object storage",
+    "s3"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Supports resumable/chunked (multipart) uploads for large or flaky mobile uploads",
+   "keywords": [
+    "multipart",
+    "chunk",
+    "resum"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Processes media asynchronously (queue plus workers): resize, strip EXIF, moderate",
+   "keywords": [
+    "async",
+    "queue",
+    "worker",
+    "exif",
+    "moderat",
+    "transcod"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Separates metadata (sharded DB) from blobs (object store) and keeps a post status lifecycle",
+   "keywords": [
+    "metadata",
+    "status",
+    "processing",
+    "blob"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Serves images through a CDN with immutable, content-hashed URLs; explains hit-rate importance",
+   "keywords": [
+    "cdn",
+    "immutable",
+    "content hash",
+    "edge",
+    "hit rate"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Discusses eager vs on-demand image renditions and the storage/latency trade-off",
+   "keywords": [
+    "rendition",
+    "resize",
+    "on-demand",
+    "lazy",
+    "webp"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Applies storage tiering and lifecycle rules for cold media, and sweeps orphaned uploads",
+   "keywords": [
+    "tier",
+    "cold",
+    "lifecycle",
+    "orphan",
+    "infrequent"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Orders writes safely: blob first, then DB reference; handles delete by purging blob and CDN",
+   "keywords": [
+    "orphan",
+    "dangling",
+    "purge",
+    "delete"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Mentions durability of originals (replication across zones/regions) and dedupe by content hash",
+   "keywords": [
+    "durab",
+    "replicat",
+    "sha256",
+    "dedup"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "data-locality",
+  "multi-region",
+  "sharding",
+  "cache-invalidation",
+  "queue-first-vs-db-first",
+  "batching",
+  "anycast"
+ ]
+}

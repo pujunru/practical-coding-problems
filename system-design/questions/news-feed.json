@@ -1,0 +1,137 @@
+{
+ "id": "news-feed",
+ "title": "Design the Facebook News Feed",
+ "prompt": "Design the home feed of a large social network. Users have friends and follow pages; the feed shows a ranked list of posts they are most likely to care about, not simply the newest. Opening the app must feel instant, and scrolling must keep producing fresh items.\n\nAssume **500 million daily active users**, each loading the feed about 5 times a day, with up to **thousands of eligible candidate posts** per user per day.",
+ "clarify": [
+  "Is the feed ranked by relevance, or strictly chronological? (Assume ranked.)",
+  "Which sources feed it: friends, followed pages and groups, and recommended content from strangers?",
+  "What is the latency budget for the first page, and how large is a page?",
+  "Do we need to explain why a post is shown, and must users be able to switch to a chronological view?",
+  "How quickly must a brand-new post from a close friend show up?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Return a ranked, paginated feed of posts for a user\n- Each post carries engagement counts and the viewer's own reaction\n- New posts, likes and comments feed back into ranking\n\n**Non-functional**\n- First page p99 < 500 ms; scrolling returns quickly and without duplicates\n- Fresh enough: a close friend's post appears within seconds\n- Graceful degradation: if ranking is slow, serve a cheaper order, never an error\n- Ranking quality is a product metric, so the pipeline must be experiment-friendly",
+  "estimation": "- Feed loads: 500M × 5 = 2.5B/day ≈ **29k/s** avg, ~3× at peak\n- If each load scores ~1,000 candidates, that is ≈ **29M candidate scorings/s** on average, which is why scoring is staged and cheap models run first\n- Candidates per user/day: a few thousand posts; per-user candidate store of 500 post ids × 8 B = 4 KB × 500M ≈ **2 TB**\n- Feature reads: ~1,000 candidates × ~10 feature lookups per candidate ≈ 10k lookups per request, so features must be batch-fetched from a low-latency store",
+  "api": "```\nGET /v1/feed?session=&cursor=&limit=20  → {posts[], next_cursor, session}\nPOST /v1/feed/events  {post_id, type: impression|click|hide|dwell, ms}\n```\n- `session` pins a ranked ordering for a few minutes so pagination never repeats or reshuffles items; `cursor` is an offset into that snapshot.\n- Impressions and dwell time are the training signal, so the event endpoint is high-volume and asynchronous.",
+  "data": "- **Social graph:** friends/follows adjacency lists, sharded by user.\n- **Posts:** `posts(post_id, author_id, type, created_at, …)` plus an aggregated stats store (counts, updated async).\n- **Candidate pool:** per-user `feed_candidates:{user}` of recent post ids from push fanout, sorted by time.\n- **Feature store:** user features (affinity per author, interests), post features (age, engagement velocity), joined at request time. Online store (key-value) mirrors the offline training store.\n- **Seen set:** a compact per-user record (Bloom filter or recent ids) to avoid repeats.",
+  "design": "```\n client ─▶ feed API ─▶ candidate gen ─▶ light ranker ─▶ heavy ranker ─▶ rules/diversity ─▶ page\n               │          ▲  ▲                 ▲              ▲\n               │      pool│  │graph       features (online store)\n               ▼          │  └ pull for celebrities / pages / recommended\n          session cache   push fanout from post-service\n impressions ─▶ log stream ─▶ training pipeline ─▶ model registry\n```\n- Stage 1 gathers ~1,000 candidates; stage 2 narrows to ~200 with a cheap model; stage 3 applies a heavier model; final rules add diversity and policy filters.",
+  "deepdives": "- **Candidate generation = hybrid fanout.** Push post ids to friends' candidate pools at write time for ordinary authors; pull posts from celebrities, pages and groups at request time. Fanout fixes recall cheaply; only ranking decides order.\n- **Ranking cascade.** Scoring 1,000 candidates with a deep model on every load is too expensive. Use a light model (logistic regression or small GBDT over a few features) to cut to ~200, then a heavy model on those. Trade-off: each stage can drop the true best item, so tune recall at stage 1 and monitor.\n- **Objective and feedback loops.** Predict several outcomes (like, comment, dwell, hide) and combine with weights; pure engagement optimisation promotes clickbait, so add quality and diversity rules. Log the features served with each impression to avoid training/serving skew.\n- **Pagination and freshness.** Cache the ranked session; on later pages re-rank only the remaining pool so brand-new posts can be injected without duplicates.\n- **Latency fallback.** Give each stage a deadline; on timeout return the light-ranker order or recency.",
+  "wrapup": "- Assembling the feed is a retrieval-then-rank pipeline: cheap broad recall, then progressively costlier scoring.\n- Trade-offs: freshness vs session stability, engagement vs quality, model cost vs latency.\n- Next: ads insertion, cold-start for new users, A/B infrastructure, real-time features."
+ },
+ "rubric": [
+  {
+   "text": "Frames the feed as candidate generation followed by ranking, not a sort by time",
+   "keywords": [
+    "candidate",
+    "retriev",
+    "rank"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Estimates feed QPS and the number of candidates scored per second to justify a staged cascade",
+   "keywords": [
+    "qps",
+    "/s",
+    "candidates",
+    "scor"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses hybrid fanout for candidate pools: push for normal authors, pull for celebrities/pages",
+   "keywords": [
+    "fanout",
+    "fan-out",
+    "celebrit",
+    "push",
+    "pull"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Describes multi-stage ranking (light then heavy model) with the cost/recall trade-off",
+   "keywords": [
+    "light",
+    "heavy",
+    "cascade",
+    "two-stage",
+    "stage"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Uses an online feature store and notes training/serving skew",
+   "keywords": [
+    "feature store",
+    "features",
+    "skew",
+    "online store"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Defines ranking objectives from engagement signals (like, comment, dwell, hide) and warns about clickbait/feedback loops",
+   "keywords": [
+    "engagement",
+    "dwell",
+    "objective",
+    "clickbait",
+    "diversity"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles pagination with a pinned session or cursor so items neither repeat nor reshuffle",
+   "keywords": [
+    "session",
+    "cursor",
+    "pagination",
+    "duplicate",
+    "seen"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Tracks seen posts (Bloom filter or recent ids) and de-duplicates",
+   "keywords": [
+    "bloom",
+    "seen",
+    "dedup"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Has deadlines and fallbacks: degrade to recency or cached feed when ranking is slow",
+   "keywords": [
+    "fallback",
+    "deadline",
+    "timeout",
+    "degrad"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Logs impressions/events asynchronously into a training pipeline and supports experiments",
+   "keywords": [
+    "impression",
+    "log",
+    "training",
+    "a/b",
+    "experiment"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "fanout",
+  "top-k-ranking",
+  "weighted-event-scoring",
+  "user-context",
+  "bloom-filter",
+  "cursor",
+  "load-shedding",
+  "timeout"
+ ]
+}

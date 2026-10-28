@@ -1,0 +1,131 @@
+{
+ "id": "twitter",
+ "title": "Design X / Twitter",
+ "prompt": "Design the core of a microblogging service. Users post short messages, follow other accounts, and open a home timeline that shows recent posts from the people they follow. They can also view any profile's own posts.\n\nAssume **300 million daily active users**, roughly **200 million new posts a day**, and an average account that follows about 200 others. A few accounts have tens of millions of followers.",
+ "clarify": [
+  "Is the home timeline strictly reverse-chronological, or ranked? (Assume chronological; ranking is a separate question.)",
+  "Which post types are in scope: text only, or media, replies, reposts and quotes?",
+  "How fresh must a timeline be: is a few seconds of lag after posting acceptable?",
+  "What is the largest follower count we must support, and do we need push notifications?",
+  "Do we need search, trends or likes counts in this scope, or only posting, following and timelines?"
+ ],
+ "minutes": 45,
+ "reference": {
+  "requirements": "**Functional**\n- Post a tweet (text, optional media reference), delete it\n- Follow / unfollow\n- Home timeline: recent posts from followed accounts, newest first, paginated\n- User timeline: one account's posts\n\n**Non-functional**\n- Timeline reads are the hot path: p99 < 200 ms\n- Availability over consistency: a post may appear a few seconds late, but reads must not fail\n- Skewed graph: celebrity accounts must not melt the write path",
+  "estimation": "- Timeline reads: 300M DAU × 10 opens/day = 3B/day ≈ **35k reads/s** avg\n- Posts: 200M/day ≈ **2.3k writes/s** avg\n- Naive fanout-on-write: 200M × 200 followers = 40B timeline inserts/day ≈ **460k inserts/s** avg, an in-memory workload\n- Posts storage: 200M × ~300 B = **60 GB/day** ≈ 22 TB/year (media lives in object storage)\n- Timeline cache: 800 post ids × 8 B = 6.4 KB per user × 300M ≈ **1.9 TB** across a Redis fleet",
+  "api": "```\nPOST /v1/tweets                {text, media_ids?}          → 201 {tweet_id}\nPOST /v1/users/{id}/follow                                  → 204\nGET  /v1/timeline/home?cursor=&limit=50                     → {tweets[], next_cursor}\nGET  /v1/users/{id}/tweets?cursor=&limit=50                 → {tweets[], next_cursor}\n```\n- Cursor is the last tweet id (ids are time-sortable), not an offset, so new posts do not shift pages.\n- `POST /tweets` carries a client-generated idempotency key to survive retries.",
+  "data": "- `tweets(tweet_id PK, author_id, text, media_ids, created_at)`, sharded by `tweet_id` (a Snowflake id: time + shard + sequence).\n- `follows(follower_id, followee_id)` stored twice: by follower (\"whom do I follow\") and by followee (\"who follows me\", used for fanout).\n- `user_tweets(author_id, tweet_id)` clustered by author for profile pages.\n- `timeline:{user_id}`: a capped Redis list of tweet ids (**ids only**, bodies are hydrated from a tweet cache).",
+  "design": "```\nclient ─▶ API ─▶ tweet service ─▶ tweets DB\n                      │\n                      └─▶ queue ─▶ fanout workers ─▶ timeline cache (per user)\nread: client ─▶ timeline service ─▶ timeline cache ⊕ celebrity tweets ─▶ hydrate ─▶ tweet cache/DB\n```\n- **Write:** persist the tweet, publish `tweet_created`, return. Fanout workers look up the author's followers and push the id onto each follower's timeline list.\n- **Read:** fetch the id list, merge in recent tweets of celebrities the user follows, hydrate the bodies in one multi-get, return.",
+  "deepdives": "- **Fanout on write vs read.** Push makes reads a single cache lookup but costs one insert per follower; pull stores each tweet once but makes a read query every followee. With ~200 followers push wins, since reads outnumber writes ~15:1.\n- **Celebrities.** One post from a 30M-follower account would mean 30M inserts. Above a threshold (say 100k followers) skip fanout; at read time merge their latest tweets by author. Trade-off: reads of users who follow many celebrities do extra work. Also skip fanout to inactive users and rebuild their timeline on return.\n- **Timeline cache loss.** The cache is derived data: on a miss, rebuild from `follows` plus recent `user_tweets`. Cap each list (~800 ids) so memory stays bounded.\n- **Deletes and unfollows.** Hydration tolerates missing tweets, so deletes only remove the body; unfollow filters lazily at read.",
+  "wrapup": "- The design turns a skewed many-to-many read problem into cheap cache reads by moving work to write time, with a hybrid for celebrities.\n- Trade-offs: write amplification and staleness vs read latency; hybrid complexity.\n- Next: ranking, search, trends, notifications, multi-region replication of timelines."
+ },
+ "rubric": [
+  {
+   "text": "Estimates read and write QPS and sees timelines are read-heavy relative to posts",
+   "keywords": [
+    "qps",
+    "/s",
+    "read-heavy",
+    "reads"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Uses a time-sortable unique id (Snowflake-style) for tweets and for cursor pagination",
+   "keywords": [
+    "snowflake",
+    "time-sortable",
+    "cursor"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Describes fanout-on-write: pushing tweet ids onto follower timelines asynchronously via a queue",
+   "keywords": [
+    "fanout on write",
+    "fan-out on write",
+    "push",
+    "queue",
+    "worker"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Explains why fanout-on-write breaks for celebrities and uses a hybrid (skip fanout, merge at read time)",
+   "keywords": [
+    "celebrit",
+    "hybrid",
+    "threshold",
+    "fanout on read",
+    "pull"
+   ],
+   "points": 2
+  },
+  {
+   "text": "Stores timelines as capped lists of ids in a cache and hydrates tweet bodies separately",
+   "keywords": [
+    "ids only",
+    "hydrate",
+    "capped",
+    "redis",
+    "timeline cache"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Stores the follow graph in both directions (by follower and by followee)",
+   "keywords": [
+    "followee",
+    "both directions",
+    "follows"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Treats the timeline cache as rebuildable derived data, covering cache miss and inactive users",
+   "keywords": [
+    "rebuild",
+    "inactive",
+    "derived"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Chooses eventual consistency and accepts seconds of delay in exchange for availability",
+   "keywords": [
+    "eventual",
+    "stale",
+    "availability"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Handles deletes, unfollows and retried posts (idempotency key, lazy filtering)",
+   "keywords": [
+    "idempoten",
+    "delete",
+    "unfollow",
+    "lazy"
+   ],
+   "points": 1
+  },
+  {
+   "text": "Shards tweets and discusses the hot-shard risk of sharding by author",
+   "keywords": [
+    "shard",
+    "hot",
+    "partition"
+   ],
+   "points": 1
+  }
+ ],
+ "concepts": [
+  "fanout",
+  "sharding",
+  "eventual-consistency",
+  "cache-invalidation",
+  "cursor",
+  "queue-first-vs-db-first",
+  "load-shedding"
+ ]
+}
