@@ -1,0 +1,83 @@
+{
+  "id": "load-shedding",
+  "title": "Load Shedding",
+  "summary": "Load shedding means **deliberately rejecting some work when the system is overloaded, so the rest can still succeed**. The goal is to protect **goodput**, requests that finish within their deadline, rather than raw throughput.\n\nWhy it is needed: once offered load exceeds capacity, a queue grows, waiting time grows, and clients time out and retry. The server keeps burning capacity on answers nobody is waiting for, and goodput can fall toward zero while the machines look busy. Refusing the excess early keeps the admitted work fast.\n\nHow:\n- **Trigger on a load signal of the system itself:** queue delay (best), in-flight count, latency, memory; CPU alone is a weak signal. Use hysteresis so shedding does not flap.\n- **Decide who to drop:** requests that have already **expired** (the client's deadline passed while queued) first, then **lowest priority** (batch before interactive, retries before first attempts, anonymous before paying) ([prioritized scheduling](#/sd/f/prioritized-scheduling)).\n- **Reject cheaply and early:** a check at the front door before parsing, auth lookups or database calls. If rejecting costs nearly as much as serving, shedding does not help.\n- **Say so:** `503` with `Retry-After`, so clients back off ([backoff + jitter](#/sd/f/backoff-jitter)) instead of hammering.\n\nHow it differs from a [rate limiter](#/sd/f/rate-limiter): rate limits apply a fixed per-client quota regardless of how the system is doing; shedding reacts to overload, whoever causes it. A [concurrency limiter](#/sd/f/concurrency-limiter) is the usual mechanism that produces the rejections, and shedding is how an SLO survives a surge ([SLI/SLO](#/sd/f/sli-slo-sla)).",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A server can handle 1,000 requests/s but receives 1,500/s. It queues the excess in an unbounded queue and clients time out after 2 s. After a few minutes, what is the goodput (requests answered before the client gives up)?",
+      "options": [
+        "About 1,000/s, because the server always works at full capacity",
+        "Close to zero: the queue wait exceeds 2 s, so almost every answer arrives after the client has left, while the server stays fully busy",
+        "About 500/s, the excess over capacity",
+        "About 1,500/s, as queued requests are eventually served"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Throughput stays at 1,000/s but nearly all of it is wasted work on abandoned requests. Rejecting 500/s up front would keep 1,000/s of useful, timely answers."
+    },
+    {
+      "type": "number",
+      "q": "Capacity is 1,000 requests/s. Offered load is 1,500 requests/s, of which 300/s is critical interactive traffic and 1,200/s is low-priority batch. The server sheds strictly by priority. How many requests per second are shed, all from the batch class?",
+      "answer": 500,
+      "unit": "requests/s",
+      "tolerance": 0,
+      "explain": "Critical 300/s is fully served, leaving 1,000 - 300 = 700/s for batch. Batch offered 1,200/s, so 1,200 - 700 = 500/s are shed (about 42% of batch), and critical success stays at 100%."
+    },
+    {
+      "type": "choice",
+      "q": "Under overload a worker dequeues a request that has waited 4 s; its client deadline was 2 s. What should it do?",
+      "options": [
+        "Process it anyway, since it was accepted",
+        "Drop it immediately; no one is waiting for the result, and it is the cheapest shedding available",
+        "Move it to the back of the queue",
+        "Process it at low priority in the background"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Work for an expired request is pure waste and, worse, delays live requests. Checking the deadline at dequeue (see [time-box patterns](#/sd/f/time-box-patterns)) sheds it for free."
+    },
+    {
+      "type": "choice",
+      "q": "Which situation is load shedding rather than rate limiting?",
+      "options": [
+        "Tenant A may make at most 100 requests/s per its contract, regardless of server health",
+        "All tenants are within their quotas, but total traffic after a viral event pushes queue delay past 500 ms, so the server rejects batch calls first",
+        "An API key is blocked after 5 failed logins",
+        "Each IP gets a token bucket of 20 requests/s"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Rate limiting is a per-client policy independent of the server's state. Shedding is driven by the server's own overload and drops the least valuable work, even from well-behaved clients."
+    },
+    {
+      "type": "choice",
+      "q": "A team adds a shedding check at the end of the handler, after loading the user profile from the database and parsing the full request. Under a surge, shedding barely helps. Why?",
+      "options": [
+        "Shedding only works for GET requests",
+        "The expensive work happens before the rejection, so a rejected request costs nearly as much as a served one",
+        "503 responses are cached by clients",
+        "Priority classes were not defined"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "A rejection must be much cheaper than success, which means deciding at the edge (load balancer, first middleware) using cheap signals like priority headers and current queue delay."
+    },
+    {
+      "type": "order",
+      "q": "Put the reaction to rising overload in order.",
+      "items": [
+        "A load signal (queue delay) crosses its threshold",
+        "Incoming requests are classified by priority and by remaining deadline",
+        "Expired and lowest-priority requests are rejected fast with 503 and Retry-After",
+        "If the signal stays high, the cut-off rises to the next priority class",
+        "When the signal stays below a lower threshold for a while, shedding stops"
+      ],
+      "explain": "Different on/off thresholds (hysteresis) stop the system flapping between shedding and not shedding; stepping up the cut-off sacrifices the least valuable work first."
+    }
+  ]
+}

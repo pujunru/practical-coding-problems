@@ -1,0 +1,77 @@
+{
+  "id": "rate-limiter",
+  "title": "Rate Limiter",
+  "summary": "A rate limiter controls **how many requests are admitted per unit of time**. It does *not* control how many are being processed at once: 100 requests/s that each take 5 s means about 500 in flight (Little's law, in-flight = rate x latency). Pair it with a [concurrency limiter](#/sd/f/concurrency-limiter).\n\n**Token bucket.** A bucket holds up to `capacity` tokens and refills continuously at `rate` tokens per second. Each request spends tokens; with no token it is rejected (or delayed). Refill is lazy: store `(tokens, last_time)` and compute on arrival:\n\n1. `elapsed = now - last_time`\n2. `tokens = min(capacity, tokens + elapsed * rate)` (fractions are fine: 0.4 s at 5/s adds 2 tokens)\n3. If `tokens >= cost`: subtract and allow; otherwise deny\n4. `last_time = now`\n\n`capacity` is the burst you tolerate; `rate` is the sustained average.\n\n**Leaky bucket as a meter** is the same arithmetic seen upside down (water level = used tokens, leak rate = refill rate). **Leaky bucket as a queue** is different: requests wait in a FIFO and are released at a fixed rate, so output is perfectly smooth, but waiting adds latency and the backlog is a concurrency problem.\n\n**Distributed limits.** N gateways with a local limit each allow N times the intended rate. Use a shared atomic counter (e.g. Redis with a Lua script), or give each node 1/N of the budget and accept uneven balance. Limits are keyed per client, API key or tenant; rejection should be cheap (`429` with `Retry-After`). Contrast with [load shedding](#/sd/f/load-shedding), which reacts to the system's own overload.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "A token bucket has capacity 10 and refills at 5 tokens/s, and starts full. At t = 0, 25 requests arrive simultaneously (cost 1 each, rejected requests are dropped, not queued). At t = 1.5 s another 10 requests arrive simultaneously. How many of the second batch are allowed?",
+      "answer": 7,
+      "unit": "requests",
+      "tolerance": 0,
+      "explain": "At t = 0, 10 are allowed and the bucket is empty. By t = 1.5 s it holds 1.5 x 5 = 7.5 tokens (below the cap of 10). Seven requests can each take a whole token; the eighth would need the remaining 0.5, so it is denied."
+    },
+    {
+      "type": "number",
+      "q": "An endpoint is limited to 100 requests per second by a token bucket. Each request holds a worker for 5 seconds. At steady state under that limit, about how many requests are in flight?",
+      "answer": 500,
+      "unit": "requests",
+      "tolerance": 0,
+      "explain": "In-flight = arrival rate x time in system = 100 x 5 = 500. The rate limiter bounds admissions, not concurrent work, so a slow downstream can still be buried: that needs a concurrency limit."
+    },
+    {
+      "type": "choice",
+      "q": "This refill code is deployed: `tokens = max(tokens + elapsed * rate, CAPACITY)`. What does the limiter do?",
+      "options": [
+        "Works as intended: refill is capped at capacity",
+        "Never limits: tokens can never drop below CAPACITY after a refill, so every request is allowed",
+        "Rejects everything, because tokens are reset to zero",
+        "Limits correctly but allows bursts twice the capacity"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "max() forces the value up to at least CAPACITY at every refill, so the bucket is always full. The cap must be a min(). This is a classic silent bug: nothing errors and the limiter just does nothing."
+    },
+    {
+      "type": "choice",
+      "q": "A downstream cannot tolerate bursts and must see exactly 10 requests per second, evenly spaced. Which mechanism fits, and what do you pay for it?",
+      "options": [
+        "A token bucket with large capacity; you pay with memory",
+        "A leaky bucket used as a queue (shaper) drained at 10/s; you pay with queueing latency and a need to bound the queue",
+        "A fixed counter reset every second; you pay with higher CPU",
+        "A concurrency limiter of 10; you pay with lower availability"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "A token bucket deliberately permits bursts up to its capacity. Only a shaper that releases at a fixed rate gives evenly spaced output, at the cost of waiting time. A concurrency limit of 10 constrains in-flight work, not arrival spacing."
+    },
+    {
+      "type": "choice",
+      "q": "The API gateway runs on 10 instances, each enforcing a local token bucket of 100 requests/s per API key. A customer's contract says 100 requests/s total. What can that customer actually achieve?",
+      "options": [
+        "100 requests/s, because each key has one limit",
+        "Up to about 1,000 requests/s if the load balancer spreads the key evenly across instances",
+        "10 requests/s, because the buckets share their tokens",
+        "Exactly 100 requests/s, since the limit is checked against the key"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Each instance knows only its own bucket. Fix it with a shared atomic counter (central store), or divide the budget (10/s per instance) and accept inaccuracy when traffic is unbalanced."
+    },
+    {
+      "type": "order",
+      "q": "Put the check of a lazy-refill token bucket in order.",
+      "items": [
+        "Compute elapsed = now - last_time",
+        "Add elapsed x rate to the tokens, capped at capacity with min()",
+        "Set last_time = now",
+        "If tokens >= cost, subtract the cost and allow the request",
+        "Otherwise reject, optionally with Retry-After = (cost - tokens) / rate"
+      ],
+      "explain": "Refill must happen before the decision so the bucket reflects the idle time. Updating last_time on every check keeps the elapsed math correct even for rejected requests."
+    }
+  ]
+}

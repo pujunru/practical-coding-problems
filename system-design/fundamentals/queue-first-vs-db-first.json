@@ -1,0 +1,83 @@
+{
+  "id": "queue-first-vs-db-first",
+  "title": "Persisted Queue First vs DB First",
+  "summary": "Both patterns answer one question: **where is the commit point?** That is the moment the system tells the client \"OK\" and promises the event is never lost.\n\n**Queue First.** The commit point is an **append to a replicated log** (Kafka-class, `acks=all`, `min.insync.replicas >= 2`, no unclean leader election). The log is the source of truth; the DB is a **materialized view** written by consumers. Consumers must **upsert idempotently, then commit the offset** (the reverse order loses data on a crash). Retention must exceed the worst consumer lag, or acked events vanish before they reach the DB. Dedup is weak: the Kafka idempotent producer only covers retries inside one producer session, so clients must send a stable `event_id` and every consumer dedupes on it.\n\n**DB First.** The commit point is the **DB transaction**. The queue is only a **wake-up hint** (carry the `entity_id`, not the payload; lossy and repeatable is fine). The dual-write gap (DB commit succeeded, publish failed) is closed with a **transactional outbox** or a **sweeper** that re-enqueues entities with unprocessed rows. Workers hold a [lease](#/sd/f/lease) with [fencing](#/sd/f/fencing-token) for single-writer processing.\n\n**MQ is not storage.** Ack-and-delete queues (SQS, RabbitMQ) are durable only while in flight and cannot replay or be queried; only a replicated log qualifies for Queue First.\n\n| | Queue First | DB First |\n|---|---|---|\n| Strengths | huge ingest, fan-out, replay, absorbs DB downtime | read-your-writes, write-time validation, query by entity |\n| Fits | telemetry, clickstream, append-only facts | chat, orders, payments, agent sessions |\n\nHybrid: DB First plus outbox/[change feed](#/sd/f/change-feed) into Kafka. See also [idempotency](#/sd/f/idempotency), [dispatcher](#/sd/f/dispatcher), [backfill](#/sd/f/backfill).",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A team proposes using SQS as the persistent source of truth for incoming events: 'we ack the client after enqueuing; a consumer writes to the DB later, and if the DB schema is wrong we replay last week's events'. What is the flaw?",
+      "options": [
+        "SQS cannot be replicated, so it loses data",
+        "SQS deletes messages once consumed (and retains at most 14 days), so it cannot replay history or be queried by key; only a replicated log such as Kafka can serve as the source of truth",
+        "SQS delivers messages out of order only for small payloads",
+        "Nothing; SQS and Kafka behave identically for this purpose"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "SQS is durable for messages in flight, but once a consumer acks it, the message is gone; there is no log to replay. Queue First needs a log you can re-read from any offset within retention."
+    },
+    {
+      "type": "order",
+      "q": "Put the Queue First happy path in order (committing correctly).",
+      "items": [
+        "Client sends the event with an event_id to the ingest API",
+        "Ingest appends to Kafka with acks=all and min.insync.replicas >= 2",
+        "Ingest acks the client (the commit point has passed)",
+        "A consumer polls the event and upserts it into the DB by event_id",
+        "The consumer commits the Kafka offset"
+      ],
+      "explain": "The client ack follows the log append, not the DB write. Within the consumer, DB write precedes the offset commit: a crash between them causes a harmless re-read, while the reverse order permanently loses the event."
+    },
+    {
+      "type": "number",
+      "q": "Producers write 20,000 events/s to a topic. The consumer fleet can process at most 25,000 events/s but was down for 2 hours. After it restarts (producers keep writing), how many hours until it has caught up?",
+      "answer": 8,
+      "unit": "hours",
+      "tolerance": 0,
+      "explain": "Backlog = 20,000 x 7,200 s = 144 million events. Catch-up rate = 25,000 - 20,000 = 5,000/s, so 144,000,000 / 5,000 = 28,800 s = 8 hours. Retention only needs to cover the age of the oldest unread event (2 h at restart, falling during catch-up), so alerting on lag against retention is the real safeguard."
+    },
+    {
+      "type": "choice",
+      "q": "A banking-style app lets users send money. It needs to reject a transfer immediately if the balance is insufficient and show the new balance on the next screen. Which design fits best?",
+      "options": [
+        "Queue First: append the transfer to Kafka and validate in the consumer",
+        "DB First: validate and commit in one DB transaction, then optionally emit a wake-up or outbox event",
+        "Queue First with a cache that is updated by the client",
+        "Either works equally well, since both are durable"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Write-time validation and read-your-writes need current state at the commit point. In Queue First the client would get an OK before validation, then a failure later. DB First's OK means the transfer really happened."
+    },
+    {
+      "type": "choice",
+      "q": "In a DB First design the ingest API commits the event to the DB and then publishes a wake-up to a queue. The process crashes between the commit and the publish. Which approach reliably repairs this?",
+      "options": [
+        "Publish before committing, so a crash cannot lose the message",
+        "A transactional outbox row written in the same transaction and relayed by a relay or CDC, or a sweeper that re-enqueues entities that still have unprocessed events",
+        "Increase the queue's replication factor",
+        "Make the wake-up carry the full payload so workers do not need the DB"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Publish-before-commit can wake a worker that finds nothing, and the event committed afterwards never gets a wake-up. Replicating the queue does not help since the message was never sent. Outbox or sweeper makes the wake-up derivable from the DB."
+    },
+    {
+      "type": "choice",
+      "q": "A client times out and resends event E (same event_id). The ingest tier uses a Kafka idempotent producer (`enable.idempotence=true`). How many copies of E can end up in the log, and where is the duplicate handled?",
+      "options": [
+        "Exactly one; the idempotent producer deduplicates all duplicates",
+        "Possibly two: the idempotent producer only dedupes retries within a producer session, so the resend is a new append. Consumers dedupe by event_id (unique constraint or upsert)",
+        "Possibly two, and nothing can be done about it",
+        "Zero, because Kafka rejects reused ids"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Producer ids and sequence numbers are per session and per partition; they cannot recognize the same logical event arriving through a new request. The log has no index to check on append, so deduplication moves downstream."
+    }
+  ]
+}

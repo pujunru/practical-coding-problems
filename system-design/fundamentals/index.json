@@ -326,6 +326,72 @@
    ]
   },
   {
+   "id": "health",
+   "title": "Health & Resilience",
+   "concepts": [
+    {
+     "id": "timeout",
+     "title": "Timeout",
+     "drills": 5
+    },
+    {
+     "id": "retry",
+     "title": "Retry",
+     "drills": 5
+    },
+    {
+     "id": "backoff-jitter",
+     "title": "Exponential Backoff + Jitter",
+     "drills": 5
+    },
+    {
+     "id": "circuit-breaker",
+     "title": "Circuit Breaker",
+     "drills": 5
+    },
+    {
+     "id": "rate-limiter",
+     "title": "Rate Limiter",
+     "drills": 6
+    },
+    {
+     "id": "concurrency-limiter",
+     "title": "Concurrency Limiter",
+     "drills": 6
+    },
+    {
+     "id": "load-shedding",
+     "title": "Load Shedding",
+     "drills": 6
+    },
+    {
+     "id": "time-box-patterns",
+     "title": "Time-Box Patterns",
+     "drills": 6
+    },
+    {
+     "id": "heartbeat-lease",
+     "title": "Heartbeat + Lease",
+     "drills": 5
+    },
+    {
+     "id": "failover",
+     "title": "Failover",
+     "drills": 5
+    },
+    {
+     "id": "active-monitoring",
+     "title": "Active Monitoring",
+     "drills": 5
+    },
+    {
+     "id": "clock-shift",
+     "title": "Clock Skew",
+     "drills": 5
+    }
+   ]
+  },
+  {
    "id": "isolation",
    "title": "Isolation",
    "concepts": [
@@ -369,6 +435,53 @@
      "id": "backfill",
      "title": "Backfill",
      "drills": 6
+    }
+   ]
+  },
+  {
+   "id": "queuing",
+   "title": "Queuing",
+   "concepts": [
+    {
+     "id": "dispatcher",
+     "title": "Dispatcher",
+     "drills": 6
+    },
+    {
+     "id": "queue-first-vs-db-first",
+     "title": "Persisted Queue First vs DB First",
+     "drills": 6
+    },
+    {
+     "id": "wait-queue",
+     "title": "Wait Queue",
+     "drills": 5
+    }
+   ]
+  },
+  {
+   "id": "scheduling",
+   "title": "Scheduling",
+   "concepts": [
+    {
+     "id": "prioritized-scheduling",
+     "title": "Prioritized Scheduling",
+     "drills": 6
+    },
+    {
+     "id": "weighted-scheduling",
+     "title": "Weighted Scheduling",
+     "drills": 5
+    },
+    {
+     "id": "wait-running-queues",
+     "title": "Wait / Running Queues",
+     "drills": 5
+    },
+    {
+     "id": "trigger-based-invocation",
+     "title": "Trigger-Based Invocation",
+     "drills": 5
     }
    ]
   }

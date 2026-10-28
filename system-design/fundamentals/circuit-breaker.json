@@ -1,0 +1,72 @@
+{
+  "id": "circuit-breaker",
+  "title": "Circuit Breaker",
+  "summary": "A circuit breaker protects a caller from a dependency that is already failing. Mental model: **a failure counter per dependency (domain or endpoint) feeding a three-state machine that opens and closes the traffic flow.**\n\n- **Closed:** calls pass through; failures are counted.\n- **Open:** the counter crossed the threshold, so calls **fail immediately** (or go to a fallback) without touching the dependency. That saves your threads and connections from waiting on timeouts and gives the dependency room to recover.\n- **Half-open:** after a cool-down, let a **small number of trial calls** through. Success closes the breaker; failure re-opens it and restarts the cool-down.\n\nTypical config (pybreaker-style): `fail_max = 5` trips after 5 **consecutive** failures; `reset_timeout = 50` moves open to half-open after 50 s. Other libraries (Resilience4j) trip on a **failure rate over a sliding window** (e.g. 50% of the last 100 calls, with a minimum call count) and also count slow calls; state which convention you mean. Counting only the last N seconds, rather than forever, is what makes it a \"time-ranged\" counter.\n\nDetails that matter: count only failures that signal ill health (timeouts, connection errors, 5xx), not caller mistakes like 4xx; keep **one breaker per dependency** so one bad service does not block healthy ones; decide the open-state behavior (error, cached or default value, degraded feature). A breaker works alongside, not instead of, [timeouts](#/sd/f/timeout) and [retry budgets](#/sd/f/retry), and complements [load shedding](#/sd/f/load-shedding) on the server side.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "A breaker has fail_max = 5 consecutive failures and reset_timeout = 50 s. A caller sends 10 requests per second to a dependency that is hard down (calls fail instantly). In half-open state the breaker admits exactly one trial call. How many calls reach the dependency in the first 60 seconds?",
+      "answer": 6,
+      "unit": "calls",
+      "tolerance": 0,
+      "explain": "The breaker opens on the 5th failure (about t = 0.4 s) and stays open until about t = 50.4 s. The trial call at that point fails, so it re-opens for another 50 s. Total in 60 s: 5 + 1 = 6 calls, versus 600 without a breaker."
+    },
+    {
+      "type": "choice",
+      "q": "A breaker is half-open and its single trial call fails. What state does it go to next?",
+      "options": [
+        "Closed, because the trial proves the network path works",
+        "Half-open again, with a new trial immediately",
+        "Open, with the reset timeout restarted",
+        "Open permanently until an operator resets it"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "A failed probe is evidence the dependency is still unhealthy, so the breaker returns to open and waits a full cool-down before trying again. Retrying immediately would defeat the purpose; a permanent open state would need human intervention."
+    },
+    {
+      "type": "choice",
+      "q": "Which outcomes should normally count toward tripping a breaker for a downstream HTTP API? Select all that apply.",
+      "options": [
+        "Request timeouts",
+        "`503 Service Unavailable` responses",
+        "`404 Not Found` for a deleted resource",
+        "`422 Unprocessable Entity` caused by invalid user input",
+        "Connection refused"
+      ],
+      "answer": [
+        0,
+        1,
+        4
+      ],
+      "explain": "Counts should reflect the dependency's health. A 404 or 422 is the service working correctly and answering about the caller's request; counting them would trip the breaker on healthy traffic."
+    },
+    {
+      "type": "choice",
+      "q": "Service A calls both `payments` and `recommendations` through one shared breaker. `recommendations` goes down, the breaker opens, and checkout fails even though `payments` is fine. What is the fix?",
+      "options": [
+        "Raise fail_max so that the breaker opens less often",
+        "Use a separate breaker (and ideally a separate concurrency limit) per dependency or endpoint",
+        "Remove the breaker, and rely on timeouts",
+        "Lower reset_timeout so the shared breaker recovers sooner"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "A breaker is a per-dependency health signal. Sharing it couples unrelated failure domains, the opposite of isolating them. Tuning thresholds only changes how quickly the same wrong coupling bites."
+    },
+    {
+      "type": "order",
+      "q": "Put one full life cycle of a breaker in order.",
+      "items": [
+        "Closed: calls pass and failures are counted in the window",
+        "Failures reach the threshold and the breaker trips to open",
+        "Open: calls fail fast without contacting the dependency",
+        "The reset timeout elapses and the breaker moves to half-open",
+        "A trial call succeeds and the breaker returns to closed"
+      ],
+      "explain": "Half-open exists so recovery is detected by sampling, not by sending the full load at a dependency that may still be broken."
+    }
+  ]
+}

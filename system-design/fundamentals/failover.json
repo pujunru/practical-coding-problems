@@ -1,0 +1,69 @@
+{
+  "id": "failover",
+  "title": "Failover",
+  "summary": "Failover is **moving the work of a failed primary to a standby or replica**. The user-visible effect is a short window in which writes are impossible; the design goal is to keep that window short and the result correct.\n\nSequence:\n1. **Detect** that the primary is down (missed [heartbeats](#/sd/f/heartbeat-lease), failed probes, expired lease).\n2. **Fence** the old primary so it cannot keep writing: revoke its lease, bump an epoch/term ([fencing token](#/sd/f/fencing-token)), cut it off from storage, or power it off. Skipping this is how you get **split brain**: two nodes both accepting writes.\n3. **Choose and promote** the most up-to-date replica (a [leader election](#/sd/f/leader-election) or an orchestrator's decision).\n4. **Redirect** clients (DNS, service discovery, proxy reconfiguration).\n5. **Resume** writes and re-point the other replicas at the new primary.\n\n**During steps 1-4, writes must be rejected or held** (with a bounded wait); never accepted by a node that might not be the primary. Clients should retry with an [idempotency key](#/sd/f/idempotency) because they cannot tell whether an in-flight write landed.\n\n**What can be lost.** With asynchronous replication, a write acknowledged by the old primary but not yet shipped to the promoted replica is gone: the **RPO** (recovery point objective) is non-zero. Synchronous or quorum replication shrinks RPO to zero at the cost of write latency. The **RTO** (recovery time) is roughly detection time + promotion + client redirection.\n\nFast detection means more false positives; slow detection means longer downtime. See also [leader-based failover](#/sd/f/leader-based-failover).",
+  "drills": [
+    {
+      "type": "order",
+      "q": "Put a primary failover in order.",
+      "items": [
+        "Failure detector declares the primary dead",
+        "The old primary is fenced (lease revoked / epoch bumped / isolated)",
+        "The most up-to-date replica is promoted",
+        "Clients and other replicas are redirected to the new primary",
+        "Writes resume"
+      ],
+      "explain": "Fencing comes before promotion. If you promote while the old primary can still accept writes, a partitioned primary and the new one can both acknowledge writes and diverge."
+    },
+    {
+      "type": "choice",
+      "q": "The primary becomes unreachable because of a network partition, not a crash, and a replica is promoted. Some clients can still reach the old primary and keep writing there. What went wrong, and what prevents it?",
+      "options": [
+        "Nothing, since replication will merge both writes later",
+        "Split brain: two primaries accepted writes. Prevent it by fencing the old one (epoch/lease the storage layer enforces), and promote only with a majority decision",
+        "The new primary was elected too slowly; use a shorter detection timeout",
+        "Clients should load balance writes across both primaries"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Faster detection raises false positives without removing the possibility of a live old primary. The safety property comes from making stale primaries unable to write, with epochs or leases enforced by the resource."
+    },
+    {
+      "type": "number",
+      "q": "A failover design: the failure detector declares failure 6 s after the crash at worst (3 missed heartbeats, 2 s apart), election and promotion take 4 s, and clients pick up the new address within 5 s of promotion (DNS TTL). What is the worst-case write unavailability, in seconds?",
+      "answer": 15,
+      "unit": "s",
+      "tolerance": 0,
+      "explain": "Add the sequential phases: 6 + 4 + 5 = 15 s. The biggest lever is usually the client redirection (lower TTL or a proxy that is updated centrally), then detection time."
+    },
+    {
+      "type": "choice",
+      "q": "With asynchronous replication, the primary acknowledged write W to a client and crashed before shipping W to any replica. A replica is promoted. What is the outcome?",
+      "options": [
+        "W is recovered automatically from the old primary's disk and re-applied",
+        "W is lost from the new primary's history even though the client saw success: RPO > 0. Use synchronous or quorum replication if that is unacceptable",
+        "The client's retry creates a duplicate of W for sure",
+        "The new primary refuses to start until W arrives"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "The ack only promised durability on the old primary. If that node is truly gone, the data is gone. Quorum commit makes the ack mean 'stored on a majority', paying latency. See [leader-based failover](#/sd/f/leader-based-failover)."
+    },
+    {
+      "type": "choice",
+      "q": "A write arrives while a failover is in progress and no node is currently confirmed as primary. What should the system do?",
+      "options": [
+        "Accept it on the old primary to avoid errors",
+        "Accept it on any replica and reconcile later",
+        "Reject it fast with a retryable error, or hold it for a short bounded time; it must not be accepted anywhere that might not be the primary",
+        "Drop it silently"
+      ],
+      "answer": [
+        2
+      ],
+      "explain": "Availability for writes is deliberately sacrificed in the failover window to preserve a single history. The client retries (with an idempotency key) once a primary is confirmed."
+    }
+  ]
+}

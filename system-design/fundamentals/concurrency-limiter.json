@@ -1,0 +1,77 @@
+{
+  "id": "concurrency-limiter",
+  "title": "Concurrency Limiter",
+  "summary": "A concurrency limiter caps **how many requests are in flight at once**. Where a [rate limiter](#/sd/f/rate-limiter) asks \"how many may start per second?\", this asks \"how many may be running right now?\" It is usually a semaphore or a bulkhead with a limit `L`.\n\n**Little's law** ties the two together: `in-flight = arrival rate x latency`. Latency is the dangerous variable. If a database slows from 150 ms to 1.5 s, the same 200 req/s now needs 300 slots instead of 30, even though the arrival rate never crossed any rate limit. Threads, connections and memory run out first. A concurrency limit fixes that by turning \"slow\" into \"rejected fast\" instead of \"everything slow\".\n\nWorking rules:\n- **Size it from capacity:** `L ~ throughput you want x latency you expect`, bounded by the resource (DB connections, worker threads, GPU slots).\n- **When full, reject quickly** (`503`), or wait in a *small, bounded* queue with a short timeout. An unbounded queue only converts overload into latency.\n- **Always release in a `finally`**: a leaked permit permanently shrinks the limit.\n- **One limit per dependency** (a bulkhead, see [compartments](#/sd/f/compartment) and [tenant isolation](#/sd/f/tenant-isolation)): a slow dependency can then consume only its own share of threads.\n- **Adaptive limits** use AIMD or latency gradients: raise the limit slowly while latency is healthy, cut it multiplicatively on timeouts or latency growth, so the limiter finds the system's real capacity.\n\nThe limiter's rejections are what [load shedding](#/sd/f/load-shedding) and client [backoff](#/sd/f/backoff-jitter) have to cope with.",
+  "drills": [
+    {
+      "type": "number",
+      "q": "A service handles 200 requests per second, each taking 150 ms on average. How many requests are in flight at steady state?",
+      "answer": 30,
+      "unit": "requests",
+      "tolerance": 0,
+      "explain": "Little's law: 200 req/s x 0.15 s = 30 concurrent requests. A concurrency limit comfortably above this (e.g. 40) leaves headroom without letting a slowdown consume everything."
+    },
+    {
+      "type": "number",
+      "q": "The same service has a concurrency limit of 40 and rejects instantly when full. The database degrades and each request now takes 500 ms. Arrivals stay at 200 req/s. How many requests per second are rejected at steady state?",
+      "answer": 120,
+      "unit": "requests/s",
+      "tolerance": 0,
+      "explain": "Max throughput = limit / latency = 40 / 0.5 s = 80 req/s. The other 200 - 80 = 120 req/s are rejected quickly. Without the limit, in-flight work would balloon to 200 x 0.5 = 100 and keep growing as latency rose."
+    },
+    {
+      "type": "choice",
+      "q": "Traffic is a steady 100 req/s, comfortably under a 500 req/s rate limit. A downstream call slows from 50 ms to 5 s. With no concurrency limit, which statement best describes what happens?",
+      "options": [
+        "Nothing, since the rate limit is not exceeded",
+        "In-flight requests grow from about 5 to about 500, exhausting threads, connections or memory, and healthy endpoints on the same service start failing too",
+        "The rate limiter automatically lowers the allowed rate to match latency",
+        "The load balancer retries and fixes the slowness"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Arrival rate stayed the same, but in-flight = rate x latency rose 100x. Rate limits do not see latency; a concurrency limit does, because the slow calls hold their permits."
+    },
+    {
+      "type": "choice",
+      "q": "The concurrency limit is reached. What is the best default behavior for a new request?",
+      "options": [
+        "Queue it in an unbounded queue so no request is lost",
+        "Reject it immediately with 503, or let it wait briefly in a small bounded queue with a short timeout",
+        "Start it anyway, since a few extra requests are harmless",
+        "Block the caller's thread until a permit frees up, however long it takes"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Queued requests still hold the client's timeout clock; with an unbounded queue most of them will be abandoned by the time they run. Failing fast keeps latency for admitted requests low and tells the caller to back off."
+    },
+    {
+      "type": "choice",
+      "q": "A service has 200 worker threads shared by calls to `search` (fast) and `export` (calls a slow third party). The third party hangs and `export` calls occupy all 200 threads. How should limits be arranged?",
+      "options": [
+        "One global limit of 200 across all calls",
+        "A per-dependency (bulkhead) limit, e.g. 20 for `export`, so it can never take threads needed by `search`",
+        "Increase threads to 2,000",
+        "Add a rate limiter on `export` of 20 per second"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "The failure is shared-resource exhaustion; a bulkhead caps the blast radius. More threads postpone the same collapse, and a rate limit still allows unbounded in-flight work if calls hang."
+    },
+    {
+      "type": "order",
+      "q": "Put the life cycle of a request through a concurrency limiter in order.",
+      "items": [
+        "The request arrives and tries to acquire a permit without blocking",
+        "A permit is granted (otherwise the request is rejected here with 503)",
+        "The call to the dependency runs under a timeout",
+        "The permit is released in a finally block, whether the call succeeded, failed or timed out",
+        "Latency and outcome feed the adaptive limit (grow slowly, cut on timeouts)"
+      ],
+      "explain": "Releasing in finally is what keeps the limit accurate; releasing only on success leaks a permit per failure, and the limit shrinks to zero during an incident."
+    }
+  ]
+}

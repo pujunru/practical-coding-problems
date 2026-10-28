@@ -1,0 +1,63 @@
+{
+  "id": "trigger-based-invocation",
+  "title": "Trigger-Based Invocation",
+  "summary": "The problem: lots of time-based work, such as lease expiry checks, periodic jobs and one-off scheduled tasks, each needing to run at its own moment.\n\n**Don't:** start one thread or coroutine per item that sleeps until its time. It costs memory per waiter, makes cancelling and rescheduling awkward, and breaks down at hundreds of thousands of items.\n\n**Do:** keep a **priority queue of `(next_trigger_time, task)`** and a single timer loop:\n1. Peek at the earliest entry; sleep until its time (or until woken).\n2. Pop everything that is due and push it to the **Running queue** (worker pool) for execution. The timer loop only decides *when*, never does the work.\n3. Recurring tasks compute their next trigger time and are re-inserted ([wait / running queues](#/sd/f/wait-running-queues)).\n\nDetails that matter:\n- **Wake on earlier inserts.** If a new task is due before the entry you are sleeping on, wake the loop (condition variable, or re-arm the timer), or it fires late.\n- **Fixed rate vs fixed delay.** Next = `scheduled_time + interval` keeps cadence; next = `finish_time + interval` stretches it by the runtime. Choose a policy for overruns and for missed triggers after downtime: skip, coalesce into one catch-up, or run all.\n- **Data structure:** a binary heap is O(log n) per operation; a [timer wheel](#/sd/f/timer-wheel) is O(1) with coarse precision, suited to millions of timeouts.\n- **Several instances:** if three schedulers each hold the schedule, the job triple-fires. Give each task a single owner ([lease](#/sd/f/lease), or hash tasks to schedulers) and make tasks idempotent.\n- **Durability:** if triggers must survive restarts, store `next_trigger_time` in the database ([time-box patterns](#/sd/f/time-box-patterns)).",
+  "drills": [
+    {
+      "type": "number",
+      "q": "A system tracks 500,000 lease-expiry checks and implements each as a dedicated OS thread that sleeps until its time. Assume each thread reserves 1 MiB of stack. How many GiB of stack address space does that reserve (round to the nearest GiB)?",
+      "answer": 488,
+      "unit": "GiB",
+      "tolerance": 0.05,
+      "explain": "500,000 x 1 MiB = 500,000 MiB, which is about 488 GiB. Even when memory is only reserved, scheduling and context-switch overhead and the inability to cancel cheaply make this design break long before; one timer loop over a priority queue needs a few MB."
+    },
+    {
+      "type": "choice",
+      "q": "The timer loop is sleeping until 12:00:00 (the top of the heap). A new task is inserted that is due at 11:00:05. What must happen?",
+      "options": [
+        "Nothing; it will be picked up at 12:00:00",
+        "The loop must be woken (or its timer re-armed) so that it re-computes the earliest due time and fires the new task on time",
+        "The new task is rejected until the loop wakes",
+        "The loop should poll the heap every millisecond"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "A sleeping loop only knows the deadline it computed earlier. Inserting something earlier changes the answer, so insertion must signal the loop. Polling every ms is wasteful and still imprecise."
+    },
+    {
+      "type": "number",
+      "q": "A job should run 'every 10 seconds', but the scheduler is configured as fixed delay (the next run is scheduled 10 s after the previous run finishes), and each run takes 4 s. Approximately how many times does the job start in one hour?",
+      "answer": 257,
+      "unit": "runs",
+      "tolerance": 0.02,
+      "explain": "The period is 4 + 10 = 14 s, giving 3,600 / 14 = about 257 runs, versus 360 under fixed rate (next = scheduled + 10 s). Which one you want depends on whether cadence or spacing between runs is the requirement."
+    },
+    {
+      "type": "order",
+      "q": "Put the loop of a trigger-based scheduler in order.",
+      "items": [
+        "Peek at the earliest (next_trigger_time, task) in the priority queue",
+        "Sleep until that time, or until an earlier insert wakes the loop",
+        "Pop every task that is now due",
+        "Push each to the Running queue (the worker pool), where it executes",
+        "Recurring tasks compute their next trigger time and are re-inserted"
+      ],
+      "explain": "The loop schedules and never runs the work itself, so a slow task cannot delay other triggers. Popping all due tasks in one pass handles bursts of identical due times."
+    },
+    {
+      "type": "choice",
+      "q": "Three scheduler instances each load the same 'nightly billing at 02:00' task. What happens at 02:00, and what is the sound fix?",
+      "options": [
+        "It runs once, because the database prevents duplicates",
+        "It runs about three times; give each task a single owner (a lease or leader per task, or hash tasks across instances) and make the job idempotent as a backstop",
+        "It runs three times, which is expected and fine",
+        "It doesn't run, because the schedulers cancel each other"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Nothing in the timer logic coordinates instances. Exactly one should own each schedule entry (hash partition or lease), and idempotency covers failover overlaps. See [lease](#/sd/f/lease)."
+    }
+  ]
+}

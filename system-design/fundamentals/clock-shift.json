@@ -1,0 +1,56 @@
+{
+  "id": "clock-shift",
+  "title": "Clock Skew",
+  "summary": "Different machines disagree about the time. **Skew** is the difference between two clocks at the same instant; **drift** is how fast that difference grows (a 50 ppm clock gains 50 microseconds per second, about 4.3 s per day). Time-sync (NTP) corrects clocks, sometimes by **stepping** them, which can jump backwards or forwards. A long GC or VM pause looks to the program like a sudden jump in time.\n\nTwo clocks, two jobs:\n- **Wall clock** (`time.time()`, `System.currentTimeMillis()`): comparable across machines only to within the sync error, and can jump. Use it for human-visible timestamps, never to measure how long something took.\n- **Monotonic clock** (`time.monotonic()`, `System.nanoTime()`): never goes backwards, but its value is meaningful only on one machine. Use it for timeouts, deadlines and elapsed time.\n\nConsequences for design:\n- **Do not order events from different nodes by wall-clock timestamps.** Last-write-wins with skewed clocks silently discards the newer write. Use a single authority (DB sequence, `now()` on the primary), version numbers, logical or hybrid logical clocks, or bounded-uncertainty time like TrueTime.\n- **Leases need margins on both sides.** The grantor waits `TTL + MAX_ALLOW_CLOCK_SHIFT` before treating the lease as dead; the holder stops using it `MAX_ALLOW_CLOCK_SHIFT` early, measuring from when it *sent* the renewal ([lease](#/sd/f/lease), [heartbeat + lease](#/sd/f/heartbeat-lease)).\n- **Skew and pauses cannot be fully bounded**, so the resource still needs a [fencing token](#/sd/f/fencing-token).\n- Cross-node expiry such as `expires_at` should be judged by one authority ([time-box patterns](#/sd/f/time-box-patterns)).",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A service measures request duration as `now_wall() - start_wall`, using the wall clock. During a request, NTP steps the clock back by 5 seconds. What can go wrong, and what is the fix?",
+      "options": [
+        "Nothing, because NTP corrections are always forward",
+        "The measured duration can be negative or wrong by 5 s, tripping or skipping timeouts; use a monotonic clock for durations",
+        "Only the logs are affected, so use UTC instead",
+        "Requests will be retried, which is harmless"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "A wall clock reflects 'what time is it' and may be adjusted; a monotonic clock reflects 'how much time has passed'. Timeouts and deadlines should use the latter."
+    },
+    {
+      "type": "number",
+      "q": "A server's clock drifts by 50 ppm (50 microseconds per second) relative to true time and is never corrected. How many milliseconds is it off after one hour?",
+      "answer": 180,
+      "unit": "ms",
+      "tolerance": 0,
+      "explain": "50e-6 x 3600 s = 0.18 s = 180 ms. Over a day that is about 4.3 s, which is why periodic sync matters and why leases carry margins."
+    },
+    {
+      "type": "choice",
+      "q": "A key-value store resolves conflicts by last-write-wins on client wall-clock timestamps. Node A's clock is 300 ms ahead of node B's. A writes x=1 at true time T (stamped T+300 ms). 100 ms later B writes x=2 (stamped T+100 ms). Which value survives?",
+      "options": [
+        "x=2, because it was written later",
+        "x=1, because its timestamp is larger; the newer write is silently lost",
+        "Both, as siblings",
+        "The write from the node with the lower id"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "LWW trusts the timestamps, and skew exceeding the gap between writes reverses their order. Fix by ordering through a single authority or version/logical clocks rather than comparing wall clocks."
+    },
+    {
+      "type": "number",
+      "q": "A monitor grants a 10 s lease and treats it as dead only after TTL + MAX_ALLOW_CLOCK_SHIFT. The holder stops using it at TTL - MAX_ALLOW_CLOCK_SHIFT after sending its renewal. MAX_ALLOW_CLOCK_SHIFT = 0.5 s. Ignoring network delay, how many seconds is the minimum gap between the holder stopping and another node taking over?",
+      "answer": 1,
+      "unit": "s",
+      "tolerance": 0,
+      "explain": "The holder stops at 10 - 0.5 = 9.5 s; the monitor acts at 10 + 0.5 = 10.5 s. The 1 s gap (twice the allowed shift) is the safety margin. It still cannot cover a long pause, hence fencing."
+    },
+    {
+      "type": "recall",
+      "q": "Why is a lease with clock-shift margins still not sufficient for safety, and what is the complementary mechanism?",
+      "answer": "Margins only handle bounded clock error. A holder can be paused (GC, VM freeze, network stall) for longer than any chosen margin, then resume believing the lease is valid and act on it after another node took over. The complementary mechanism is a fencing token (monotonically increasing epoch issued with the lease) that the protected resource checks, rejecting any request from an older token, so safety does not depend on clocks."
+    }
+  ]
+}

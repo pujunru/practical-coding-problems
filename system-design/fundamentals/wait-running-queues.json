@@ -1,0 +1,69 @@
+{
+  "id": "wait-running-queues",
+  "title": "Wait / Running Queues",
+  "summary": "The **wait/running two-queue model** splits tasks by *what they are waiting for*:\n- The **Wait queue** holds tasks that are not ready to execute: waiting for a time, or for a resource.\n- The **Running queue** holds tasks that are ready or executing now.\n- A task moves **Wait -> Running** when its condition is met, and goes back **Running -> Wait** when it finishes a slice of work and needs to wait again (or goes away when done).\n\nTwo classic uses:\n\n**GPU/LLM serving (continuous batching).** New requests wait for a prefill slot (and for memory for their KV cache). Requests that have started decoding are in the Running queue and each step produces one token for all of them. Started work is favoured over new admissions (a sequence that has begun is put back at the front to continue): it already holds memory, and finishing it frees that memory and bounds its latency. New requests are admitted only when capacity allows, and preempted sequences go back to the front of the Wait queue.\n\n**Large-scale polling.** One million jobs, each polled every so often. The Wait queue is a **min-heap on next-wakeup time**; the scheduler sleeps until the earliest due time ([trigger-based invocation](#/sd/f/trigger-based-invocation)), pops due jobs into Running, a worker polls, and if the job is not finished it computes its next wakeup (maybe adaptively, see [adaptive polling](#/sd/f/adaptive-polling) and [polling](#/sd/f/polling)) and re-inserts it.\n\nDesign cautions: the sleeper should not be a thread per job; the Running queue is bounded by workers or memory ([concurrency limiter](#/sd/f/concurrency-limiter)); anything popped from Wait must have a **lease or timeout** while Running so a crash does not make it vanish ([lease](#/sd/f/lease)). Compare the plain [wait queue](#/sd/f/wait-queue).",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A system polls 1,000,000 external jobs, each with its own next-poll time (some every 5 s, some every 10 minutes, depending on how fast they change). Which structure should the Wait queue use?",
+      "options": [
+        "A FIFO list, scanned for due jobs on every loop",
+        "A min-heap keyed by next_poll_time; the scheduler sleeps until the top is due, pops all due jobs and hands them to Running",
+        "One sleeping thread per job",
+        "A random queue, since order does not matter"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Items have different wake times, so a FIFO head isn't necessarily the earliest. A heap gives the earliest in O(1) and insertion in O(log n), and the loop can sleep exactly until the next due time."
+    },
+    {
+      "type": "choice",
+      "q": "In an LLM server, 30 sequences are decoding (Running) while new requests keep arriving (Wait). Why does a scheduler normally let running sequences continue before admitting new prefill work?",
+      "options": [
+        "New requests are less important",
+        "Running sequences already hold KV-cache memory; finishing them frees that memory and bounds their latency, while admitting too many new ones would stall everyone and risk evictions",
+        "Decoding is cheaper than prefill, so batches are smaller",
+        "It is required by the GPU's instruction set"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "It is a trade-off, not a rule: you eventually must admit new work, but already-started work has sunk memory cost and a user watching tokens stream. Preferring it gives better time-to-last-token and fewer wasted partial results."
+    },
+    {
+      "type": "number",
+      "q": "1,000,000 jobs are each polled once every 60 seconds, and a poll occupies a worker for 200 ms. At steady state, how many workers (concurrent Running slots) are needed on average?",
+      "answer": 3333,
+      "unit": "workers",
+      "tolerance": 0.01,
+      "explain": "Poll rate = 1,000,000 / 60 = 16,667 polls/s. By Little's law, concurrency = 16,667 x 0.2 s = 3,333. Add headroom, and spread polls out (jitter) so they don't arrive in 60-second pulses."
+    },
+    {
+      "type": "order",
+      "q": "Put the life of one polled job in the Wait/Running model in order.",
+      "items": [
+        "The job sits in the Wait min-heap with a next_poll_time",
+        "The scheduler wakes at the heap's top time and pops the due job",
+        "The job is pushed to the Running queue and a worker polls the external system",
+        "The poll shows the job is not finished, so a next wakeup time is computed",
+        "The job is re-inserted into the Wait heap"
+      ],
+      "explain": "The loop is a cycle; a finished job leaves it instead. Computing the next wakeup (fixed or adaptive) is what lets slow-changing jobs cost far less than fast-changing ones."
+    },
+    {
+      "type": "choice",
+      "q": "A worker pops a job from Wait into Running, then crashes before finishing. The job exists only in the worker's memory. What is the consequence, and what is the fix?",
+      "options": [
+        "Nothing; the scheduler will notice the job is missing and recreate it",
+        "The job is lost forever (it is in neither queue); keep Running entries in the store with a lease/visibility timeout so an expired lease puts the job back in Wait",
+        "The job runs twice, which is harmless",
+        "The Wait queue blocks until the worker restarts"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Moving a task between queues is only safe if some component still owns it. Lease expiry (like a message queue's visibility timeout) turns a crash into a delayed retry instead of silent loss."
+    }
+  ]
+}

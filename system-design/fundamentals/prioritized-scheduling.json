@@ -1,0 +1,76 @@
+{
+  "id": "prioritized-scheduling",
+  "title": "Prioritized Scheduling",
+  "summary": "Prioritized scheduling serves the **most important waiting work first**. The standard structure is a **priority queue** (a heap) keyed by `(priority, enqueue_sequence)`. The sequence number matters: a binary heap is not stable, so without it two tasks of equal priority can come out in arbitrary order.\n\nStrict priority is simple and gives the best latency to the top class, and it brings four problems:\n- **Starvation.** If high-priority work always arrives, low priority never runs. Remedies: **aging** (`effective = base + rate x wait`, so waiting eventually wins), **reserved capacity** (a floor of slots for low classes), or moving to **weighted shares** ([weighted scheduling](#/sd/f/weighted-scheduling)).\n- **Priority inversion.** A low-priority task holds a lock the high-priority task needs, and medium tasks keep preempting the low one, so the high task waits indefinitely. Fix: **priority inheritance** (the holder temporarily runs at the waiter's priority) or avoid sharing locks across classes.\n- **Priority inflation.** If clients label their own requests, everything becomes \"urgent\". Derive priority from authenticated class, endpoint or quota, never self-declared.\n- **Preemption.** Non-preemptive scheduling lets a long low-priority job delay a new urgent one by its whole remaining runtime; preempting needs the ability to pause or checkpoint, and has a cost.\n\nKeep few levels (3 to 5), publish what each means, and measure queue age **per class**. The same idea decides what to drop first in [load shedding](#/sd/f/load-shedding); the [dispatcher](#/sd/f/dispatcher) combines it with fairness; the structure sits in a [wait queue](#/sd/f/wait-queue).",
+  "drills": [
+    {
+      "type": "choice",
+      "q": "A shared worker pool runs interactive jobs (high) and report jobs (low) from a strict-priority queue. After a marketing push, interactive jobs arrive continuously and keep the pool 100% busy for hours. What happens to report jobs?",
+      "options": [
+        "They run at lower speed",
+        "They starve: they wait as long as any higher-priority job is waiting, possibly indefinitely",
+        "They are automatically promoted after a timeout",
+        "They run in parallel in the idle gaps, so they finish normally"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Strict priority has no notion of fairness. With saturated higher-priority work there are no idle gaps. Add aging, reserved capacity or weighted shares if low work must make progress."
+    },
+    {
+      "type": "number",
+      "q": "Effective priority = base + 0.5 x seconds waited (higher runs first). A low task has base 1; fresh high tasks arrive with base 10. After how many seconds of waiting does the low task first tie with a freshly arrived high task?",
+      "answer": 18,
+      "unit": "s",
+      "tolerance": 0,
+      "explain": "1 + 0.5t = 10 gives t = 18 s; after that the old low task outranks new high ones. The aging rate directly sets the worst-case wait you promise to low-priority work."
+    },
+    {
+      "type": "choice",
+      "q": "Task L (low) holds a mutex. Task H (high) needs it and blocks. A stream of medium-priority tasks keeps preempting L. What is this, and what fixes it?",
+      "options": [
+        "Starvation of M; use aging",
+        "Priority inversion: H is effectively waiting behind M. Use priority inheritance so L runs at H's priority until it releases the lock",
+        "A deadlock; add a lock timeout",
+        "A race condition; use atomic operations"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "It is not a deadlock, since L can finish if it ever runs. The medium tasks only delay L, which delays H, so H's effective priority is lower than M's. Inheritance lifts L above M temporarily."
+    },
+    {
+      "type": "choice",
+      "q": "Two tasks of the same priority are pushed to a binary-heap priority queue keyed only by priority: first A at 10:00:00, then B at 10:00:01. Which can be popped first?",
+      "options": [
+        "Always A, since heaps are FIFO",
+        "Either; a binary heap does not preserve insertion order among equal keys. Use (priority, sequence) as the key",
+        "Always B, since later items sit closer to the root",
+        "Neither, because equal keys are rejected"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "Heaps order by key only. For FIFO within a class, add a monotonically increasing sequence number (or timestamp) as a tie-breaker."
+    },
+    {
+      "type": "choice",
+      "q": "A public API offers a `priority` header (`high`, `normal`, `low`) that a scheduler uses to pick requests. After a month almost all requests are marked `high`. What is the right design response?",
+      "options": [
+        "Add a fourth level called `critical`",
+        "Derive priority from server-side facts (authenticated tier, endpoint, quota) rather than from a client-declared label, and cap each class",
+        "Ignore the header entirely and use FIFO",
+        "Educate clients not to use `high`"
+      ],
+      "answer": [
+        1
+      ],
+      "explain": "A self-declared label is free, so the equilibrium is that everyone uses the top one (priority inflation). Priority must be backed by something scarce, such as a paid tier or per-class quotas."
+    },
+    {
+      "type": "recall",
+      "q": "Strict priority scheduling is simple. Name its three main failure modes and one remedy for each.",
+      "answer": "Starvation of low classes (remedy: aging, reserved capacity or weighted shares); priority inversion when a low task holds a resource a high task needs (remedy: priority inheritance); priority inflation when clients choose their own priority (remedy: derive priority from authenticated class/quota and cap each class). A fourth issue is non-preemption of long jobs, remedied by preemption/checkpointing or by chunking long work."
+    }
+  ]
+}
