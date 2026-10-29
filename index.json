@@ -70,6 +70,16 @@
         "parsing",
         "graph"
       ]
+    },
+    {
+      "id": "gantt-scheduler",
+      "title": "Gantt Scheduler",
+      "difficulty": "Hard",
+      "tags": [
+        "design",
+        "graph",
+        "topological-sort"
+      ]
     }
   ]
 }
